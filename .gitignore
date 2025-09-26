@@ -1,0 +1,19 @@
+# Compiled files and build artifacts
+build/
+*.o
+*.a
+*.so
+*.exe
+*.dll
+
+# User-specific files
+*.user
+*.suo
+
+# IDE and editor folders
+.vscode/
+.idea/
+*.DS_Store
+
+# Log files
+*.log
