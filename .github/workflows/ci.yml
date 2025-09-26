@@ -20,4 +20,4 @@ jobs:
     - name: Build and Run inside Docker
       run: |
         docker build -t llm-cpp-env .
-        docker run --rm -v ${{ github.workspace }}:/app llm-cpp-env bash -c "echo '--- Listing files inside /app ---'; ls -la /app; echo '--- Running cmake ---'; mkdir build && cd build && cmake .."
+        docker run --rm -v ${{ github.workspace }}:/app llm-cpp-env bash -c "mkdir build && cd build && cmake .. && make && ./hello_world"
