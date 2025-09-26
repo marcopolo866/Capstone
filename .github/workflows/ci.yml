@@ -14,6 +14,8 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: List All Files for Debugging
+      run: ls -laR
     - name: Build and Run inside Docker
       run: |
         docker build -t llm-cpp-env .
