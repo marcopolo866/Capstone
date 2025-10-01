@@ -1,2 +1,3 @@
-# Capstone
-Testing AI to the Limit
+# Large-Language Model Generated C++ Code 
+
+Large-Language Models (LLMs) have become increasingly competent, prevalent, and affordable. If LLMs can be shown as effective in a workflow, they can be used to increase efficiency for programmers on more tedious or obscure tasks. We will be rigorously testing LLM-generated code for weighted-graph problems against standardized benchmarks with minimal human refactoring. Metrics of interest will include runtime, memory use, scalability curves, etc. Based on the program’s performance, we can begin to estimate the effectiveness of LLM-generated code. If LLM-generated code performs well, we may recommend integration into programming workflows. If it performs poorly, we may advise against using LLMs in programming work. 
