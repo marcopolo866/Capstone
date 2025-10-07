@@ -6,6 +6,8 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     git \
+    wget \
+    libgmp-dev \
     g++-11 \
     clang-14
 
