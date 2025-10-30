@@ -1,0 +1,126 @@
+name: Run Algorithm
+
+on:
+  workflow_dispatch:
+    inputs:
+      algorithm:
+        description: 'Algorithm to run'
+        required: true
+        type: choice
+        options:
+          - dijkstra
+          - glasgow
+          - vf3
+      input_files:
+        description: 'Comma-separated input file paths'
+        required: true
+        type: string
+
+jobs:
+  run-algorithm:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+      
+      - name: Build algorithms
+        run: |
+          # Build Dijkstra
+          if [ -f "baselines/dijkstra.cpp" ]; then
+            g++ -o baselines/dijkstra baselines/dijkstra.cpp -std=c++17
+          fi
+          
+          # Build Glasgow Subgraph Solver
+          if [ -d "baselines/glasgow-subgraph-solver" ]; then
+            cd baselines/glasgow-subgraph-solver
+            mkdir -p build
+            cd build
+            cmake ..
+            make
+            cd ../../..
+          fi
+          
+          # Build VF3 (if needed)
+          if [ -d "baselines/vf3" ]; then
+            cd baselines/vf3
+            make
+            cd ../..
+          fi
+      
+      - name: Run algorithm
+        id: run
+        run: |
+          ALGORITHM="${{ github.event.inputs.algorithm }}"
+          INPUT_FILES="${{ github.event.inputs.input_files }}"
+          
+          echo "Running $ALGORITHM with files: $INPUT_FILES"
+          
+          mkdir -p outputs
+          
+          # Parse input files
+          IFS=',' read -ra FILES <<< "$INPUT_FILES"
+          
+          # Run the appropriate algorithm
+          case $ALGORITHM in
+            dijkstra)
+              ./baselines/dijkstra "${FILES[0]}" > outputs/result.txt 2>&1
+              ;;
+            glasgow)
+              ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver "${FILES[0]}" "${FILES[1]}" > outputs/result.txt 2>&1
+              ;;
+            vf3)
+              ./baselines/vf3/bin/vf3 "${FILES[0]}" "${FILES[1]}" > outputs/result.txt 2>&1
+              ;;
+            *)
+              echo "Unknown algorithm: $ALGORITHM"
+              exit 1
+              ;;
+          esac
+          
+          EXIT_CODE=$?
+          echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
+      
+      - name: Create result JSON
+        run: |
+          ALGORITHM="${{ github.event.inputs.algorithm }}"
+          EXIT_CODE="${{ steps.run.outputs.EXIT_CODE }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          if [ "$EXIT_CODE" = "0" ]; then
+            STATUS="success"
+            OUTPUT=$(cat outputs/result.txt)
+            ERROR=""
+          else
+            STATUS="error"
+            OUTPUT=""
+            ERROR=$(cat outputs/result.txt)
+          fi
+          
+          # Create JSON (escape special characters)
+          cat > outputs/result.json << EOF
+{
+  "algorithm": "$ALGORITHM",
+  "timestamp": "$TIMESTAMP",
+  "status": "$STATUS",
+  "output": $(echo "$OUTPUT" | jq -Rs .),
+  "error": $(echo "$ERROR" | jq -Rs .)
+}
+EOF
+      
+      - name: Commit results
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add outputs/result.json
+          git commit -m "Add algorithm results [skip ci]" || echo "No changes to commit"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
