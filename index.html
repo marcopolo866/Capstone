@@ -311,7 +311,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🚀 Algorithm Runner Interface</h1>
+            <h1>Algorithm Runner Interface</h1>
             <p>Run graph algorithms on your repository data</p>
         </div>
         
@@ -333,22 +333,22 @@
         
         <div class="content">
             <div class="panel">
-                <h2>📊 Select Algorithm</h2>
+                <h2>Select Algorithm</h2>
                 <div id="algorithms-list">
                     <div class="algorithm-card" onclick="selectAlgorithm('dijkstra')">
-                        <h3>🔵 Dijkstra's Algorithm</h3>
+                        <h3>Dijkstra's Algorithm</h3>
                         <p>Shortest path algorithm for weighted graphs</p>
                         <div class="command">./baselines/dijkstra [input-file]</div>
                     </div>
                     
                     <div class="algorithm-card" onclick="selectAlgorithm('glasgow')">
-                        <h3>🟢 Glasgow Subgraph Solver</h3>
+                        <h3>Glasgow Subgraph Solver</h3>
                         <p>Subgraph isomorphism solver</p>
                         <div class="command">./build/glasgow_subgraph_solver [pattern] [target]</div>
                     </div>
                     
                     <div class="algorithm-card" onclick="selectAlgorithm('vf3')">
-                        <h3>🟣 VF3 Algorithm</h3>
+                        <h3>VF3 Algorithm</h3>
                         <p>Graph matching algorithm</p>
                         <div class="command">./bin/vf3 [subgraph] [graph]</div>
                     </div>
@@ -356,7 +356,7 @@
             </div>
             
             <div class="panel">
-                <h2>📁 Select Input Files</h2>
+                <h2>Select Input Files</h2>
                 <div id="status-message"></div>
                 <div id="files-content">
                     <p class="loading">Connect to repository to browse data files</p>
@@ -364,7 +364,7 @@
             </div>
             
             <div class="panel output-section">
-                <h2>▶️ Run Algorithm 
+                <h2>Run Algorithm 
                     <span id="status-badge"></span>
                 </h2>
                 
@@ -372,7 +372,7 @@
                 
                 <div class="run-controls">
                     <button class="btn btn-primary" id="run-btn" onclick="runAlgorithm()" disabled>
-                        ▶️ Run Algorithm
+                        Run Algorithm
                     </button>
                     <button class="btn" onclick="clearOutput()">Clear Output</button>
                 </div>
@@ -528,7 +528,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const algo = algorithmConfigs[config.selectedAlgorithm];
             
             if (!algo) {
-                infoDiv.innerHTML = '<div class="info">👆 Select an algorithm above to get started</div>';
+                infoDiv.innerHTML = '<div class="info">Select an algorithm above to get started</div>';
                 return;
             }
             
@@ -579,11 +579,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 await pollForResults();
                 
             } catch (error) {
-                outputDiv.textContent += `\n❌ Error: ${error.message}\n\n`;
+                outputDiv.textContent += `\nError: ${error.message}\n\n`;
                 outputDiv.textContent += 'Make sure you have:\n';
                 outputDiv.textContent += '1. Created the GitHub Action workflow file\n';
                 outputDiv.textContent += '2. Given your token "repo" and "workflow" permissions\n';
-                statusBadge.innerHTML = '<span class="status-badge status-error">❌ Error</span>';
+                statusBadge.innerHTML = '<span class="status-badge status-error">Error</span>';
             }
             
             runBtn.disabled = false;
@@ -612,8 +612,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         outputDiv.textContent += content.output;
                         statusBadge.innerHTML = '<span class="status-badge status-ready">✓ Complete</span>';
                     } else {
-                        outputDiv.textContent += '❌ Error:\n' + content.error;
-                        statusBadge.innerHTML = '<span class="status-badge status-error">❌ Failed</span>';
+                        outputDiv.textContent += 'Error:\n' + content.error;
+                        statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
                     }
                     
                 } catch (error) {
@@ -621,9 +621,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         outputDiv.textContent += `Checking... (${attempts}/${maxAttempts})\n`;
                         setTimeout(poll, 3000);
                     } else {
-                        outputDiv.textContent += '\n❌ Timeout: Results not found after 90 seconds\n';
+                        outputDiv.textContent += '\n Timeout: Results not found after 90 seconds\n';
                         outputDiv.textContent += 'Check the Actions tab in your GitHub repo for details\n';
-                        statusBadge.innerHTML = '<span class="status-badge status-error">⏱️ Timeout</span>';
+                        statusBadge.innerHTML = '<span class="status-badge status-error">Timeout</span>';
                     }
                 }
             };
