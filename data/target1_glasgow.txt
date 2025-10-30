@@ -1,0 +1,6 @@
+y, z
+z, w
+z, p
+p, w
+w, x
+x, y
