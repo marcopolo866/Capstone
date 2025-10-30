@@ -1,0 +1,7 @@
+{
+  "algorithm": "glasgow",
+  "timestamp": "2025-10-30 21:49:11 UTC",
+  "status": "error",
+  "output": "",
+  "error": "hostname = runnervmwhb2z\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver data/pattern1_glassgow.txt data/target1_glasgow.txt\nstarted_at = 2025-10-30 21:49:11\nError: Error reading graph file 'data/pattern1_glassgow.txt': unable to auto-detect file format (no recognisable header found)\nMaybe try specifying one of --format, --pattern-format, or --target-format?"
+}
