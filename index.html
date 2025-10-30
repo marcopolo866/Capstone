@@ -452,6 +452,13 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             config.repo = repo;
             config.token = token;
             
+            try {
+                const repoInfo = await apiRequest('');
+                config.ref = repoInfo.default_branch || 'main';
+            } catch (e) {
+
+            }
+
             showStatus('Connected successfully!', 'success');
             await loadDataFiles();
         }
@@ -461,7 +468,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             container.innerHTML = '<p class="loading">Loading data files...</p>';
             
             try {
-                const contents = await apiRequest('/contents/data');
+                const ref = config.ref ? `?ref=${encodeURIComponent(config.ref)}` : '';
+                const contents = await apiRequest(`/contents/data${ref}`);
                 
                 let html = '<ul class="file-list">';
                 
@@ -483,7 +491,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 container.innerHTML = html;
                 
             } catch (error) {
-                container.innerHTML = `<div class="error">Error loading files: ${escapeHtml(error.message)}</div>`;
+                    let hint = 'Verify the repo has a top-level "data" folder on the selected branch.';
+                    container.innerHTML = `<div class="error">Error loading files: ${escapeHtml(error.message)}<br>${hint}</div>`;
             }
         }
         
@@ -638,11 +647,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         
         async function apiRequest(endpoint, method = 'GET', body = null) {
             const headers = {
-                'Accept': 'application/vnd.github.v3+json'
+                'Accept': 'application/vnd.github.v3+json',
+                    'X-GitHub-Api-Version': '2022-11-28'
             };
             
             if (config.token) {
-                headers['Authorization'] = `token ${config.token}`;
+                headers['Authorization'] = `Bearer ${config.token}`;
             }
             
             const options = {
@@ -654,8 +664,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 options.body = JSON.stringify(body);
             }
             
-            const response = await fetch(`https://api.github.com/repos/${config.owner}/${config.repo}${endpoint}`, options);
-            
+            const url = `https://api.github.com/repos/${config.owner}/${config.repo}${endpoint}`;
+            const response = await fetch(url, options);
+                        
             if (!response.ok) {
                 throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
             }
