@@ -335,19 +335,19 @@
             <div class="panel">
                 <h2>Select Algorithm</h2>
                 <div id="algorithms-list">
-                    <div class="algorithm-card" onclick="selectAlgorithm('dijkstra')">
+                    <div class="algorithm-card" onclick="selectAlgorithm(event, 'dijkstra')">
                         <h3>Dijkstra's Algorithm</h3>
                         <p>Shortest path algorithm for weighted graphs</p>
                         <div class="command">./baselines/dijkstra [input-file]</div>
                     </div>
                     
-                    <div class="algorithm-card" onclick="selectAlgorithm('glasgow')">
+                    <div class="algorithm-card" onclick="selectAlgorithm(event, 'glasgow')">
                         <h3>Glasgow Subgraph Solver</h3>
                         <p>Subgraph isomorphism solver</p>
                         <div class="command">./build/glasgow_subgraph_solver [pattern] [target]</div>
                     </div>
                     
-                    <div class="algorithm-card" onclick="selectAlgorithm('vf3')">
+                    <div class="algorithm-card" onclick="selectAlgorithm(event, 'vf3')">
                         <h3>VF3 Algorithm</h3>
                         <p>Graph matching algorithm</p>
                         <div class="command">./bin/vf3 [subgraph] [graph]</div>
@@ -416,14 +416,16 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             }
         };
         
-        function selectAlgorithm(algoId) {
+        function selectAlgorithm(evt, algoId) {
             config.selectedAlgorithm = algoId;
             config.selectedFiles = [];
             
             document.querySelectorAll('.algorithm-card').forEach(card => {
                 card.classList.remove('selected');
             });
-            event.currentTarget.classList.add('selected');
+            if (evt && evt.currentTarget) {
+                evt.currentTarget.classList.add('selected');
+            }
             
             updateRunButton();
             updateRunInfo();
@@ -479,7 +481,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     if (item.type === 'file') {
                         const icon = '📄';
                         html += `
-                            <li class="file-item" onclick="toggleFileSelection('${item.path}', '${item.name}')">
+                            <li class="file-item" onclick="toggleFileSelection(event, '${item.path}', '${item.name}')">
                                 <span class="file-icon">${icon}</span>
                                 <span>${item.name}</span>
                             </li>
@@ -496,7 +498,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             }
         }
         
-        function toggleFileSelection(path, name) {
+        function toggleFileSelection(evt, path, name) {
             const algo = algorithmConfigs[config.selectedAlgorithm];
             if (!algo) {
                 showStatus('Please select an algorithm first', 'error');
@@ -507,14 +509,18 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             
             if (index > -1) {
                 config.selectedFiles.splice(index, 1);
-                event.currentTarget.classList.remove('selected');
+                if (evt && evt.currentTarget) {
+                    evt.currentTarget.classList.remove('selected');
+                }
             } else {
                 if (config.selectedFiles.length >= algo.requiredFiles) {
                     showStatus(`This algorithm requires exactly ${algo.requiredFiles} file(s)`, 'error');
                     return;
                 }
                 config.selectedFiles.push({ path, name });
-                event.currentTarget.classList.add('selected');
+                if (evt && evt.currentTarget) {
+                    evt.currentTarget.classList.add('selected');
+                }
             }
             
             updateRunButton();
