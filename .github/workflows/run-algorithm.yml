@@ -20,6 +20,10 @@ jobs:
   run-algorithm:
     runs-on: ubuntu-latest
     
+    permissions:
+      contents: write
+      actions: write
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -29,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake
+          sudo apt-get install -y build-essential cmake jq
       
       - name: Build algorithms
         run: |
@@ -47,13 +51,6 @@ jobs:
             make
             cd ../../..
           fi
-          
-          # Build VF3 (if needed)
-          if [ -d "baselines/vf3" ]; then
-            cd baselines/vf3
-            make
-            cd ../..
-          fi
       
       - name: Run algorithm
         id: run
@@ -69,6 +66,7 @@ jobs:
           IFS=',' read -ra FILES <<< "$INPUT_FILES"
           
           # Run the appropriate algorithm
+          set +e
           case $ALGORITHM in
             dijkstra)
               ./baselines/dijkstra "${FILES[0]}" > outputs/result.txt 2>&1
@@ -86,6 +84,7 @@ jobs:
           esac
           
           EXIT_CODE=$?
+          set -e
           echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
       
       - name: Create result JSON
@@ -96,24 +95,28 @@ jobs:
           
           if [ "$EXIT_CODE" = "0" ]; then
             STATUS="success"
-            OUTPUT=$(cat outputs/result.txt)
+            OUTPUT=$(cat outputs/result.txt 2>/dev/null || echo "No output")
             ERROR=""
           else
             STATUS="error"
             OUTPUT=""
-            ERROR=$(cat outputs/result.txt)
+            ERROR=$(cat outputs/result.txt 2>/dev/null || echo "Unknown error")
           fi
           
-          # Create JSON (escape special characters)
-          cat > outputs/result.json << EOF
-{
-  "algorithm": "$ALGORITHM",
-  "timestamp": "$TIMESTAMP",
-  "status": "$STATUS",
-  "output": $(echo "$OUTPUT" | jq -Rs .),
-  "error": $(echo "$ERROR" | jq -Rs .)
-}
-EOF
+          # Create JSON with proper escaping
+          jq -n \
+            --arg algo "$ALGORITHM" \
+            --arg ts "$TIMESTAMP" \
+            --arg status "$STATUS" \
+            --arg output "$OUTPUT" \
+            --arg error "$ERROR" \
+            '{
+              algorithm: $algo,
+              timestamp: $ts,
+              status: $status,
+              output: $output,
+              error: $error
+            }' > outputs/result.json
       
       - name: Commit results
         run: |
