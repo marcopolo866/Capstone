@@ -392,6 +392,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             owner: '',
             repo: '',
             token: '',
+            ref: 'main',
             selectedAlgorithm: null,
             selectedFiles: []
         };
@@ -456,9 +457,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             
             try {
                 const repoInfo = await apiRequest('');
-                config.ref = repoInfo.default_branch || 'main';
+                if (repoInfo && repoInfo.default_branch) {
+                    config.ref = repoInfo.default_branch;
+                }
             } catch (e) {
-
+                // default branch fallback already set to 'main'
             }
 
             showStatus('Connected successfully!', 'success');
@@ -471,7 +474,20 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             
             try {
                 const ref = config.ref ? `?ref=${encodeURIComponent(config.ref)}` : '';
-                const contents = await apiRequest(`/contents/data${ref}`);
+                let contents;
+                try {
+                    contents = await apiRequest(`/contents/data${ref}`);
+                } catch (error) {
+                    if (config.token && error.message.includes('404')) {
+                        try {
+                            contents = await apiRequest(`/contents/data${ref}`, 'GET', null, { useAuth: false });
+                        } catch (fallbackError) {
+                            throw fallbackError;
+                        }
+                    } else {
+                        throw error;
+                    }
+                }
                 
                 let html = '<ul class="file-list">';
                 
@@ -651,13 +667,14 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             document.getElementById('status-badge').innerHTML = '';
         }
         
-        async function apiRequest(endpoint, method = 'GET', body = null) {
+        async function apiRequest(endpoint, method = 'GET', body = null, options = {}) {
+            const { useAuth = true } = options;
             const headers = {
                 'Accept': 'application/vnd.github.v3+json',
                     'X-GitHub-Api-Version': '2022-11-28'
             };
             
-            if (config.token) {
+            if (useAuth && config.token) {
                 const lower = config.token.toLowerCase();
                 const useBearer = lower.startsWith('github_pat_') || lower.startsWith('ghs_') || lower.startsWith('ghu_');
                 headers['Authorization'] = useBearer
@@ -665,17 +682,17 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     : `token ${config.token}`;
             }
             
-            const options = {
+            const requestOptions = {
                 method: method,
                 headers: headers
             };
             
             if (body) {
-                options.body = JSON.stringify(body);
+                requestOptions.body = JSON.stringify(body);
             }
             
             const url = `https://api.github.com/repos/${config.owner}/${config.repo}${endpoint}`;
-            const response = await fetch(url, options);
+            const response = await fetch(url, requestOptions);
                         
             if (!response.ok) {
                 throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
