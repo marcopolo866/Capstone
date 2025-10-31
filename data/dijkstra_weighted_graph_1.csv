@@ -1,0 +1,5 @@
+# start=A target=C
+source,target,weight
+A,B,3
+B,C,4
+A,C,10

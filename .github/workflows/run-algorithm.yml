@@ -38,10 +38,10 @@ jobs:
       - name: Build algorithms
         run: |
           # Build Dijkstra
-          if [ -f "baselines/dijkstra_main.cpp" ]; then
+          if [ -f "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" ]; then
             g++ -std=c++17 \
               -I "baselines/Dijkastra Shortest Path" \
-              baselines/dijkstra_main.cpp \
+              "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" \
               "baselines/Dijkastra Shortest Path/dijkstra.cpp" \
               -o baselines/dijkstra
           fi
@@ -77,7 +77,7 @@ jobs:
                 echo "Dijkstra binary missing - rebuilding..."
                 g++ -std=c++17 \
                   -I "baselines/Dijkastra Shortest Path" \
-                  baselines/dijkstra_main.cpp \
+                  "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" \
                   "baselines/Dijkastra Shortest Path/dijkstra.cpp" \
                   -o baselines/dijkstra
               fi
