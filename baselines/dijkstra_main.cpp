@@ -16,26 +16,78 @@ struct InputData {
     std::vector<int> edges;
 };
 
+std::vector<int> parseLineOfInts(const std::string& line) {
+    std::string normalized;
+    normalized.reserve(line.size());
+    for (char c : line) {
+        if (c == ',' || c == ';') {
+            normalized.push_back(' ');
+        } else {
+            normalized.push_back(c);
+        }
+    }
+
+    std::istringstream ss(normalized);
+    std::vector<int> values;
+    int value;
+    while (ss >> value) {
+        values.push_back(value);
+    }
+    return values;
+}
+
 InputData parseInputFile(const std::string& path) {
     std::ifstream in(path);
     if (!in.is_open()) {
         throw std::runtime_error("Failed to open input file: " + path);
     }
 
+    auto readNextValues = [&](std::size_t expectedCount = 0) -> std::vector<int> {
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty()) {
+                continue;
+            }
+            // Strip simple comments starting with '#'
+            auto hashPos = line.find('#');
+            if (hashPos != std::string::npos) {
+                line = line.substr(0, hashPos);
+            }
+            std::vector<int> values = parseLineOfInts(line);
+            if (!values.empty()) {
+                if (expectedCount && values.size() != expectedCount) {
+                    std::ostringstream err;
+                    err << "Expected " << expectedCount << " value(s), found " << values.size();
+                    throw std::runtime_error(err.str());
+                }
+                return values;
+            }
+        }
+        if (expectedCount) {
+            std::ostringstream err;
+            err << "Input file missing a line with " << expectedCount << " value(s)";
+            throw std::runtime_error(err.str());
+        }
+        return {};
+    };
+
     InputData data;
-    if (!(in >> data.vertexCount)) {
-        throw std::runtime_error("Input file missing vertex count");
-    }
+    auto header = readNextValues(1);
+    data.vertexCount = header[0];
 
-    if (!(in >> data.startVertex >> data.targetVertex)) {
-        throw std::runtime_error("Input file missing start and target vertex IDs");
-    }
+    auto endpoints = readNextValues(2);
+    data.startVertex = endpoints[0];
+    data.targetVertex = endpoints[1];
 
-    int u, v, w;
-    while (in >> u >> v >> w) {
-        data.edges.push_back(u);
-        data.edges.push_back(v);
-        data.edges.push_back(w);
+    while (true) {
+        auto edgeValues = readNextValues();
+        if (edgeValues.empty()) {
+            break;
+        }
+        if (edgeValues.size() != 3) {
+            throw std::runtime_error("Edge lines must contain exactly three integers");
+        }
+        data.edges.insert(data.edges.end(), edgeValues.begin(), edgeValues.end());
     }
 
     if (data.edges.empty()) {

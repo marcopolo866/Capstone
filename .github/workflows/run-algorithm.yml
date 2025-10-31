@@ -73,7 +73,20 @@ jobs:
           set +e
           case $ALGORITHM in
             dijkstra)
-              ./baselines/dijkstra "${FILES[0]}" > outputs/result.txt 2>&1
+              if [ ! -x "./baselines/dijkstra" ]; then
+                echo "Dijkstra binary missing - rebuilding..."
+                g++ -std=c++17 \
+                  -I "baselines/Dijkastra Shortest Path" \
+                  baselines/dijkstra_main.cpp \
+                  "baselines/Dijkastra Shortest Path/dijkstra.cpp" \
+                  -o baselines/dijkstra
+              fi
+              if [ ! -x "./baselines/dijkstra" ]; then
+                echo "Failed to build Dijkstra binary" > outputs/result.txt
+                false
+              else
+                ./baselines/dijkstra "${FILES[0]}" > outputs/result.txt 2>&1
+              fi
               ;;
             glasgow)
               ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver "${FILES[0]}" "${FILES[1]}" > outputs/result.txt 2>&1
