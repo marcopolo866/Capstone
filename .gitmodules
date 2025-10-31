@@ -1,7 +1,6 @@
-[submodule "baselines/glasgow-subgraph-solver"]
-    path = baselines/glasgow-subgraph-solver
-    url = https://github.com/ciaranm/glasgow-subgraph-solver.git
-
 [submodule "baselines/vf3lib"]
     path = baselines/vf3lib
     url = https://github.com/MiviaLab/vf3lib.git
+[submodule "baselines/glasgow-subgraph-solver"]
+	path = baselines/glasgow-subgraph-solver
+	url = https://github.com/ciaranm/glasgow-subgraph-solver.git
