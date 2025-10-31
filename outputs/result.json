@@ -1,8 +1,8 @@
 {
-  "algorithm": "dijkstra",
-  "timestamp": "2025-10-31 20:39:53 UTC",
-  "status": "success",
-  "output": "9; A C E D",
-  "error": "",
-  "request_id": "63765142-7995-4da3-8cfe-cebdc335da50"
+  "algorithm": "vf3",
+  "timestamp": "2025-10-31 20:50:23 UTC",
+  "status": "error",
+  "output": "",
+  "error": "/home/runner/work/_temp/c51a7369-33b1-485c-971e-cddc95104c12.sh: line 34: ./baselines/vf3/bin/vf3: No such file or directory",
+  "request_id": "93d68aa0-e599-4ca7-ba7a-de0185a9d788"
 }
