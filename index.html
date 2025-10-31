@@ -294,6 +294,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const outputDiv = document.getElementById('output');
             const statusBadge = document.getElementById('status-badge');
             const runBtn = document.getElementById('run-btn');
+            const requestedAlgorithm = config.selectedAlgorithm;
+            const requestedFiles = config.selectedFiles.map(f => f.path);
+            const runStartedAt = Date.now();
             
             runBtn.disabled = true;
             statusBadge.innerHTML = '<span class="status-badge status-running">⏳ Running...</span>';
@@ -304,8 +307,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 const workflowData = {
                     ref: 'main',
                     inputs: {
-                        algorithm: config.selectedAlgorithm,
-                        input_files: config.selectedFiles.map(f => f.path).join(',')
+                        algorithm: requestedAlgorithm,
+                        input_files: requestedFiles.join(',')
                     }
                 };
                 
@@ -316,7 +319,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 outputDiv.textContent += '(This may take 30-60 seconds for GitHub Actions to start)\n\n';
                 
                 // Poll for results
-                await pollForResults();
+                await pollForResults(requestedAlgorithm, runStartedAt);
                 
             } catch (error) {
                 outputDiv.textContent += `\nError: ${error.message}\n\n`;
@@ -329,18 +332,48 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             runBtn.disabled = false;
         }
         
-        async function pollForResults() {
+        function parseUtcTimestamp(ts) {
+            if (!ts || typeof ts !== 'string') {
+                return NaN;
+            }
+            const normalized = ts.replace(' UTC', 'Z').replace(' ', 'T');
+            return Date.parse(normalized);
+        }
+        
+        async function pollForResults(expectedAlgorithm, runStartedAt) {
             const outputDiv = document.getElementById('output');
             const statusBadge = document.getElementById('status-badge');
             const maxAttempts = 30;
             let attempts = 0;
+            let staleNotified = false;
             
             const poll = async () => {
                 attempts++;
                 
                 try {
-                    const result = await apiRequest('/contents/outputs/result.json');
+                    const result = await apiRequest(`/contents/outputs/result.json?cacheBust=${Date.now()}`);
                     const content = JSON.parse(atob(result.content));
+                    const resultTimestamp = parseUtcTimestamp(content.timestamp);
+                    const staleAlgorithm = content.algorithm !== expectedAlgorithm;
+                    const staleTime = !Number.isNaN(resultTimestamp) && resultTimestamp <= runStartedAt;
+                    
+                    if (staleAlgorithm || staleTime) {
+                        if (!staleNotified) {
+                            outputDiv.textContent += `Result for "${content.algorithm}" detected (timestamp ${content.timestamp}). Waiting for the latest ${expectedAlgorithm} run...\n`;
+                            staleNotified = true;
+                        } else {
+                            outputDiv.textContent += `Still waiting... (${attempts}/${maxAttempts})\n`;
+                        }
+                        
+                        if (attempts < maxAttempts) {
+                            setTimeout(poll, 3000);
+                            return;
+                        }
+                        
+                        outputDiv.textContent += `\nTimeout waiting for new ${expectedAlgorithm} results.\nLatest available run: ${content.algorithm} at ${content.timestamp}\n`;
+                        statusBadge.innerHTML = '<span class="status-badge status-error">Timeout</span>';
+                        return;
+                    }
                     
                     outputDiv.textContent = '═══════════════════════════════════════\n';
                     outputDiv.textContent += `Algorithm: ${content.algorithm}\n`;
