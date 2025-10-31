@@ -92,8 +92,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             token: '',
             ref: 'main',
             selectedAlgorithm: null,
-            selectedFiles: [],
-            pollToken: 0
+            selectedFiles: []
         };
         
         const algorithmConfigs = {
@@ -251,7 +250,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const btn = document.getElementById('run-btn');
             const algo = algorithmConfigs[config.selectedAlgorithm];
             
-            if (algo && config.selectedFiles.length === algo.requiredFiles && config.token) {
+            if (algo && config.selectedFiles.length === algo.requiredFiles) {
                 btn.disabled = false;
             } else {
                 btn.disabled = true;
@@ -291,164 +290,50 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             infoDiv.innerHTML = html;
         }
         
-        async function runAlgorithm() {
+        function runAlgorithm() {
             const outputDiv = document.getElementById('output');
             const statusBadge = document.getElementById('status-badge');
             const runBtn = document.getElementById('run-btn');
-            const requestedAlgorithm = config.selectedAlgorithm;
-            const requestedFiles = config.selectedFiles.map(f => f.path);
-            config.pollToken = (config.pollToken || 0) + 1;
-            const currentPollToken = config.pollToken;
-            const runStartedAt = Date.now();
-            
             runBtn.disabled = true;
-            statusBadge.innerHTML = '<span class="status-badge status-running">⏳ Running...</span>';
-            outputDiv.textContent = 'Triggering GitHub Action workflow...\n\n';
-            
-            try {
-                // Trigger GitHub Action workflow
-                const workflowData = {
-                    ref: 'main',
-                    inputs: {
-                        algorithm: requestedAlgorithm,
-                        input_files: requestedFiles.join(',')
-                    }
-                };
-                
-                await apiRequest('/actions/workflows/run-algorithm.yml/dispatches', 'POST', workflowData);
-                
-                outputDiv.textContent += '✓ Workflow triggered successfully!\n\n';
-                outputDiv.textContent += 'Waiting for results...\n';
-                outputDiv.textContent += '(This may take 30-60 seconds for GitHub Actions to start)\n\n';
-                
-                // Poll for results
-                await pollForResults(requestedAlgorithm, runStartedAt, currentPollToken);
-                
-            } catch (error) {
-                outputDiv.textContent += `\nError: ${error.message}\n\n`;
-                outputDiv.textContent += 'Make sure you have:\n';
-                outputDiv.textContent += '1. Created the GitHub Action workflow file\n';
-                outputDiv.textContent += '2. Given your token "repo" and "workflow" permissions\n';
-                statusBadge.innerHTML = '<span class="status-badge status-error">Error</span>';
+
+            const fail = (message) => {
+                outputDiv.textContent = `Failure: ${message}`;
+                statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
+                runBtn.disabled = false;
+            };
+
+            if (!config.selectedAlgorithm) {
+                fail('No algorithm selected.');
+                return;
             }
-            
+
+            const algo = algorithmConfigs[config.selectedAlgorithm];
+            if (!algo) {
+                fail('Unknown algorithm selected.');
+                return;
+            }
+
+            if (config.selectedFiles.length !== algo.requiredFiles) {
+                fail(`Selected ${config.selectedFiles.length} file(s); expected ${algo.requiredFiles}.`);
+                return;
+            }
+
+            const inputLines = config.selectedFiles.map((file, index) => {
+                const label = algo.fileLabels ? algo.fileLabels[index] : `File ${index + 1}`;
+                return `${label}: ${file.path}`;
+            });
+
+            const summary = [
+                `Algorithm: ${algo.name}`,
+                'Inputs:',
+                ...inputLines
+            ].join('\n');
+
+            outputDiv.textContent = summary;
+            statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
             runBtn.disabled = false;
         }
         
-        function parseUtcTimestamp(ts) {
-            if (!ts || typeof ts !== 'string') {
-                return NaN;
-            }
-            const normalized = ts.replace(' UTC', 'Z').replace(' ', 'T');
-            return Date.parse(normalized);
-        }
-        
-        async function pollForResults(expectedAlgorithm, runStartedAt, pollToken) {
-            const outputDiv = document.getElementById('output');
-            const statusBadge = document.getElementById('status-badge');
-            const maxAttempts = 30;
-            const logEvery = 5;
-            let attempts = 0;
-            let mismatchNotified = false;
-            let lastLoggedAttempt = 0;
-
-            const scheduleNext = () => {
-                if (pollToken !== config.pollToken) {
-                    return;
-                }
-                setTimeout(() => {
-                    if (pollToken === config.pollToken) {
-                        poll();
-                    }
-                }, 3000);
-            };
-
-            const poll = async () => {
-                if (pollToken !== config.pollToken) {
-                    return;
-                }
-
-                attempts++;
-
-                try {
-                    const result = await apiRequest(`/contents/outputs/result.json?cacheBust=${Date.now()}`);
-                    if (pollToken !== config.pollToken) {
-                        return;
-                    }
-
-                    const content = JSON.parse(atob(result.content));
-                    const resultTimestamp = parseUtcTimestamp(content.timestamp);
-                    const isMatchingAlgorithm = content.algorithm === expectedAlgorithm;
-                    const freshnessToleranceMs = 5000;
-                    const isFresh = Number.isNaN(resultTimestamp) || resultTimestamp >= (runStartedAt - freshnessToleranceMs);
-
-                    if (!isMatchingAlgorithm || !isFresh) {
-                        if (!mismatchNotified) {
-                            const waitingFor = isMatchingAlgorithm
-                                ? `Waiting for updated ${expectedAlgorithm} results (last update at ${content.timestamp}).`
-                                : `Latest result is for "${content.algorithm}" (timestamp ${content.timestamp}). Waiting for ${expectedAlgorithm}...`;
-                            outputDiv.textContent += `${waitingFor}
-`;
-                            mismatchNotified = true;
-                            lastLoggedAttempt = attempts;
-                        } else if (attempts - lastLoggedAttempt >= logEvery) {
-                            outputDiv.textContent += `Still waiting... (${attempts}/${maxAttempts})
-`;
-                            lastLoggedAttempt = attempts;
-                        }
-
-                        if (attempts < maxAttempts) {
-                            scheduleNext();
-                        } else {
-                            outputDiv.textContent += `
-Timeout waiting for new ${expectedAlgorithm} results.
-Latest available run: ${content.algorithm} at ${content.timestamp}
-`;
-                            statusBadge.innerHTML = '<span class="status-badge status-error">Timeout</span>';
-                        }
-                        return;
-                    }
-
-                    outputDiv.textContent = '═══════════════════════════════════════';
-                    outputDiv.textContent += `Algorithm: ${content.algorithm}`;
-                    outputDiv.textContent += `Timestamp: ${content.timestamp}`;
-                    outputDiv.textContent += `Status: ${content.status}`;
-                    outputDiv.textContent += '═══════════════════════════════════════';
-
-                    if (content.status === 'success') {
-                        outputDiv.textContent += content.output;
-                        statusBadge.innerHTML = '<span class="status-badge status-ready">✓ Complete</span>';
-                    } else {
-                        outputDiv.textContent += 'Error:\n' + content.error;
-                        statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
-                    }
-                } catch (error) {
-                    if (pollToken !== config.pollToken) {
-                        return;
-                    }
-
-                    if (attempts < maxAttempts) {
-                        if (attempts - lastLoggedAttempt >= logEvery) {
-                            outputDiv.textContent += `Checking... (${attempts}/${maxAttempts})
-`;
-                            lastLoggedAttempt = attempts;
-                        }
-                        scheduleNext();
-                    } else {
-                        outputDiv.textContent += 'Timeout: Results not found after 90 seconds';
-                        outputDiv.textContent += 'Check the Actions tab in your GitHub repo for details';
-                        statusBadge.innerHTML = '<span class="status-badge status-error">Timeout</span>';
-                    }
-                }
-            };
-
-            setTimeout(() => {
-                if (pollToken === config.pollToken) {
-                    poll();
-                }
-            }, 5000);
-        }
-
         function clearOutput() {
             document.getElementById('output').textContent = 'Output cleared.';
             document.getElementById('status-badge').innerHTML = '';
