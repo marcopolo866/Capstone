@@ -250,7 +250,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const btn = document.getElementById('run-btn');
             const algo = algorithmConfigs[config.selectedAlgorithm];
             
-            if (algo && config.selectedFiles.length === algo.requiredFiles) {
+            if (algo && config.selectedFiles.length === algo.requiredFiles && config.token) {
                 btn.disabled = false;
             } else {
                 btn.disabled = true;
@@ -290,7 +290,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             infoDiv.innerHTML = html;
         }
         
-        function runAlgorithm() {
+async function runAlgorithm() {
             const outputDiv = document.getElementById('output');
             const statusBadge = document.getElementById('status-badge');
             const runBtn = document.getElementById('run-btn');
@@ -318,22 +318,100 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 return;
             }
 
+            if (!config.token) {
+                fail('Personal Access Token is required to run workflows.');
+                return;
+            }
+
             const inputLines = config.selectedFiles.map((file, index) => {
                 const label = algo.fileLabels ? algo.fileLabels[index] : `File ${index + 1}`;
                 return `${label}: ${file.path}`;
             });
 
-            const summary = [
+            const summaryLines = [
                 `Algorithm: ${algo.name}`,
                 'Inputs:',
-                ...inputLines
-            ].join('\n');
+                ...inputLines,
+                '',
+                'Result:',
+                'Triggering workflow...'
+            ];
+            outputDiv.textContent = summaryLines.join('\n');
+            statusBadge.innerHTML = '<span class="status-badge status-running">Running...</span>';
 
-            outputDiv.textContent = summary;
-            statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
-            runBtn.disabled = false;
+            const requestId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+
+            const workflowData = {
+                ref: config.ref || 'main',
+                inputs: {
+                    algorithm: config.selectedAlgorithm,
+                    input_files: config.selectedFiles.map(f => f.path).join(','),
+                    request_id: requestId
+                }
+            };
+
+            try {
+                await apiRequest('/actions/workflows/run-algorithm.yml/dispatches', 'POST', workflowData);
+                const result = await waitForResult(requestId);
+                if (result.status !== 'success') {
+                    throw new Error(result.error || 'Workflow reported failure');
+                }
+
+                const finalLines = [
+                    `Algorithm: ${algo.name}`,
+                    'Inputs:',
+                    ...inputLines,
+                    '',
+                    'Result:',
+                    result.output || '(No output)'
+                ];
+                outputDiv.textContent = finalLines.join('\n');
+                statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
+            } catch (error) {
+                outputDiv.textContent = `Failure: ${error.message || error}`;
+                statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
+            } finally {
+                runBtn.disabled = false;
+            }
         }
-        
+
+        function delay(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function waitForResult(requestId) {
+            const maxAttempts = 40;
+            const waitMs = 5000;
+            let lastError = null;
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    const refParam = config.ref ? `?ref=${encodeURIComponent(config.ref)}` : '';
+                    const file = await apiRequest(`/contents/outputs/result.json${refParam}`);
+                    if (file && file.content) {
+                        const decoded = atob(file.content.replace(/\\s/g, ''));
+                        const json = JSON.parse(decoded);
+                        if (!requestId || !json.request_id || json.request_id === requestId) {
+                            return json;
+                        }
+                    }
+                } catch (error) {
+                    lastError = error;
+                    if (error && error.message && error.message.includes('404')) {
+                        // Not ready yet; continue polling.
+                    } else {
+                        // Remember the error but keep retrying until timeout.
+                    }
+                }
+                await delay(waitMs);
+            }
+
+            if (lastError) {
+                throw lastError;
+            }
+            throw new Error('Timed out waiting for workflow result.');
+        }
+
         function clearOutput() {
             document.getElementById('output').textContent = 'Output cleared.';
             document.getElementById('status-badge').innerHTML = '';

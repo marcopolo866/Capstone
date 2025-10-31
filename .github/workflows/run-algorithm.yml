@@ -15,6 +15,10 @@ on:
         description: 'Comma-separated input file paths'
         required: true
         type: string
+      request_id:
+        description: 'Client request identifier'
+        required: false
+        type: string
 
 jobs:
   run-algorithm:
@@ -109,6 +113,7 @@ jobs:
           ALGORITHM="${{ github.event.inputs.algorithm }}"
           EXIT_CODE="${{ steps.run.outputs.EXIT_CODE }}"
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          REQUEST_ID="${{ github.event.inputs.request_id }}"
           
           if [ "$EXIT_CODE" = "0" ]; then
             STATUS="success"
@@ -127,12 +132,14 @@ jobs:
             --arg status "$STATUS" \
             --arg output "$OUTPUT" \
             --arg error "$ERROR" \
+            --arg requestId "$REQUEST_ID" \
             '{
               algorithm: $algo,
               timestamp: $ts,
               status: $status,
               output: $output,
-              error: $error
+              error: $error,
+              request_id: $requestId
             }' > outputs/result.json
       
       - name: Commit results
