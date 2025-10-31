@@ -379,7 +379,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     const content = JSON.parse(atob(result.content));
                     const resultTimestamp = parseUtcTimestamp(content.timestamp);
                     const isMatchingAlgorithm = content.algorithm === expectedAlgorithm;
-                    const isFresh = Number.isNaN(resultTimestamp) || resultTimestamp >= runStartedAt;
+                    const freshnessToleranceMs = 5000;
+                    const isFresh = Number.isNaN(resultTimestamp) || resultTimestamp >= (runStartedAt - freshnessToleranceMs);
 
                     if (!isMatchingAlgorithm || !isFresh) {
                         if (!mismatchNotified) {
