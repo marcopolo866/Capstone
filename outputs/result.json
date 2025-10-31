@@ -1,7 +1,7 @@
 {
   "algorithm": "dijkstra",
-  "timestamp": "2025-10-31 17:16:41 UTC",
+  "timestamp": "2025-10-31 17:48:29 UTC",
   "status": "success",
-  "output": "7; A B E F G",
+  "output": "7; A B C",
   "error": ""
 }
