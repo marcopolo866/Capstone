@@ -408,17 +408,11 @@ Latest available run: ${content.algorithm} at ${content.timestamp}
                         return;
                     }
 
-                    outputDiv.textContent = '═══════════════════════════════════════
-';
-                    outputDiv.textContent += `Algorithm: ${content.algorithm}
-`;
-                    outputDiv.textContent += `Timestamp: ${content.timestamp}
-`;
-                    outputDiv.textContent += `Status: ${content.status}
-`;
-                    outputDiv.textContent += '═══════════════════════════════════════
-
-';
+                    outputDiv.textContent = '═══════════════════════════════════════';
+                    outputDiv.textContent += `Algorithm: ${content.algorithm}`;
+                    outputDiv.textContent += `Timestamp: ${content.timestamp}`;
+                    outputDiv.textContent += `Status: ${content.status}`;
+                    outputDiv.textContent += '═══════════════════════════════════════';
 
                     if (content.status === 'success') {
                         outputDiv.textContent += content.output;
@@ -440,11 +434,8 @@ Latest available run: ${content.algorithm} at ${content.timestamp}
                         }
                         scheduleNext();
                     } else {
-                        outputDiv.textContent += '
- Timeout: Results not found after 90 seconds
-';
-                        outputDiv.textContent += 'Check the Actions tab in your GitHub repo for details
-';
+                        outputDiv.textContent += 'Timeout: Results not found after 90 seconds';
+                        outputDiv.textContent += 'Check the Actions tab in your GitHub repo for details';
                         statusBadge.innerHTML = '<span class="status-badge status-error">Timeout</span>';
                     }
                 }
