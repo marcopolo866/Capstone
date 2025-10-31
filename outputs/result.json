@@ -1,7 +1,7 @@
 {
   "algorithm": "dijkstra",
-  "timestamp": "2025-10-31 02:43:07 UTC",
+  "timestamp": "2025-10-31 02:58:19 UTC",
   "status": "error",
   "output": "",
-  "error": "Error: Input file missing vertex count"
+  "error": "Error: Input file missing a line with 1 value(s)"
 }
