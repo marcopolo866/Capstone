@@ -658,7 +658,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             };
             
             if (config.token) {
-                headers['Authorization'] = `Bearer ${config.token}`;
+                const lower = config.token.toLowerCase();
+                const useBearer = lower.startsWith('github_pat_') || lower.startsWith('ghs_') || lower.startsWith('ghu_');
+                headers['Authorization'] = useBearer
+                    ? `Bearer ${config.token}`
+                    : `token ${config.token}`;
             }
             
             const options = {
