@@ -1,8 +1,8 @@
 {
   "algorithm": "dijkstra",
-  "timestamp": "2025-10-31 21:23:54 UTC",
+  "timestamp": "2025-10-31 21:26:05 UTC",
   "status": "success",
-  "output": "9; A C E D",
+  "output": "7; A B C",
   "error": "",
-  "request_id": "b459a309-af24-4d53-b5eb-b40617aaf5b4"
+  "request_id": "f6338e2e-a9bf-4fc5-861b-e2de4ce30baf"
 }
