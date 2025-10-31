@@ -99,7 +99,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             dijkstra: {
                 name: "Dijkstra's Algorithm",
                 requiredFiles: 1,
-                fileTypes: ['.txt', '.csv', '.grf']
+                fileTypes: ['.txt', '.csv', '.grf'],
+                instructions: [
+                    'Plain text format: first line is the vertex count, second line is "start,target", remaining lines are "u,v,weight" (commas or spaces).',
+                    'CSV format: rows contain "source,target,weight"; vertex labels can be names. Add an optional comment line like "# start=A target=D" to choose the endpoints (defaults to the first source and last target).',
+                    'When labels are present the reported path will use those labels in the output window.'
+                ]
             },
             glasgow: {
                 name: "Glasgow Subgraph Solver",
@@ -265,6 +270,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 <strong>Algorithm:</strong> ${algo.name}<br>
                 <strong>Required files:</strong> ${algo.requiredFiles}
             `;
+            
+            if (algo.instructions && algo.instructions.length) {
+                html += '<div class="instructions"><strong>File format tips:</strong><ul>';
+                html += algo.instructions.map(item => `<li>${escapeHtml(item)}</li>`).join('');
+                html += '</ul></div>';
+            }
             
             if (config.selectedFiles.length > 0) {
                 html += '<div class="selected-files"><strong>Selected:</strong> ';
