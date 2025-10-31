@@ -50,21 +50,6 @@ std::string trim(const std::string& text) {
     return std::string(first, last);
 }
 
-bool looksNumericLine(const std::string& line) {
-    bool hasDigit = false;
-    for (unsigned char c : line) {
-        if (std::isdigit(c)) {
-            hasDigit = true;
-            continue;
-        }
-        if (std::isspace(c) || c == ',' || c == ';' || c == '+' || c == '-') {
-            continue;
-        }
-        return false;
-    }
-    return hasDigit;
-}
-
 std::vector<std::string> splitCsvLine(const std::string& line) {
     std::string cleaned;
     cleaned.reserve(line.size());
@@ -338,7 +323,8 @@ InputData parseInputFile(const std::string& path) {
         throw std::runtime_error("Input file contains no usable data");
     }
 
-    if (looksNumericLine(dataLines.front())) {
+    std::vector<int> firstValues = parseLineOfInts(dataLines.front());
+    if (firstValues.size() == 1) {
         return parseNumericFormat(dataLines);
     }
     return parseCsvFormat(dataLines, comments);
