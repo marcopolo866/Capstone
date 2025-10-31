@@ -92,7 +92,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             token: '',
             ref: 'main',
             selectedAlgorithm: null,
-            selectedFiles: []
+            selectedFiles: [],
+            lastResultSha: null,
+            pollToken: 0
         };
         
         const algorithmConfigs = {
@@ -296,6 +298,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const runBtn = document.getElementById('run-btn');
             const requestedAlgorithm = config.selectedAlgorithm;
             const requestedFiles = config.selectedFiles.map(f => f.path);
+            const previousResultSha = config.lastResultSha || null;
+            config.pollToken = (config.pollToken || 0) + 1;
+            const currentPollToken = config.pollToken;
             const runStartedAt = Date.now();
             
             runBtn.disabled = true;
@@ -319,7 +324,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 outputDiv.textContent += '(This may take 30-60 seconds for GitHub Actions to start)\n\n';
                 
                 // Poll for results
-                await pollForResults(requestedAlgorithm, runStartedAt);
+                await pollForResults(requestedAlgorithm, runStartedAt, previousResultSha, currentPollToken);
                 
             } catch (error) {
                 outputDiv.textContent += `\nError: ${error.message}\n\n`;
@@ -340,47 +345,84 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             return Date.parse(normalized);
         }
         
-        async function pollForResults(expectedAlgorithm, runStartedAt) {
+        async function pollForResults(expectedAlgorithm, runStartedAt, previousSha, pollToken) {
             const outputDiv = document.getElementById('output');
             const statusBadge = document.getElementById('status-badge');
             const maxAttempts = 30;
+            const logEvery = 5;
             let attempts = 0;
             let staleNotified = false;
-            
+            let lastLoggedAttempt = 0;
+            let knownSha = previousSha || null;
+
+            const scheduleNext = () => {
+                if (pollToken !== config.pollToken) {
+                    return;
+                }
+                setTimeout(() => {
+                    if (pollToken === config.pollToken) {
+                        poll();
+                    }
+                }, 3000);
+            };
+
             const poll = async () => {
+                if (pollToken !== config.pollToken) {
+                    return;
+                }
+
                 attempts++;
-                
+
                 try {
                     const result = await apiRequest(`/contents/outputs/result.json?cacheBust=${Date.now()}`);
+                    if (pollToken !== config.pollToken) {
+                        return;
+                    }
+
                     const content = JSON.parse(atob(result.content));
+                    const resultSha = result.sha || null;
                     const resultTimestamp = parseUtcTimestamp(content.timestamp);
                     const staleAlgorithm = content.algorithm !== expectedAlgorithm;
                     const staleTime = !Number.isNaN(resultTimestamp) && resultTimestamp <= runStartedAt;
-                    
-                    if (staleAlgorithm || staleTime) {
+                    const sameSha = knownSha && resultSha === knownSha;
+
+                    if (sameSha || staleAlgorithm || staleTime) {
+                        knownSha = resultSha;
                         if (!staleNotified) {
-                            outputDiv.textContent += `Result for "${content.algorithm}" detected (timestamp ${content.timestamp}). Waiting for the latest ${expectedAlgorithm} run...\n`;
+                            const waitingMessage = staleAlgorithm
+                                ? `Latest result is for "${content.algorithm}" (timestamp ${content.timestamp}). Waiting for ${expectedAlgorithm}...`
+                                : `Waiting for ${expectedAlgorithm} results (last update at ${content.timestamp}).`;
+                            outputDiv.textContent += `${waitingMessage}
+`;
                             staleNotified = true;
-                        } else {
-                            outputDiv.textContent += `Still waiting... (${attempts}/${maxAttempts})\n`;
+                            lastLoggedAttempt = attempts;
+                        } else if (attempts - lastLoggedAttempt >= logEvery) {
+                            outputDiv.textContent += `Still waiting... (${attempts}/${maxAttempts})
+`;
+                            lastLoggedAttempt = attempts;
                         }
-                        
+
                         if (attempts < maxAttempts) {
-                            setTimeout(poll, 3000);
-                            return;
+                            scheduleNext();
+                        } else {
+                            outputDiv.textContent += `
+Timeout waiting for new ${expectedAlgorithm} results.
+Latest available run: ${content.algorithm} at ${content.timestamp}
+`;
+                            statusBadge.innerHTML = '<span class="status-badge status-error">Timeout</span>';
                         }
-                        
-                        outputDiv.textContent += `\nTimeout waiting for new ${expectedAlgorithm} results.\nLatest available run: ${content.algorithm} at ${content.timestamp}\n`;
-                        statusBadge.innerHTML = '<span class="status-badge status-error">Timeout</span>';
                         return;
                     }
-                    
-                    outputDiv.textContent = '═══════════════════════════════════════\n';
-                    outputDiv.textContent += `Algorithm: ${content.algorithm}\n`;
-                    outputDiv.textContent += `Timestamp: ${content.timestamp}\n`;
-                    outputDiv.textContent += `Status: ${content.status}\n`;
-                    outputDiv.textContent += '═══════════════════════════════════════\n\n';
-                    
+
+                    knownSha = resultSha;
+                    config.lastResultSha = resultSha;
+
+                    outputDiv.textContent = '═══════════════════════════════════════';
+                    outputDiv.textContent += `Algorithm: ${content.algorithm}`;
+                    outputDiv.textContent += `Timestamp: ${content.timestamp}`;
+                    outputDiv.textContent += `Status: ${content.status}`;
+                    outputDiv.textContent += '═══════════════════════════════════════';
+
                     if (content.status === 'success') {
                         outputDiv.textContent += content.output;
                         statusBadge.innerHTML = '<span class="status-badge status-ready">✓ Complete</span>';
@@ -388,22 +430,31 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         outputDiv.textContent += 'Error:\n' + content.error;
                         statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
                     }
-                    
                 } catch (error) {
+                    if (pollToken !== config.pollToken) {
+                        return;
+                    }
+
                     if (attempts < maxAttempts) {
-                        outputDiv.textContent += `Checking... (${attempts}/${maxAttempts})\n`;
-                        setTimeout(poll, 3000);
+                        if (!staleNotified && attempts - lastLoggedAttempt >= logEvery) {
+                            outputDiv.textContent += `Checking... (${attempts}/${maxAttempts})`;
+                            lastLoggedAttempt = attempts;
+                        }
+                        scheduleNext();
                     } else {
-                        outputDiv.textContent += '\n Timeout: Results not found after 90 seconds\n';
-                        outputDiv.textContent += 'Check the Actions tab in your GitHub repo for details\n';
+                        outputDiv.textContent += 'Timeout: Results not found after 90 seconds';
+                        outputDiv.textContent += 'Check the Actions tab in your GitHub repo for details';
                         statusBadge.innerHTML = '<span class="status-badge status-error">Timeout</span>';
                     }
                 }
             };
-            
-            setTimeout(poll, 5000);
+
+            setTimeout(() => {
+                if (pollToken === config.pollToken) {
+                    poll();
+                }
+            }, 5000);
         }
-        
         function clearOutput() {
             document.getElementById('output').textContent = 'Output cleared.';
             document.getElementById('status-badge').innerHTML = '';
