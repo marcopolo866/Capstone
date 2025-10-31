@@ -1,8 +1,8 @@
 {
   "algorithm": "glasgow",
-  "timestamp": "2025-10-31 19:56:59 UTC",
+  "timestamp": "2025-10-31 20:08:51 UTC",
   "status": "success",
-  "output": "hostname = runnervmf2e7y\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver data/glasgowpattern1.lad data/glasgowtarget1.lad\nstarted_at = 2025-10-31 19:56:59\npattern_file = data/glasgowpattern1.lad\ntarget_file = data/glasgowtarget1.lad\npattern_properties =\npattern_vertices = 4\npattern_directed_edges = 6\ntarget_properties =\ntarget_vertices = 6\ntarget_directed_edges = 12\nstatus = true\nnodes = 4\npropagations = 4\nmapping = (0 -> 0) (1 -> 2) (2 -> 1) (3 -> 3) \nruntime = 0\nwhere = 0/4 -1/-1 0/2 -1/-1 0/2 -1/-1 -1/-1\nrestarts = 1\nshape_graphs = 5\nsearch_time = 0\nnogoods_size = 0\nnogoods_lengths =\nsupplemental_graph_names = original exact_path_1 exact_path_2 exact_path_3 exact_path_4",
+  "output": "hostname = runnervmf2e7y\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver data/glasgowpattern1.lad data/glasgowtarget1.lad\nstarted_at = 2025-10-31 20:08:51\npattern_file = data/glasgowpattern1.lad\ntarget_file = data/glasgowtarget1.lad\npattern_properties =\npattern_vertices = 4\npattern_directed_edges = 6\ntarget_properties =\ntarget_vertices = 6\ntarget_directed_edges = 12\nstatus = true\nnodes = 4\npropagations = 4\nmapping = (0 -> 0) (1 -> 2) (2 -> 1) (3 -> 3) \nruntime = 0\nwhere = 0/4 -1/-1 0/2 -1/-1 0/2 -1/-1 -1/-1\nrestarts = 1\nshape_graphs = 5\nsearch_time = 0\nnogoods_size = 0\nnogoods_lengths =\nsupplemental_graph_names = original exact_path_1 exact_path_2 exact_path_3 exact_path_4",
   "error": "",
-  "request_id": "3117a757-f835-4a43-9114-e1e47b14381e"
+  "request_id": "d9274181-00aa-4d2d-b316-de5b63e49662"
 }
