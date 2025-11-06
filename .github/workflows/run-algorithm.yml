@@ -23,16 +23,10 @@ on:
 jobs:
   run-algorithm:
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/${{ github.repository_owner }}/algorithm-runner:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     
     permissions:
       contents: write
       actions: write
-      packages: read
     
     steps:
       - name: Checkout repository
@@ -48,34 +42,47 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-glasgow-
       
+      - name: Cache Dijkstra build
+        uses: actions/cache@v3
+        with:
+          path: baselines/dijkstra
+          key: ${{ runner.os }}-dijkstra-${{ hashFiles('baselines/Dijkastra Shortest Path/**') }}
+      
+      - name: Install minimal dependencies
+        run: |
+          # Only install jq, everything else is already available
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq
+      
       - name: Build algorithms
         run: |
           echo "Building algorithms..."
           
-          # Build Dijkstra
-          if [ -f "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" ]; then
+          # Build Dijkstra (only if not cached)
+          if [ -f "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" ] && [ ! -x "baselines/dijkstra" ]; then
             echo "Building Dijkstra..."
-            g++ -std=c++17 \
+            g++ -std=c++17 -O3 \
               -I "baselines/Dijkastra Shortest Path" \
               "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" \
               "baselines/Dijkastra Shortest Path/dijkstra.cpp" \
               -o "baselines/dijkstra"
             echo "✓ Dijkstra built successfully"
+          elif [ -x "baselines/dijkstra" ]; then
+            echo "✓ Dijkstra already built (cached)"
           fi
           
-          # Build Glasgow Subgraph Solver
+          # Build Glasgow Subgraph Solver (only if not cached)
           if [ -d "baselines/glasgow-subgraph-solver" ]; then
             if [ ! -f "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver" ]; then
               echo "Building Glasgow Subgraph Solver..."
               cd baselines/glasgow-subgraph-solver
               mkdir -p build
               cd build
-              cmake .. -DCMAKE_BUILD_TYPE=Release
+              cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3"
               make -j$(nproc)
               cd ../../..
               echo "✓ Glasgow built successfully"
             else
-              echo "✓ Glasgow already built (using cached version)"
+              echo "✓ Glasgow already built (cached)"
             fi
           fi
           
@@ -100,7 +107,7 @@ jobs:
             dijkstra)
               if [ ! -x "./baselines/dijkstra" ]; then
                 echo "Dijkstra binary missing - rebuilding..."
-                g++ -std=c++17 \
+                g++ -std=c++17 -O3 \
                   -I "baselines/Dijkastra Shortest Path" \
                   "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" \
                   "baselines/Dijkastra Shortest Path/dijkstra.cpp" \
