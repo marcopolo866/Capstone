@@ -1,8 +1,8 @@
 {
-  "algorithm": "glasgow",
-  "timestamp": "2025-11-06 23:00:10 UTC",
+  "algorithm": "vf3",
+  "timestamp": "2025-11-06 23:01:32 UTC",
   "status": "error",
   "output": "",
-  "error": "hostname = runnervmf2e7y\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver data/vf3pattern1.txt data/vf3target1.txt --format lad\nstarted_at = 2025-11-06 23:00:10\nError: Error reading graph file 'data/vf3pattern1.txt': error reading size\nMaybe try specifying one of --format, --pattern-format, or --target-format?",
-  "request_id": "3fb8bb1c-55e0-4849-8bd4-456f2412f6af"
+  "error": "/home/runner/work/_temp/2d890a4d-e7a2-44c2-aa26-a6aeaf9f0ba7.sh: line 34: ./baselines/vf3/bin/vf3: No such file or directory",
+  "request_id": "705c1504-e39d-4c1d-a503-e8528fac8bab"
 }
