@@ -1,18 +1,27 @@
-# Use a base image with modern C++ tools
+# Use Ubuntu as base
 FROM ubuntu:22.04
 
-# Install essentials
-RUN apt-get update && apt-get install -y \
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install all dependencies in one layer
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     git \
-    wget \
-    libgmp-dev \
-    g++-11 \
-    clang-14
+    jq \
+    ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
-# Set default compiler
-ENV CXX=g++-11
+# Set working directory
+WORKDIR /workspace
 
-# Set up a working directory
-WORKDIR /app
+# Pre-create common directories
+RUN mkdir -p baselines data outputs
+
+# Set git to trust any directory (for GitHub Actions)
+RUN git config --global --add safe.directory '*'
+
+# Default command
+CMD ["/bin/bash"]

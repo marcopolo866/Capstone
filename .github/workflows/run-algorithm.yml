@@ -23,10 +23,16 @@ on:
 jobs:
   run-algorithm:
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/algorithm-runner:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     
     permissions:
       contents: write
       actions: write
+      packages: read
     
     steps:
       - name: Checkout repository
@@ -41,12 +47,6 @@ jobs:
           key: ${{ runner.os }}-glasgow-${{ hashFiles('baselines/glasgow-subgraph-solver/**') }}
           restore-keys: |
             ${{ runner.os }}-glasgow-
-      
-      - name: Install dependencies
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends build-essential cmake jq
       
       - name: Build algorithms
         run: |
