@@ -1,8 +1,8 @@
 {
   "algorithm": "glasgow",
-  "timestamp": "2025-11-06 22:59:33 UTC",
-  "status": "success",
-  "output": "hostname = runnervmf2e7y\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver data/glasgowtarget1.lad data/glasgowpattern1.lad --format lad\nstarted_at = 2025-11-06 22:59:33\npattern_file = data/glasgowtarget1.lad\ntarget_file = data/glasgowpattern1.lad\npattern_properties =\npattern_vertices = 6\npattern_directed_edges = 12\ntarget_properties =\ntarget_vertices = 4\ntarget_directed_edges = 6\nstatus = false\nnodes = 0\npropagations = 0\nruntime = 0",
-  "error": "",
-  "request_id": "ffbc20d8-f2c9-4867-a622-234ce95c8bf7"
+  "timestamp": "2025-11-06 23:00:10 UTC",
+  "status": "error",
+  "output": "",
+  "error": "hostname = runnervmf2e7y\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver data/vf3pattern1.txt data/vf3target1.txt --format lad\nstarted_at = 2025-11-06 23:00:10\nError: Error reading graph file 'data/vf3pattern1.txt': error reading size\nMaybe try specifying one of --format, --pattern-format, or --target-format?",
+  "request_id": "3fb8bb1c-55e0-4849-8bd4-456f2412f6af"
 }
