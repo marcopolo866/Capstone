@@ -42,6 +42,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-vf3-
 
+      - name: Cache VF3 (src) build
+        uses: actions/cache@v3
+        with:
+          path: src/vf3  # <-- The path to the compiled executable
+          key: ${{ runner.os }}-vf3-src-${{ hashFiles('src/VF3.cpp') }} # <-- The source file
+          restore-keys: |
+            ${{ runner.os }}-vf3-src-
+
       - name: Cache Glasgow build
         uses: actions/cache@v3
         with:
@@ -108,6 +116,18 @@ jobs:
               echo "✓ VF3 built successfully"
             else
               echo "✓ VF3 already built (cached)"
+            fi
+          fi
+
+          if [ -f "src/VF3.cpp" ]; then
+            if [ ! -x "src/vf3" ]; then
+              echo "Building second VF3 (from src)..."
+              g++ -std=c++17 -O3 \
+                "src/VF3.cpp" \
+                -o "src/vf3"
+              echo "✓ Second VF3 built successfully"
+            else
+              echo "✓ Second VF3 already built (cached)"
             fi
           fi
           
