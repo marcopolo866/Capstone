@@ -1,8 +1,8 @@
 {
   "algorithm": "vf3",
-  "timestamp": "2025-11-07 20:39:48 UTC",
-  "status": "success",
-  "output": "6 1.32408e-06 2.99776e-06",
-  "error": "",
-  "request_id": "07dd7f92-7fd9-482d-93da-3fcde8b1bda0"
+  "timestamp": "2025-11-07 20:53:06 UTC",
+  "status": "error",
+  "output": "",
+  "error": "6 1.33086e-06 3.02666e-06\n/home/runner/work/_temp/8f2c50a2-ddea-4124-83f9-b9f933fe7abb.sh: line 36: ./src/vf3: cannot execute binary file: Exec format error",
+  "request_id": "59946433-af50-407c-b367-dec112ca270f"
 }
