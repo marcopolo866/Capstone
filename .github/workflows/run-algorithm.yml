@@ -38,7 +38,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: baselines/vf3lib/bin
-          key: ${{ runner.os }}-vf3-${{ hashFiles('baselines/vf3-subgraph-solver/**') }}
+          key: ${{ runner.os }}-vf3-${{ hashFiles('baselines/vf3lib/**') }}
           restore-keys: |
             ${{ runner.os }}-vf3-
 
