@@ -1,8 +1,8 @@
 {
-  "algorithm": "dijkstra",
-  "timestamp": "2025-11-07 00:00:43 UTC",
-  "status": "success",
-  "output": "7; A B C",
-  "error": "",
-  "request_id": "bfe4aae2-5851-489a-90bd-bc085b1c4f24"
+  "algorithm": "vf3",
+  "timestamp": "2025-11-07 05:44:26 UTC",
+  "status": "error",
+  "output": "",
+  "error": "ERROR: Error in file format reading node",
+  "request_id": "fd68aac0-960a-4fb0-8899-c4790f12c139"
 }
