@@ -98,12 +98,13 @@ jobs:
           if [ -d "baselines/vf3lib" ]; then
             if [ ! -f "baselines/vf3lib/bin/vf3" ]; then
               echo "Building VF3 Subgraph Solver..."
+              # Go into the directory that contains the Makefile
               cd baselines/vf3lib
-              mkdir -p build
-              cd build
-              cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3"
-              make -j$(nproc)
-              cd ../../..
+              # Run make for the 'vf3' target
+              # The Makefile will create the 'bin/vf3' executable
+              make vf3
+              # Go back to the root directory
+              cd ../..
               echo "✓ VF3 built successfully"
             else
               echo "✓ VF3 already built (cached)"
