@@ -130,6 +130,18 @@ jobs:
               echo "✓ Second VF3 already built (cached)"
             fi
           fi
+
+          if [ -f "src/chatVF3.cpp" ]; then
+            if [ ! -x "src/chatvf3" ]; then
+              echo "Building Third VF3 (from src)..."
+              g++ -std=c++17 -O3 \
+                "src/chatVF3.cpp" \
+                -o "src/chatvf3"
+              echo "✓ Third VF3 built successfully"
+            else
+              echo "✓ Third VF3 already built (cached)"
+            fi
+          fi
           
           echo "Build complete!"
       
@@ -169,9 +181,14 @@ jobs:
               ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver "${FILES[0]}" "${FILES[1]}" --format lad > outputs/result.txt 2>&1
               ;;
             vf3)
+              echo "Running first VF3 command (baselines)..."
               ./baselines/vf3lib/bin/vf3 "${FILES[0]}" "${FILES[1]}" > outputs/result.txt 2>&1
 
+              echo -e "\n--- Gemini VF3 Output ---" >> outputs/result.txt
               ./src/vf3 "${FILES[0]}" "${FILES[1]}" >> outputs/result.txt 2>&1
+
+              echo -e "\n--- ChatGPT VF3 Output ---" >> outputs/result.txt
+              ./src/chatvf3 "${FILES[0]}" "${FILES[1]}" >> outputs/result.txt 2>&1
               ;;
             *)
               echo "Unknown algorithm: $ALGORITHM"

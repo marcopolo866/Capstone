@@ -1,235 +1,179 @@
+/**
+ * Prompt: Alright I have 2 graphs. The first graph is a subgraph of the second graph. 
+ * This subgraph is a triangle. The second graph is a bowtie (2 triangles). 
+ * I want you to build me an algorithm in C++ that outputs: 
+ * [number of solutions found] [time to find the first solution] [time to find all the solutions]
+*/
+
 #include <iostream>
 #include <vector>
-#include <algorithm>
-#include <queue>
-#include <utility>
-#include <chrono>   // Added for timing
-#include <iomanip>  // Added for formatting output
+#include <chrono>
 
-using namespace std;
+// Use namespaces for clarity and brevity
+using std::vector;
+using std::cout;
+using std::endl;
+using std::chrono::high_resolution_clock;
+using std::chrono::duration_cast;
+using std::chrono::nanoseconds; // Changed from microseconds
 
-struct Graph {
-    int n;
-    vector<vector<int> > out_edges;
-    vector<vector<int> > in_edges;
-    Graph(int n): n(n), out_edges(n), in_edges(n) {}
+// --- Global Variables ---
 
-    void add_edge(int u, int v) {
-        out_edges[u].push_back(v);
-        in_edges[v].push_back(u);
-    }
+// Graph representations (adjacency matrices)
+vector<vector<bool>> pattern_graph;
+vector<vector<bool>> target_graph;
 
-    // This function checks for weak connectivity in the subgraph.
-    bool is_connected_subgraph(const vector<int>& nodes) const {
-        if (nodes.empty()) return true;
-        vector<bool> in_set(n, false);
-        for (size_t i = 0; i < nodes.size(); ++i)
-            in_set[nodes[i]] = true;
+// State for backtracking
+// mapping[p] = t means pattern node 'p' is mapped to target node 't'
+vector<int> mapping; 
+// used_target_nodes[t] = true means target node 't' is in the current partial mapping
+vector<bool> used_target_nodes;
 
-        vector<bool> visited(n, false);
-        queue<int> q;
-        q.push(nodes[0]);
-        visited[nodes[0]] = true;
-        int visited_count = 0;
+// Statistics
+int solution_count = 0;
+high_resolution_clock::time_point start_time;
+high_resolution_clock::time_point first_solution_time;
+bool first_solution_found = false;
 
-        while (!q.empty()) {
-            int u = q.front(); q.pop();
-            ++visited_count;
+int num_pattern_nodes;
+int num_target_nodes;
 
-            // Check neighbors in both directions (weak connectivity)
-            for (size_t i = 0; i < out_edges[u].size(); ++i) {
-                int v = out_edges[u][i];
-                if (in_set[v] && !visited[v]) {
-                    visited[v] = true;
-                    q.push(v);
-                }
-            }
-            for (size_t i = 0; i < in_edges[u].size(); ++i) {
-                int v = in_edges[u][i];
-                if (in_set[v] && !visited[v]) {
-                    visited[v] = true;
-                    q.push(v);
-                }
-            }
+/**
+ * @brief Helper function to add an undirected edge to an adjacency matrix.
+ * @param graph The graph to modify.
+ * @param u The source node.
+ * @param v The destination node.
+ */
+void add_edge(vector<vector<bool>>& graph, int u, int v) {
+    graph[u][v] = true;
+    // graph[v][u] = true; // Remove this line to make edges directed
+}
+
+/**
+ * @brief The recursive backtracking function to find subgraph isomorphisms.
+ * @param p_node The current pattern node we are trying to map (from 0 to num_pattern_nodes-1).
+ */
+void solve(int p_node) {
+    // Base Case: We have successfully mapped all pattern nodes.
+    if (p_node == num_pattern_nodes) {
+        // If this is the very first solution, record the time.
+        if (!first_solution_found) {
+            first_solution_time = high_resolution_clock::now();
+            first_solution_found = true;
         }
-
-        return visited_count == (int)nodes.size();
-    }
-};
-
-class VF3 {
-public:
-    VF3(const Graph& pattern, const Graph& target)
-        : P(pattern), T(target), mapping(P.n, -1), used_target(T.n, false), 
-          count(0), first_solution_found(false) {}
-
-    void match_all() {
-        count = 0;
-        first_solution_found = false;
-
-        // Start total time clock
-        start_time = std::chrono::steady_clock::now();
-
-        backtrack(0);
-
-        // End total time clock
-        end_time = std::chrono::steady_clock::now();
-
-        // Calculate durations
-        double time_to_all_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
-        double time_to_first_ms = -1.0;
-
-        if (first_solution_found) {
-            time_to_first_ms = std::chrono::duration<double, std::milli>(first_solution_time - start_time).count();
-        }
-
-        // Output in the requested format
-        cout << fixed << setprecision(4); // Format timing output
-        cout << count << " " << time_to_first_ms << " " << time_to_all_ms << "\n";
+        solution_count++;
+        return; // Backtrack from here
     }
 
-private:
-    const Graph& P;
-    const Graph& T;
-    vector<int> mapping;
-    vector<bool> used_target;
-    long long count;
-
-    // Timing variables
-    std::chrono::steady_clock::time_point start_time;
-    std::chrono::steady_clock::time_point first_solution_time;
-    std::chrono::steady_clock::time_point end_time;
-    bool first_solution_found;
-
-    bool feasible(int p, int t) {
-        // Basic degree check
-        if (P.out_edges[p].size() > T.out_edges[t].size()) return false;
-        if (P.in_edges[p].size()  > T.in_edges[t].size())  return false;
-        // NOTE: A true VF algorithm would have more complex lookaheads here
-        return true;
-    }
-
-    bool consistent(int p, int t) {
-        // This function must check for isomorphism consistency.
-        // It must check that for all *already mapped* nodes 'pn',
-        // the relationship (p, pn) in P is identical to (t, tn) in T.
+    // Recursive Step: Try to map pattern node 'p_node' to each target node 't_node'.
+    for (int t_node = 0; t_node < num_target_nodes; ++t_node) {
         
-        for (int pn = 0; pn < P.n; ++pn) {
-            int tn = mapping[pn];
-            if (tn == -1) continue; // Skip unmapped nodes
-
-            // --- Check 1: P-edges must exist in T ---
-            // p -> pn
-            if (find(P.out_edges[p].begin(), P.out_edges[p].end(), pn) != P.out_edges[p].end()) {
-                if (find(T.out_edges[t].begin(), T.out_edges[t].end(), tn) == T.out_edges[t].end())
-                    return false; // Edge p->pn exists, but t->tn does not.
-            }
-            // pn -> p
-            if (find(P.in_edges[p].begin(), P.in_edges[p].end(), pn) != P.in_edges[p].end()) {
-                if (find(T.in_edges[t].begin(), T.in_edges[t].end(), tn) == T.in_edges[t].end())
-                    return false; // Edge pn->p exists, but tn->t does not.
-            }
-
-            // --- Check 2: T-edges must exist in P (Correctness fix) ---
-            // This is required for isomorphism, otherwise it's only monomorphism.
-            // t -> tn
-            if (find(T.out_edges[t].begin(), T.out_edges[t].end(), tn) != T.out_edges[t].end()) {
-                if (find(P.out_edges[p].begin(), P.out_edges[p].end(), pn) == P.out_edges[p].end())
-                    return false; // Edge t->tn exists, but p->pn does not.
-            }
-            // tn -> t
-            if (find(T.in_edges[t].begin(), T.in_edges[t].end(), tn) != T.in_edges[t].end()) {
-                if (find(P.in_edges[p].begin(), P.in_edges[p].end(), pn) == P.in_edges[p].end())
-                    return false; // Edge tn->t exists, but pn->p does not.
-            }
+        // --- Pruning Condition 1 ---
+        // Check if the target node 't_node' is already used in the current mapping.
+        if (used_target_nodes[t_node]) {
+            continue; // Try the next target node
         }
-        return true;
-    }
 
-    void backtrack(int depth) {
-        if (depth == P.n) {
-            // Found a complete mapping.
-            // We must still verify the connectivity, as per the original logic.
-            vector<int> mapped_nodes;
-            for (int i = 0; i < P.n; ++i)
-                mapped_nodes.push_back(mapping[i]);
+        // --- Pruning Condition 2 ---
+        // Check if this new mapping (p_node -> t_node) is consistent with the
+        // existing partial mapping (all prev_p_node -> prev_t_node).
+        bool is_feasible = true;
+        for (int prev_p_node = 0; prev_p_node < p_node; ++prev_p_node) {
+            int prev_t_node = mapping[prev_p_node];
 
-            // Note: This check is redundant if P is connected and `consistent` is correct.
-            // But we keep it to preserve the original algorithm's structure.
-            if (T.is_connected_subgraph(mapped_nodes)) {
-                // This is a valid solution
-                
-                // If this is the first solution, record the time.
-                if (!first_solution_found) {
-                    first_solution_time = std::chrono::steady_clock::now();
-                    first_solution_found = true;
+            // --- Pruning Condition 2 (Modified for Directed Graphs) ---
+            // We must check for edges in both directions.
+
+            // Check 1: Edge from current pattern node (p_node) to previous (prev_p_node)
+            if (pattern_graph[p_node][prev_p_node]) {
+                // ...then the corresponding edge (t_node -> prev_t_node) *must*
+                // exist in the target graph.
+                if (!target_graph[t_node][prev_t_node]) {
+                    is_feasible = false;
+                    break; // This mapping is invalid
                 }
-                ++count;
-                
-                // We no longer print every mapping
-                // cout << "Found mapping: ";
-                // for (int i = 0; i < P.n; ++i)
-                //     cout << i << "->" << mapping[i] << " ";
-                // cout << "\n";
             }
-            return;
+
+            // Check 2: Edge from previous pattern node (prev_p_node) to current (p_node)
+            if (pattern_graph[prev_p_node][p_node]) {
+                // ...then the corresponding edge (prev_t_node -> t_node) *must*
+                // exist in the target graph.
+                if (!target_graph[prev_t_node][t_node]) {
+                    is_feasible = false;
+                    break; // This mapping is invalid
+                }
+            }
         }
 
-        // Find the next unmapped pattern node 'p'
-        int p = -1;
-        for (int i = 0; i < P.n; ++i)
-            if (mapping[i] == -1) { p = i; break; }
-        
-        // This is a simple node selection. 
-        // NOTE: VF-algorithms use specific ordering heuristics here for efficiency.
+        // If both pruning conditions pass, this mapping is feasible so far.
+        if (is_feasible) {
+            // --- Recurse ---
+            // 1. Add (p_node -> t_node) to our partial solution.
+            mapping[p_node] = t_node;
+            used_target_nodes[t_node] = true;
 
-        // Try mapping 'p' to every unused target node 't'
-        for (int t = 0; t < T.n; ++t) {
-            if (used_target[t]) continue;
-            
-            // Pruning: check feasibility and consistency
-            if (!feasible(p, t)) continue;
-            if (!consistent(p, t)) continue;
+            // 2. Move to the next pattern node.
+            solve(p_node + 1);
 
-            // Recurse
-            mapping[p] = t;
-            used_target[t] = true;
-
-            backtrack(depth + 1);
-
-            // Backtrack
-            mapping[p] = -1;
-            used_target[t] = false;
+            // --- Backtrack ---
+            // 3. Remove (p_node -> t_node) from our partial solution
+            //    to explore other possibilities.
+            used_target_nodes[t_node] = false;
+            mapping[p_node] = -1; // Reset mapping (optional, but good practice)
         }
     }
-};
+}
+
 
 int main() {
-    // Pattern: directed triangle (0→1→2→0)
-    Graph P(3);
-    P.add_edge(0,1);
-    P.add_edge(1,2);
-    P.add_edge(2,0);
+    // --- 1. Define Pattern Graph (Directed Triangle Cycle) ---
+    num_pattern_nodes = 3;
+    pattern_graph.resize(num_pattern_nodes, vector<bool>(num_pattern_nodes, false));
+    // Create a cycle: 0 -> 1 -> 2 -> 0
+    add_edge(pattern_graph, 0, 1);
+    add_edge(pattern_graph, 1, 2);
+    add_edge(pattern_graph, 2, 0); // Changed from (0, 2) to (2, 0) for a cycle
 
-    // Target: bowtie of two directed triangles sharing node 2
-    Graph T(5);
-    vector<pair<int,int> > edges;
-    // Left triangle 0→1→2→0
-    edges.push_back(make_pair(0,1));
-    edges.push_back(make_pair(1,2));
-    edges.push_back(make_pair(2,0));
-    // Right triangle 2→3→4→2
-    edges.push_back(make_pair(2,3));
-    edges.push_back(make_pair(3,4));
-    edges.push_back(make_pair(4,2));
-
-    for (size_t i = 0; i < edges.size(); ++i)
-        T.add_edge(edges[i].first, edges[i].second);
-
-    VF3 matcher(P, T);
+    // --- 2. Define Target Graph (Directed Bowtie) ---
+    num_target_nodes = 5;
+    target_graph.resize(num_target_nodes, vector<bool>(num_target_nodes, false));
     
-    // This will now print in the format: [count] [time_first_ms] [time_all_ms]
-    matcher.match_all();
+    // First triangle cycle: (A, B, C) or (0 -> 1 -> 2 -> 0)
+    add_edge(target_graph, 0, 1);
+    add_edge(target_graph, 1, 2);
+    add_edge(target_graph, 2, 0); // Changed from (0, 2) to (2, 0) for a cycle
+
+    // Second triangle cycle: (C, D, E) or (2 -> 3 -> 4 -> 2)
+    add_edge(target_graph, 2, 3);
+    add_edge(target_graph, 3, 4);
+    add_edge(target_graph, 4, 2); // Changed from (2, 4) to (4, 2) for a cycle
+
+    // --- 3. Initialize State ---
+    mapping.resize(num_pattern_nodes, -1);
+    used_target_nodes.resize(num_target_nodes, false);
+
+    // --- 4. Run and Time Algorithm ---
+    start_time = high_resolution_clock::now();
+    
+    solve(0); // Start the recursive search from the first pattern node (node 0)
+
+    high_resolution_clock::time_point end_time = high_resolution_clock::now();
+
+    // --- 5. Calculate and Print Results ---
+    
+    // Calculate time to first solution (in nanoseconds)
+    long long time_to_first_ns = 0;
+    if (first_solution_found) {
+        time_to_first_ns = duration_cast<nanoseconds>(first_solution_time - start_time).count();
+    }
+    
+    // Calculate time to find all solutions (in nanoseconds)
+    long long time_to_all_ns = duration_cast<nanoseconds>(end_time - start_time).count();
+
+    // Output in the format: [num solutions] [time to first (ns)] [time to all (ns)]
+    cout << solution_count << " " 
+         << time_to_first_ns << " " 
+         << time_to_all_ns << endl;
 
     return 0;
 }
