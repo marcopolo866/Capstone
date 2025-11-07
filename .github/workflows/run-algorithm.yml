@@ -150,6 +150,8 @@ jobs:
               ;;
             vf3)
               ./baselines/vf3lib/bin/vf3 "${FILES[0]}" "${FILES[1]}" > outputs/result.txt 2>&1
+
+              ./src/vf3 "${FILES[0]}" "${FILES[1]}" >> outputs/result.txt 2>&1
               ;;
             *)
               echo "Unknown algorithm: $ALGORITHM"
