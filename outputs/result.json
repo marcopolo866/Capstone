@@ -1,8 +1,8 @@
 {
-  "algorithm": "vf3",
-  "timestamp": "2025-11-07 22:33:24 UTC",
+  "algorithm": "dijkstra",
+  "timestamp": "2025-11-10 03:33:21 UTC",
   "status": "success",
-  "output": "6 1.30091e-06 2.968e-06\n\n--- Gemini VF3 Output ---\n6 0.0020 0.0051\n\n--- ChatGPT VF3 Output ---\n6 0.000 0.005",
+  "output": "7; A B C",
   "error": "",
-  "request_id": "45149513-f724-42e7-913d-8bfb444462cd"
+  "request_id": "01c4c9f3-4ad6-4f3b-b961-22af34efdd10"
 }
