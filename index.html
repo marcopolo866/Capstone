@@ -86,14 +86,22 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
     </div>
     
     <script>
+        const DEFAULT_GITHUB_OWNER = 'marcopolo866';
+        const DEFAULT_GITHUB_REPO = 'Capstone';
+        const DEFAULT_GITHUB_TOKEN = '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';
+
         let config = {
-            owner: '',
-            repo: '',
-            token: '',
+            owner: DEFAULT_GITHUB_OWNER,
+            repo: DEFAULT_GITHUB_REPO,
+            token: DEFAULT_GITHUB_TOKEN,
             ref: 'main',
             selectedAlgorithm: null,
             selectedFiles: []
         };
+        
+        document.getElementById('owner').value = DEFAULT_GITHUB_OWNER;
+        document.getElementById('repo').value = DEFAULT_GITHUB_REPO;
+        document.getElementById('token').value = DEFAULT_GITHUB_TOKEN;
         
         const algorithmConfigs = {
             dijkstra: {
