@@ -1,8 +1,8 @@
 {
   "algorithm": "vf3",
-  "timestamp": "2025-11-14 21:02:26 UTC",
+  "timestamp": "2025-11-14 21:20:02 UTC",
   "status": "success",
-  "output": "ERROR: Error in file format reading edge\n\n--- Gemini VF3 Output ---\n6 0.0019 0.0050\n\n--- ChatGPT VF3 Output ---\n6 0.000 0.005",
+  "output": "4 3.0519e-06 6.16581e-06\n\n--- Gemini VF3 Output ---\n6 0.0015 0.0046\n\n--- ChatGPT VF3 Output ---\n6 0.000 0.005",
   "error": "",
-  "request_id": "d8780c49-a89a-47db-8ad3-4c3171dd1ff6"
+  "request_id": "ec25b029-31fe-49c1-9774-62df391bcd9c"
 }
