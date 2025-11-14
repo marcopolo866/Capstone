@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Algorithm Runner Interface</title>
     <link rel="stylesheet" href="style.css">
+    <script src="credentials.js"></script>
 </head>
 <body>
     <div class="container">
@@ -74,9 +75,10 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
     </div>
     
     <script>
-        const DEFAULT_GITHUB_OWNER = 'marcopolo866';
-        const DEFAULT_GITHUB_REPO = 'Capstone';
-        const DEFAULT_GITHUB_TOKEN = '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';
+        const injectedCredentials = window.ALGORITHM_RUNNER_CREDENTIALS || {};
+        const DEFAULT_GITHUB_OWNER = injectedCredentials.owner || '';
+        const DEFAULT_GITHUB_REPO = injectedCredentials.repo || '';
+        const DEFAULT_GITHUB_TOKEN = injectedCredentials.token || '';
 
         let config = {
             owner: DEFAULT_GITHUB_OWNER,
@@ -155,12 +157,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 if (repoInfo && repoInfo.default_branch) {
                     config.ref = repoInfo.default_branch;
                 }
-            } catch (e) {
-                // default branch fallback already set to 'main'
+                showStatus('Connected successfully!', 'success');
+                await loadDataFiles();
+            } catch (error) {
+                showStatus(`Failed to connect: ${error.message}`, 'error');
             }
-
-            showStatus('Connected successfully!', 'success');
-            await loadDataFiles();
         }
         
         async function loadDataFiles() {

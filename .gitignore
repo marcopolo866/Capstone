@@ -17,3 +17,6 @@ build/
 
 # Log files
 *.log
+
+# Local credential configuration
+credentials.js
