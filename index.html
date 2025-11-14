@@ -14,18 +14,6 @@
         </div>
         
         <div class="config-section">
-            <div class="input-group">
-                <label>GitHub Username/Org</label>
-                <input type="text" id="owner" placeholder="marcopolo866">
-            </div>
-            <div class="input-group">
-                <label>Repository Name</label>
-                <input type="text" id="repo" placeholder="Capstone">
-            </div>
-            <div class="input-group">
-                <label>Personal Access Token (Required for running algorithms)</label>
-                <input type="password" id="token" placeholder="ghp_xxxxxxxxxxxx">
-            </div>
             <button class="btn" onclick="connect()">Connect to Repository</button>
         </div>
         
@@ -99,10 +87,6 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             selectedFiles: []
         };
         
-        document.getElementById('owner').value = DEFAULT_GITHUB_OWNER;
-        document.getElementById('repo').value = DEFAULT_GITHUB_REPO;
-        document.getElementById('token').value = DEFAULT_GITHUB_TOKEN;
-        
         const algorithmConfigs = {
             dijkstra: {
                 name: "Dijkstra's Algorithm",
@@ -148,17 +132,17 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         }
         
         async function connect() {
-            const owner = document.getElementById('owner').value.trim();
-            const repo = document.getElementById('repo').value.trim();
-            const token = document.getElementById('token').value.trim();
+            const owner = (DEFAULT_GITHUB_OWNER || '').trim();
+            const repo = (DEFAULT_GITHUB_REPO || '').trim();
+            const token = (DEFAULT_GITHUB_TOKEN || '').trim();
             
             if (!owner || !repo) {
-                showStatus('Please enter both username/org and repository name', 'error');
+                showStatus('Repository credentials are not configured.', 'error');
                 return;
             }
             
             if (!token) {
-                showStatus('Personal Access Token is required to run algorithms', 'error');
+                showStatus('Personal Access Token is not configured.', 'error');
                 return;
             }
             
