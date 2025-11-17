@@ -149,6 +149,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 return;
             }
             
+            if (!token) {
+                showStatus('Personal Access Token is required to run algorithms', 'error');
+                return;
+            }
+            
             config.owner = owner;
             config.repo = repo;
             config.token = token;
@@ -162,11 +167,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 // default branch fallback already set to 'main'
             }
 
-            if (token) {
-                showStatus('Connected successfully!', 'success');
-            } else {
-                showStatus('Connected without a Personal Access Token. Enter one before running algorithms.', 'info');
-            }
+            showStatus('Connected successfully!', 'success');
             await loadDataFiles();
         }
         
@@ -180,8 +181,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 try {
                     contents = await apiRequest(`/contents/data${ref}`);
                 } catch (error) {
-                    const retryWithoutAuth = config.token && (error.message.includes('404') || error.message.includes('401'));
-                    if (retryWithoutAuth) {
+                    if (config.token && error.message.includes('404')) {
                         try {
                             contents = await apiRequest(`/contents/data${ref}`, 'GET', null, { useAuth: false });
                         } catch (fallbackError) {
@@ -212,15 +212,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 container.innerHTML = html;
                 
             } catch (error) {
-                let hint;
-                if (error.message.includes('401')) {
-                    hint = config.token
-                        ? 'The provided token was rejected. Double-check it and ensure it has repo access.'
-                        : 'This repository requires authentication. Enter a Personal Access Token with repo access.';
-                } else {
-                    hint = 'Verify the repo has a top-level "data" folder on the selected branch.';
-                }
-                container.innerHTML = `<div class="error">Error loading files: ${escapeHtml(error.message)}<br>${hint}</div>`;
+                    let hint = 'Verify the repo has a top-level "data" folder on the selected branch.';
+                    container.innerHTML = `<div class="error">Error loading files: ${escapeHtml(error.message)}<br>${hint}</div>`;
             }
         }
         
@@ -302,11 +295,6 @@ async function runAlgorithm() {
             const statusBadge = document.getElementById('status-badge');
             const runBtn = document.getElementById('run-btn');
             runBtn.disabled = true;
-
-            const tokenField = document.getElementById('token');
-            if (tokenField) {
-                config.token = tokenField.value.trim();
-            }
 
             const fail = (message) => {
                 outputDiv.textContent = `Failure: ${message}`;
@@ -479,15 +467,6 @@ async function runAlgorithm() {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
-        }
-
-        const tokenInput = document.getElementById('token');
-        if (tokenInput) {
-            config.token = tokenInput.value.trim();
-            tokenInput.addEventListener('input', () => {
-                config.token = tokenInput.value.trim();
-                updateRunButton();
-            });
         }
     </script>
 </body>
