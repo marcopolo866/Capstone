@@ -132,9 +132,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         }
         
         async function connect() {
-            const owner = (DEFAULT_GITHUB_OWNER || 'marcopolo866').trim();
-            const repo = (DEFAULT_GITHUB_REPO || 'Capstone').trim();
-            const token = (DEFAULT_GITHUB_TOKEN || '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').trim();
+            const owner = (DEFAULT_GITHUB_OWNER || '').trim();
+            const repo = (DEFAULT_GITHUB_REPO || '').trim();
+            const token = (DEFAULT_GITHUB_TOKEN || '').trim();
             
             if (!owner || !repo) {
                 showStatus('Repository credentials are not configured.', 'error');
