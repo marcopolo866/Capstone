@@ -14,6 +14,18 @@
         </div>
         
         <div class="config-section">
+            <div class="input-group">
+                <label>GitHub Username/Org</label>
+                <input type="text" id="owner" placeholder="marcopolo866">
+            </div>
+            <div class="input-group">
+                <label>Repository Name</label>
+                <input type="text" id="repo" placeholder="Capstone">
+            </div>
+            <div class="input-group">
+                <label>Personal Access Token (Required for running algorithms)</label>
+                <input type="password" id="token" placeholder="ghp_xxxxxxxxxxxx">
+            </div>
             <button class="btn" onclick="connect()">Connect to Repository</button>
         </div>
         
@@ -74,14 +86,10 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
     </div>
     
     <script>
-        const DEFAULT_GITHUB_OWNER = 'marcopolo866';
-        const DEFAULT_GITHUB_REPO = 'Capstone';
-        const DEFAULT_GITHUB_TOKEN = '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';
-
         let config = {
-            owner: DEFAULT_GITHUB_OWNER,
-            repo: DEFAULT_GITHUB_REPO,
-            token: DEFAULT_GITHUB_TOKEN,
+            owner: '',
+            repo: '',
+            token: '',
             ref: 'main',
             selectedAlgorithm: null,
             selectedFiles: []
@@ -132,17 +140,17 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         }
         
         async function connect() {
-            const owner = (DEFAULT_GITHUB_OWNER || '').trim();
-            const repo = (DEFAULT_GITHUB_REPO || '').trim();
-            const token = (DEFAULT_GITHUB_TOKEN || '').trim();
+            const owner = document.getElementById('owner').value.trim();
+            const repo = document.getElementById('repo').value.trim();
+            const token = document.getElementById('token').value.trim();
             
             if (!owner || !repo) {
-                showStatus('Repository credentials are not configured.', 'error');
+                showStatus('Please enter both username/org and repository name', 'error');
                 return;
             }
             
             if (!token) {
-                showStatus('Personal Access Token is not configured.', 'error');
+                showStatus('Personal Access Token is required to run algorithms', 'error');
                 return;
             }
             
