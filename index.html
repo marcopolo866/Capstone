@@ -351,11 +351,7 @@ async function runAlgorithm() {
                 outputDiv.textContent = finalLines.join('\n');
                 statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
             } catch (error) {
-                if (error && (error.status === 401 || error.status === 403)) {
-                    outputDiv.textContent = 'Failure: GitHub rejected the credentials for workflow dispatches. Verify that the personal access token in this file is correct and has repo + workflow scopes.';
-                } else {
-                    outputDiv.textContent = `Failure: ${error.message || error}`;
-                }
+                outputDiv.textContent = `Failure: ${error.message || error}`;
                 statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
             } finally {
                 runBtn.disabled = false;
