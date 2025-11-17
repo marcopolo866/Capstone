@@ -14,18 +14,6 @@
         </div>
         
         <div class="config-section">
-            <div class="input-group">
-                <label>GitHub Username/Org</label>
-                <input type="text" id="owner" placeholder="marcopolo866">
-            </div>
-            <div class="input-group">
-                <label>Repository Name</label>
-                <input type="text" id="repo" placeholder="Capstone">
-            </div>
-            <div class="input-group">
-                <label>Personal Access Token (Required for running algorithms)</label>
-                <input type="password" id="token" placeholder="ghp_xxxxxxxxxxxx">
-            </div>
             <button class="btn" onclick="connect()">Connect to Repository</button>
         </div>
         
@@ -86,10 +74,14 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
     </div>
     
     <script>
+        const DEFAULT_GITHUB_OWNER = 'marcopolo866';
+        const DEFAULT_GITHUB_REPO = 'Capstone';
+        const DEFAULT_GITHUB_TOKEN = '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';
+
         let config = {
-            owner: '',
-            repo: '',
-            token: '',
+            owner: DEFAULT_GITHUB_OWNER,
+            repo: DEFAULT_GITHUB_REPO,
+            token: DEFAULT_GITHUB_TOKEN,
             ref: 'main',
             selectedAlgorithm: null,
             selectedFiles: []
@@ -140,17 +132,17 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         }
         
         async function connect() {
-            const owner = document.getElementById('owner').value.trim();
-            const repo = document.getElementById('repo').value.trim();
-            const token = document.getElementById('token').value.trim();
+            const owner = (DEFAULT_GITHUB_OWNER || 'marcopolo866').trim();
+            const repo = (DEFAULT_GITHUB_REPO || 'Capstone').trim();
+            const token = (DEFAULT_GITHUB_TOKEN || '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').trim();
             
             if (!owner || !repo) {
-                showStatus('Please enter both username/org and repository name', 'error');
+                showStatus('Repository credentials are not configured.', 'error');
                 return;
             }
             
             if (!token) {
-                showStatus('Personal Access Token is required to run algorithms', 'error');
+                showStatus('Personal Access Token is not configured.', 'error');
                 return;
             }
             
@@ -159,16 +151,15 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             config.token = token;
             
             try {
-                const repoInfo = await apiRequest('');
+                const repoInfo = await apiRequest('', 'GET', null, { fallbackToUnauthenticated: true });
                 if (repoInfo && repoInfo.default_branch) {
                     config.ref = repoInfo.default_branch;
                 }
-            } catch (e) {
-                // default branch fallback already set to 'main'
+                showStatus('Connected successfully!', 'success');
+                await loadDataFiles();
+            } catch (error) {
+                showStatus(`Failed to connect: ${error.message}`, 'error');
             }
-
-            showStatus('Connected successfully!', 'success');
-            await loadDataFiles();
         }
         
         async function loadDataFiles() {
@@ -177,20 +168,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             
             try {
                 const ref = config.ref ? `?ref=${encodeURIComponent(config.ref)}` : '';
-                let contents;
-                try {
-                    contents = await apiRequest(`/contents/data${ref}`);
-                } catch (error) {
-                    if (config.token && error.message.includes('404')) {
-                        try {
-                            contents = await apiRequest(`/contents/data${ref}`, 'GET', null, { useAuth: false });
-                        } catch (fallbackError) {
-                            throw fallbackError;
-                        }
-                    } else {
-                        throw error;
-                    }
-                }
+                const contents = await apiRequest(`/contents/data${ref}`, 'GET', null, { fallbackToUnauthenticated: true });
                 
                 let html = '<ul class="file-list">';
                 
@@ -198,7 +176,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 
                 files.forEach(item => {
                     if (item.type === 'file') {
-                        const icon = '📄';
+                        const icon = '[file]';
                         html += `
                             <li class="file-item" onclick="toggleFileSelection(event, '${item.path}', '${item.name}')">
                                 <span class="file-icon">${icon}</span>
@@ -212,8 +190,13 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 container.innerHTML = html;
                 
             } catch (error) {
-                    let hint = 'Verify the repo has a top-level "data" folder on the selected branch.';
-                    container.innerHTML = `<div class="error">Error loading files: ${escapeHtml(error.message)}<br>${hint}</div>`;
+                let hint = 'Verify the repo has a top-level "data" folder on the selected branch.';
+                if (error.status === 401 || error.status === 403) {
+                    hint = 'Double-check that your personal access token is valid and has repo/workflow scopes.';
+                } else if (error.status === 404) {
+                    hint = 'Verify the repo has a top-level "data" folder on the selected branch.';
+                }
+                container.innerHTML = `<div class="error">Error loading files: ${escapeHtml(error.message)}<br>${hint}</div>`;
             }
         }
         
@@ -368,7 +351,11 @@ async function runAlgorithm() {
                 outputDiv.textContent = finalLines.join('\n');
                 statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
             } catch (error) {
-                outputDiv.textContent = `Failure: ${error.message || error}`;
+                if (error && (error.status === 401 || error.status === 403)) {
+                    outputDiv.textContent = 'Failure: GitHub rejected the credentials for workflow dispatches. Verify that the personal access token in this file is correct and has repo + workflow scopes.';
+                } else {
+                    outputDiv.textContent = `Failure: ${error.message || error}`;
+                }
                 statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
             } finally {
                 runBtn.disabled = false;
@@ -418,41 +405,76 @@ async function runAlgorithm() {
         }
         
         async function apiRequest(endpoint, method = 'GET', body = null, options = {}) {
-            const { useAuth = true } = options;
-            const headers = {
-                'Accept': 'application/vnd.github.v3+json',
+            const { useAuth = true, fallbackToUnauthenticated = false } = options;
+            
+            const sendRequest = async (authEnabled) => {
+                const headers = {
+                    'Accept': 'application/vnd.github.v3+json',
                     'X-GitHub-Api-Version': '2022-11-28'
+                };
+                
+                if (authEnabled && config.token) {
+                    const lower = config.token.toLowerCase();
+                    const useBearer = lower.startsWith('github_pat_') || lower.startsWith('ghs_') || lower.startsWith('ghu_');
+                    headers['Authorization'] = useBearer
+                        ? `Bearer ${config.token}`
+                        : `token ${config.token}`;
+                }
+                
+                const requestOptions = {
+                    method: method,
+                    headers: headers
+                };
+                
+                if (body) {
+                    requestOptions.body = JSON.stringify(body);
+                }
+                
+                const url = `https://api.github.com/repos/${config.owner}/${config.repo}${endpoint}`;
+                const response = await fetch(url, requestOptions);
+                
+                if (!response.ok) {
+                    let errorDetails = '';
+                    try {
+                        const data = await response.json();
+                        if (data && data.message) {
+                            errorDetails = data.message;
+                        }
+                    } catch (jsonError) {
+                        try {
+                            const text = await response.text();
+                            if (text) {
+                                errorDetails = text;
+                            }
+                        } catch (textError) {
+                            // ignore
+                        }
+                    }
+                    const detail = errorDetails ? ` - ${errorDetails}` : '';
+                    const error = new Error(`GitHub API error: ${response.status} ${response.statusText}${detail}`);
+                    error.status = response.status;
+                    throw error;
+                }
+                
+                if (method === 'POST' && response.status === 204) {
+                    return { success: true };
+                }
+                
+                if (response.status === 204) {
+                    return {};
+                }
+                
+                return await response.json();
             };
             
-            if (useAuth && config.token) {
-                const lower = config.token.toLowerCase();
-                const useBearer = lower.startsWith('github_pat_') || lower.startsWith('ghs_') || lower.startsWith('ghu_');
-                headers['Authorization'] = useBearer
-                    ? `Bearer ${config.token}`
-                    : `token ${config.token}`;
+            try {
+                return await sendRequest(useAuth);
+            } catch (error) {
+                if (fallbackToUnauthenticated && useAuth && method === 'GET' && config.token && (error.status === 401 || error.status === 403)) {
+                    return await sendRequest(false);
+                }
+                throw error;
             }
-            
-            const requestOptions = {
-                method: method,
-                headers: headers
-            };
-            
-            if (body) {
-                requestOptions.body = JSON.stringify(body);
-            }
-            
-            const url = `https://api.github.com/repos/${config.owner}/${config.repo}${endpoint}`;
-            const response = await fetch(url, requestOptions);
-                        
-            if (!response.ok) {
-                throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
-            }
-            
-            if (method === 'POST' && response.status === 204) {
-                return { success: true };
-            }
-            
-            return await response.json();
         }
         
         function showStatus(message, type) {
