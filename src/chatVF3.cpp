@@ -76,7 +76,8 @@ int main() {
                     countSolutions++;
                     if (countSolutions == 1) {
                         auto first = high_resolution_clock::now();
-                        timeToFirst = duration<double, milli>(first - start).count();
+                        // CHANGE 1: Removed 'milli' to default to seconds
+                        timeToFirst = duration<double>(first - start).count();
                     }
                 }
             }
@@ -84,10 +85,13 @@ int main() {
     }
 
     auto end = high_resolution_clock::now();
-    double totalTime = duration<double, milli>(end - start).count();
+    // CHANGE 2: Removed 'milli' to default to seconds
+    double totalTime = duration<double>(end - start).count();
 
+    // The output will now be in seconds. 
+    // You might want to increase setprecision if the code runs too fast to see non-zero values.
     cout << countSolutions << " "
-         << fixed << setprecision(3)
+         << fixed << setprecision(6) 
          << timeToFirst << " "
          << totalTime << "\n";
 

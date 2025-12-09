@@ -8,14 +8,16 @@
 #include <iostream>
 #include <vector>
 #include <chrono>
+#include <iomanip> // Include this for setprecision
 
 // Use namespaces for clarity and brevity
 using std::vector;
 using std::cout;
 using std::endl;
+using std::fixed;
+using std::setprecision;
 using std::chrono::high_resolution_clock;
-using std::chrono::duration_cast;
-using std::chrono::nanoseconds; // Changed from microseconds
+using std::chrono::duration; // Use generic duration for double conversion
 
 // --- Global Variables ---
 
@@ -132,7 +134,7 @@ int main() {
     // Create a cycle: 0 -> 1 -> 2 -> 0
     add_edge(pattern_graph, 0, 1);
     add_edge(pattern_graph, 1, 2);
-    add_edge(pattern_graph, 2, 0); // Changed from (0, 2) to (2, 0) for a cycle
+    add_edge(pattern_graph, 2, 0); 
 
     // --- 2. Define Target Graph (Directed Bowtie) ---
     num_target_nodes = 5;
@@ -141,12 +143,12 @@ int main() {
     // First triangle cycle: (A, B, C) or (0 -> 1 -> 2 -> 0)
     add_edge(target_graph, 0, 1);
     add_edge(target_graph, 1, 2);
-    add_edge(target_graph, 2, 0); // Changed from (0, 2) to (2, 0) for a cycle
+    add_edge(target_graph, 2, 0); 
 
     // Second triangle cycle: (C, D, E) or (2 -> 3 -> 4 -> 2)
     add_edge(target_graph, 2, 3);
     add_edge(target_graph, 3, 4);
-    add_edge(target_graph, 4, 2); // Changed from (2, 4) to (4, 2) for a cycle
+    add_edge(target_graph, 4, 2); 
 
     // --- 3. Initialize State ---
     mapping.resize(num_pattern_nodes, -1);
@@ -161,19 +163,21 @@ int main() {
 
     // --- 5. Calculate and Print Results ---
     
-    // Calculate time to first solution (in nanoseconds)
-    long long time_to_first_ns = 0;
+    // Calculate time to first solution (in seconds)
+    double time_to_first_sec = 0.0;
     if (first_solution_found) {
-        time_to_first_ns = duration_cast<nanoseconds>(first_solution_time - start_time).count();
+        // Changed from nanoseconds to duration<double> (defaults to seconds)
+        time_to_first_sec = duration<double>(first_solution_time - start_time).count();
     }
     
-    // Calculate time to find all solutions (in nanoseconds)
-    long long time_to_all_ns = duration_cast<nanoseconds>(end_time - start_time).count();
+    // Calculate time to find all solutions (in seconds)
+    double time_to_all_sec = duration<double>(end_time - start_time).count();
 
-    // Output in the format: [num solutions] [time to first (ns)] [time to all (ns)]
+    // Output in the format: [num solutions] [time to first (s)] [time to all (s)]
     cout << solution_count << " " 
-         << time_to_first_ns << " " 
-         << time_to_all_ns << endl;
+         << fixed << setprecision(6) // Set precision to 6 decimal places
+         << time_to_first_sec << " " 
+         << time_to_all_sec << endl;
 
     return 0;
 }
