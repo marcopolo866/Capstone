@@ -1,8 +1,8 @@
 {
-  "algorithm": "glasgow",
-  "timestamp": "2025-12-09 23:55:22 UTC",
+  "algorithm": "vf3",
+  "timestamp": "2025-12-09 23:57:16 UTC",
   "status": "success",
-  "output": "hostname = runnervmoqczp\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver data/glasgowpattern1.lad data/glasgowtarget1.lad --format lad\nstarted_at = 2025-12-09 23:55:22\npattern_file = data/glasgowpattern1.lad\ntarget_file = data/glasgowtarget1.lad\npattern_properties =\npattern_vertices = 4\npattern_directed_edges = 6\ntarget_properties =\ntarget_vertices = 6\ntarget_directed_edges = 12\nstatus = true\nnodes = 4\npropagations = 4\nmapping = (0 -> 0) (1 -> 2) (2 -> 1) (3 -> 3) \nruntime = 0\nwhere = 0/4 -1/-1 0/2 -1/-1 0/2 -1/-1 -1/-1\nrestarts = 1\nshape_graphs = 5\nsearch_time = 0\nnogoods_size = 0\nnogoods_lengths =\nsupplemental_graph_names = original exact_path_1 exact_path_2 exact_path_3 exact_path_4",
+  "output": "4 3.1157e-06 6.3197e-06\n\n--- Gemini VF3 Output ---\n6 261 1313\n\n--- ChatGPT VF3 Output ---\n6 0.000000 0.000005",
   "error": "",
-  "request_id": "65bf77a1-7d82-4f6c-9576-f8376ba087f2"
+  "request_id": "9840b790-51ea-4019-9bec-9fce318fc5bd"
 }
