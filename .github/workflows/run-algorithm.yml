@@ -81,9 +81,9 @@ jobs:
               "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" \
               "baselines/Dijkastra Shortest Path/dijkstra.cpp" \
               -o "baselines/dijkstra"
-            echo "✓ Dijkstra built successfully"
+            echo "Dijkstra built successfully"
           elif [ -x "baselines/dijkstra" ]; then
-            echo "✓ Dijkstra already built (cached)"
+            echo "Dijkstra already built (cached)"
           fi
           
           # Build Glasgow Subgraph Solver (only if not cached)
@@ -96,9 +96,9 @@ jobs:
               cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3"
               make -j$(nproc)
               cd ../../..
-              echo "✓ Glasgow built successfully"
+              echo "Glasgow built successfully"
             else
-              echo "✓ Glasgow already built (cached)"
+              echo "Glasgow already built (cached)"
             fi
           fi
 
@@ -113,9 +113,9 @@ jobs:
               make vf3
               # Go back to the root directory
               cd ../..
-              echo "✓ VF3 built successfully"
+              echo "VF3 built successfully"
             else
-              echo "✓ VF3 already built (cached)"
+              echo "VF3 already built (cached)"
             fi
           fi
 
@@ -125,9 +125,9 @@ jobs:
               g++ -std=c++17 -O3 \
                 "src/VF3.cpp" \
                 -o "src/vf3"
-              echo "✓ Second VF3 built successfully"
+              echo "Second VF3 built successfully"
             else
-              echo "✓ Second VF3 already built (cached)"
+              echo "Second VF3 already built (cached)"
             fi
           fi
 
@@ -137,9 +137,9 @@ jobs:
               g++ -std=c++17 -O3 \
                 "src/chatVF3.cpp" \
                 -o "src/chatvf3"
-              echo "✓ Third VF3 built successfully"
+              echo "Third VF3 built successfully"
             else
-              echo "✓ Third VF3 already built (cached)"
+              echo "Third VF3 already built (cached)"
             fi
           fi
           
