@@ -445,7 +445,16 @@ async function runAlgorithm() {
             const response = await fetch(url, requestOptions);
                         
             if (!response.ok) {
-                throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
+                let detail = '';
+                try {
+                    const errText = await response.text();
+                    if (errText) {
+                        detail = ` - ${errText.slice(0, 400)}`;
+                    }
+                } catch (e) {
+                    // ignore
+                }
+                throw new Error(`GitHub API error: ${response.status} ${response.statusText}${detail}`);
             }
             
             if (method === 'POST' && response.status === 204) {
