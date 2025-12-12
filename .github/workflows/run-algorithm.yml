@@ -86,6 +86,19 @@ jobs:
             echo "✓ Dijkstra already built (cached)"
           fi
           
+          # Build LLM Dijkstra (only if not cached)
+          if [ -f "src/[CHATGPT] Shortest Path.cpp" ]; then
+            if [ ! -x "src/dijkstra_llm" ]; then
+              echo "Building LLM Dijkstra..."
+              g++ -std=c++17 -O3 \
+                "src/[CHATGPT] Shortest Path.cpp" \
+                -o "src/dijkstra_llm"
+              echo "バ" LLM Dijkstra built successfully"
+            else
+              echo "バ" LLM Dijkstra already built (cached)"
+            fi
+          fi
+          
           # Build Glasgow Subgraph Solver (only if not cached)
           if [ -d "baselines/glasgow-subgraph-solver" ]; then
             if [ ! -f "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver" ]; then
@@ -173,16 +186,21 @@ jobs:
             shift 2
             local tmp
             tmp=$(mktemp)
-            local start_ns end_ns
+            local start_ns end_ns duration_ms
             start_ns=$(date +%s%N)
             set +e
             "$@" >"$tmp" 2>&1
             local status=$?
             set -e
             end_ns=$(date +%s%N)
-            local duration_ns=$((end_ns - start_ns))
+            duration_ms=$(python - <<'PY' "$start_ns" "$end_ns"
+import sys
+start=int(sys.argv[1]); end=int(sys.argv[2])
+print(f"{(end - start)/1_000_000:.3f}")
+PY
+)
             printf -v "$_out_var" "%s" "$(cat "$tmp")"
-            printf -v "$_dur_var" "%s" "$duration_ns"
+            printf -v "$_dur_var" "%s" "$duration_ms"
             rm -f "$tmp"
             return $status
           }
@@ -191,33 +209,40 @@ jobs:
           
           case "$ALGORITHM" in
             dijkstra)
-              if ! run_capture result_out runtime_ns ./baselines/dijkstra "${FILES[0]}"; then
+              if ! run_capture dijkstra_baseline_out dijkstra_baseline_ms ./baselines/dijkstra "${FILES[0]}"; then
+                EXIT_CODE=1
+              fi
+              if ! run_capture dijkstra_llm_out dijkstra_llm_ms ./src/dijkstra_llm "${FILES[0]}"; then
                 EXIT_CODE=1
               fi
               {
-                echo "[Dijkstra]"
-                echo "$result_out"
-                echo "Runtime (ns): $runtime_ns"
+                echo "[Dijkstra Baseline]"
+                echo "$dijkstra_baseline_out"
+                echo "Runtime (ms): $dijkstra_baseline_ms"
+                echo
+                echo "[Dijkstra LLM]"
+                echo "$dijkstra_llm_out"
+                echo "Runtime (ms): $dijkstra_llm_ms"
               } >> outputs/result.txt
               ;;
             glasgow)
-              if ! run_capture glasgow_first_out glasgow_first_ns ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture glasgow_first_out glasgow_first_ms ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
-              if ! run_capture glasgow_all_out glasgow_all_ns ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture glasgow_all_out glasgow_all_ms ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
               {
                 echo "[Glasgow Subgraph Solver]"
                 echo "$glasgow_all_out"
-                echo "Runtime (ns): first=$glasgow_first_ns all=$glasgow_all_ns"
+                echo "Runtime (ms): first=$glasgow_first_ms all=$glasgow_all_ms"
               } >> outputs/result.txt
               ;;
             vf3)
-              if ! run_capture vf3_base_first_out vf3_base_first_ns ./baselines/vf3lib/bin/vf3 -F "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture vf3_base_first_out vf3_base_first_ms ./baselines/vf3lib/bin/vf3 -F "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
-              if ! run_capture vf3_base_all_out vf3_base_all_ns ./baselines/vf3lib/bin/vf3 "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture vf3_base_all_out vf3_base_all_ms ./baselines/vf3lib/bin/vf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
               vf3_base_result_line=$(echo "$vf3_base_all_out" | head -n1)
@@ -228,33 +253,33 @@ jobs:
               {
                 echo "[VF3 baseline]"
                 echo "$vf3_base_result"
-                echo "Runtime (ns): first=$vf3_base_first_ns all=$vf3_base_all_ns"
+                echo "Runtime (ms): first=$vf3_base_first_ms all=$vf3_base_all_ms"
                 echo
               } >> outputs/result.txt
               
-              if ! run_capture vf3_first_out vf3_first_ns ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture vf3_first_out vf3_first_ms ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
-              if ! run_capture vf3_all_out vf3_all_ns ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture vf3_all_out vf3_all_ms ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
               {
                 echo "[VF3 Gemini]"
                 echo "$vf3_all_out"
-                echo "Runtime (ns): first=$vf3_first_ns all=$vf3_all_ns"
+                echo "Runtime (ms): first=$vf3_first_ms all=$vf3_all_ms"
                 echo
               } >> outputs/result.txt
               
-              if ! run_capture chatvf3_first_out chatvf3_first_ns ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture chatvf3_first_out chatvf3_first_ms ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
-              if ! run_capture chatvf3_all_out chatvf3_all_ns ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture chatvf3_all_out chatvf3_all_ms ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
               {
                 echo "[VF3 ChatGPT]"
                 echo "$chatvf3_all_out"
-                echo "Runtime (ns): first=$chatvf3_first_ns all=$chatvf3_all_ns"
+                echo "Runtime (ms): first=$chatvf3_first_ms all=$chatvf3_all_ms"
               } >> outputs/result.txt
               ;;
             *)
