@@ -7,17 +7,11 @@
 
 #include <iostream>
 #include <vector>
-#include <chrono>
-#include <iomanip> // Include this for setprecision
 
 // Use namespaces for clarity and brevity
 using std::vector;
 using std::cout;
 using std::endl;
-using std::fixed;
-using std::setprecision;
-using std::chrono::high_resolution_clock;
-using std::chrono::duration; // Use generic duration for double conversion
 
 // --- Global Variables ---
 
@@ -33,9 +27,8 @@ vector<bool> used_target_nodes;
 
 // Statistics
 int solution_count = 0;
-high_resolution_clock::time_point start_time;
-high_resolution_clock::time_point first_solution_time;
-bool first_solution_found = false;
+bool stop_after_first = false;
+bool search_halted = false;
 
 int num_pattern_nodes;
 int num_target_nodes;
@@ -58,12 +51,10 @@ void add_edge(vector<vector<bool>>& graph, int u, int v) {
 void solve(int p_node) {
     // Base Case: We have successfully mapped all pattern nodes.
     if (p_node == num_pattern_nodes) {
-        // If this is the very first solution, record the time.
-        if (!first_solution_found) {
-            first_solution_time = high_resolution_clock::now();
-            first_solution_found = true;
-        }
         solution_count++;
+        if (stop_after_first) {
+            search_halted = true;
+        }
         return; // Backtrack from here
     }
 
@@ -117,6 +108,10 @@ void solve(int p_node) {
             // 2. Move to the next pattern node.
             solve(p_node + 1);
 
+            if (search_halted) {
+                return;
+            }
+
             // --- Backtrack ---
             // 3. Remove (p_node -> t_node) from our partial solution
             //    to explore other possibilities.
@@ -127,7 +122,7 @@ void solve(int p_node) {
 }
 
 
-int main() {
+int main(int argc, char** argv) {
     // --- 1. Define Pattern Graph (Directed Triangle Cycle) ---
     num_pattern_nodes = 3;
     pattern_graph.resize(num_pattern_nodes, vector<bool>(num_pattern_nodes, false));
@@ -154,30 +149,19 @@ int main() {
     mapping.resize(num_pattern_nodes, -1);
     used_target_nodes.resize(num_target_nodes, false);
 
-    // --- 4. Run and Time Algorithm ---
-    start_time = high_resolution_clock::now();
-    
-    solve(0); // Start the recursive search from the first pattern node (node 0)
-
-    high_resolution_clock::time_point end_time = high_resolution_clock::now();
-
-    // --- 5. Calculate and Print Results ---
-    
-    // Calculate time to first solution (in seconds)
-    double time_to_first_sec = 0.0;
-    if (first_solution_found) {
-        // Changed from nanoseconds to duration<double> (defaults to seconds)
-        time_to_first_sec = duration<double>(first_solution_time - start_time).count();
+    // Parse optional flags
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--first-only") {
+            stop_after_first = true;
+        }
     }
     
-    // Calculate time to find all solutions (in seconds)
-    double time_to_all_sec = duration<double>(end_time - start_time).count();
+    // --- 4. Run Algorithm (external tooling measures runtime) ---
+    solve(0); // Start the recursive search from the first pattern node (node 0)
 
-    // Output in the format: [num solutions] [time to first (s)] [time to all (s)]
-    cout << solution_count << " " 
-         << fixed << setprecision(6) // Set precision to 6 decimal places
-         << time_to_first_sec << " " 
-         << time_to_all_sec << endl;
+    // Output only the solution count
+    cout << solution_count << endl;
 
     return 0;
 }

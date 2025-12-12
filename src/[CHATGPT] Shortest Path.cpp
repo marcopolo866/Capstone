@@ -64,8 +64,6 @@ int main(int argc, char** argv) {
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
 
-    const auto t0 = chrono::steady_clock::now();
-
     if (argc < 2) {
         // No stdout noise allowed; fail silently via return code.
         return 1;
@@ -229,15 +227,11 @@ int main(int argc, char** argv) {
         }
     }
 
-    const auto t1 = chrono::steady_clock::now();
-    const auto ns = chrono::duration_cast<chrono::nanoseconds>(t1 - t0).count();
-
-    // Required output format: exactly two lines
+    // Required output format: single line with result only; runtime measured externally
     if (dist[nEnd] == INF) {
         cout << "INF; " << pathOut << "\n";
     } else {
         cout << dist[nEnd] << "; " << pathOut << "\n";
     }
-    cout << "Runtime: " << ns << " ns\n";
     return 0;
 }

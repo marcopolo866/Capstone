@@ -8,12 +8,8 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
-#include <numeric>
-#include <chrono>
-#include <iomanip>
 
 using namespace std;
-using namespace chrono;
 
 struct Digraph {
     int n;
@@ -40,7 +36,7 @@ bool isSubgraphMatch(const Digraph &sub, const Digraph &big, const vector<int> &
     return true;
 }
 
-int main() {
+int main(int argc, char** argv) {
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
 
@@ -62,8 +58,13 @@ int main() {
     big.addEdge(4, 0);
 
     int countSolutions = 0;
-    double timeToFirst = 0.0;
-    auto start = high_resolution_clock::now();
+    bool stopAfterFirst = false;
+
+    for (int i = 1; i < argc; ++i) {
+        if (string(argv[i]) == "--first-only") {
+            stopAfterFirst = true;
+        }
+    }
 
     // Try all possible directed mappings
     for (int a = 0; a < big.n; ++a) {
@@ -74,26 +75,16 @@ int main() {
                 vector<int> mapping = {a, b, c};
                 if (isSubgraphMatch(sub, big, mapping)) {
                     countSolutions++;
-                    if (countSolutions == 1) {
-                        auto first = high_resolution_clock::now();
-                        // CHANGE 1: Removed 'milli' to default to seconds
-                        timeToFirst = duration<double>(first - start).count();
+                    if (stopAfterFirst) {
+                        cout << countSolutions << "\n";
+                        return 0;
                     }
                 }
             }
         }
     }
 
-    auto end = high_resolution_clock::now();
-    // CHANGE 2: Removed 'milli' to default to seconds
-    double totalTime = duration<double>(end - start).count();
-
-    // The output will now be in seconds. 
-    // You might want to increase setprecision if the code runs too fast to see non-zero values.
-    cout << countSolutions << " "
-         << fixed << setprecision(6) 
-         << timeToFirst << " "
-         << totalTime << "\n";
+    cout << countSolutions << "\n";
 
     return 0;
 }

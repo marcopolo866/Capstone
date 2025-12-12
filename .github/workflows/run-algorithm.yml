@@ -148,57 +148,123 @@ jobs:
       - name: Run algorithm
         id: run
         run: |
+          set -euo pipefail
           ALGORITHM="${{ github.event.inputs.algorithm }}"
           INPUT_FILES="${{ github.event.inputs.input_files }}"
           
-          echo "Running $ALGORITHM with files: $INPUT_FILES"
-          
           mkdir -p outputs
+          : > outputs/result.txt
           
           # Parse input files
           IFS=',' read -ra FILES <<< "$INPUT_FILES"
+
+          if [ "$ALGORITHM" = "dijkstra" ] && [ ${#FILES[@]} -lt 1 ]; then
+            echo "No input file provided for Dijkstra." >&2
+            exit 1
+          fi
+          if [ "$ALGORITHM" != "dijkstra" ] && [ ${#FILES[@]} -lt 2 ]; then
+            echo "Pattern/target files are required for $ALGORITHM." >&2
+            exit 1
+          fi
+
+          run_capture() {
+            local _out_var="$1"
+            local _dur_var="$2"
+            shift 2
+            local tmp
+            tmp=$(mktemp)
+            local start_ns end_ns
+            start_ns=$(date +%s%N)
+            set +e
+            "$@" >"$tmp" 2>&1
+            local status=$?
+            set -e
+            end_ns=$(date +%s%N)
+            local duration_ns=$((end_ns - start_ns))
+            printf -v "$_out_var" "%s" "$(cat "$tmp")"
+            printf -v "$_dur_var" "%s" "$duration_ns"
+            rm -f "$tmp"
+            return $status
+          }
           
-          # Run the appropriate algorithm
-          set +e
-          case $ALGORITHM in
+          EXIT_CODE=0
+          
+          case "$ALGORITHM" in
             dijkstra)
-              if [ ! -x "./baselines/dijkstra" ]; then
-                echo "Dijkstra binary missing - rebuilding..."
-                g++ -std=c++17 -O3 \
-                  -I "baselines/Dijkastra Shortest Path" \
-                  "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" \
-                  "baselines/Dijkastra Shortest Path/dijkstra.cpp" \
-                  -o baselines/dijkstra
+              if ! run_capture result_out runtime_ns ./baselines/dijkstra "${FILES[0]}"; then
+                EXIT_CODE=1
               fi
-              if [ ! -x "./baselines/dijkstra" ]; then
-                echo "Failed to build Dijkstra binary" > outputs/result.txt
-                false
-              else
-                ./baselines/dijkstra "${FILES[0]}" > outputs/result.txt 2>&1
-              fi
+              {
+                echo "[Dijkstra]"
+                echo "$result_out"
+                echo "Runtime (ns): $runtime_ns"
+              } >> outputs/result.txt
               ;;
             glasgow)
-              ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver "${FILES[0]}" "${FILES[1]}" --format lad > outputs/result.txt 2>&1
+              if ! run_capture glasgow_first_out glasgow_first_ns ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+              fi
+              if ! run_capture glasgow_all_out glasgow_all_ns ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+              fi
+              {
+                echo "[Glasgow Subgraph Solver]"
+                echo "$glasgow_all_out"
+                echo "Runtime (ns): first=$glasgow_first_ns all=$glasgow_all_ns"
+              } >> outputs/result.txt
               ;;
             vf3)
-              echo "Running first VF3 command (baselines)..."
-              ./baselines/vf3lib/bin/vf3 "${FILES[0]}" "${FILES[1]}" > outputs/result.txt 2>&1
-
-              echo -e "\n--- Gemini VF3 Output ---" >> outputs/result.txt
-              ./src/vf3 "${FILES[0]}" "${FILES[1]}" >> outputs/result.txt 2>&1
-
-              echo -e "\n--- ChatGPT VF3 Output ---" >> outputs/result.txt
-              ./src/chatvf3 "${FILES[0]}" "${FILES[1]}" >> outputs/result.txt 2>&1
+              if ! run_capture vf3_base_first_out vf3_base_first_ns ./baselines/vf3lib/bin/vf3 -F "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+              fi
+              if ! run_capture vf3_base_all_out vf3_base_all_ns ./baselines/vf3lib/bin/vf3 "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+              fi
+              vf3_base_result_line=$(echo "$vf3_base_all_out" | head -n1)
+              vf3_base_result=$(echo "$vf3_base_result_line" | awk '{print $1}')
+              if [ -z "$vf3_base_result" ]; then
+                vf3_base_result="$vf3_base_result_line"
+              fi
+              {
+                echo "[VF3 baseline]"
+                echo "$vf3_base_result"
+                echo "Runtime (ns): first=$vf3_base_first_ns all=$vf3_base_all_ns"
+                echo
+              } >> outputs/result.txt
+              
+              if ! run_capture vf3_first_out vf3_first_ns ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+              fi
+              if ! run_capture vf3_all_out vf3_all_ns ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+              fi
+              {
+                echo "[VF3 Gemini]"
+                echo "$vf3_all_out"
+                echo "Runtime (ns): first=$vf3_first_ns all=$vf3_all_ns"
+                echo
+              } >> outputs/result.txt
+              
+              if ! run_capture chatvf3_first_out chatvf3_first_ns ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+              fi
+              if ! run_capture chatvf3_all_out chatvf3_all_ns ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+              fi
+              {
+                echo "[VF3 ChatGPT]"
+                echo "$chatvf3_all_out"
+                echo "Runtime (ns): first=$chatvf3_first_ns all=$chatvf3_all_ns"
+              } >> outputs/result.txt
               ;;
             *)
-              echo "Unknown algorithm: $ALGORITHM"
+              echo "Unknown algorithm: $ALGORITHM" >&2
               exit 1
               ;;
           esac
           
-          EXIT_CODE=$?
-          set -e
-          echo "EXIT_CODE=$EXIT_CODE" >> $GITHUB_OUTPUT
+          echo "EXIT_CODE=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          exit "$EXIT_CODE"
       
       - name: Create result JSON
         run: |
