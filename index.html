@@ -176,7 +176,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             container.innerHTML = '<p class="loading">Loading data files...</p>';
             
             try {
-                const ref = config.ref ? `?ref=${encodeURIComponent(config.ref)}` : '';
+                const ref = '?ref=main';
                 let contents;
                 try {
                     contents = await apiRequest(`/contents/data${ref}`);
@@ -341,8 +341,9 @@ async function runAlgorithm() {
 
             const requestId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 
+            const branchRef = 'main';
             const workflowData = {
-                ref: config.ref || 'main',
+                ref: branchRef,
                 inputs: {
                     algorithm: config.selectedAlgorithm,
                     input_files: config.selectedFiles.map(f => f.path).join(','),
@@ -352,7 +353,7 @@ async function runAlgorithm() {
 
             try {
                 await apiRequest('/actions/workflows/run-algorithm.yml/dispatches', 'POST', workflowData);
-                const result = await waitForResult(requestId);
+                const result = await waitForResult(requestId, branchRef);
                 if (result.status !== 'success') {
                     throw new Error(result.error || 'Workflow reported failure');
                 }
@@ -379,14 +380,14 @@ async function runAlgorithm() {
             return new Promise(resolve => setTimeout(resolve, ms));
         }
 
-        async function waitForResult(requestId) {
+        async function waitForResult(requestId, branchRef) {
             const maxAttempts = 40;
             const waitMs = 5000;
             let lastError = null;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
-                    const refParam = config.ref ? `?ref=${encodeURIComponent(config.ref)}` : '';
+                    const refParam = branchRef ? `?ref=${encodeURIComponent(branchRef)}` : '';
                     const file = await apiRequest(`/contents/outputs/result.json${refParam}`);
                     if (file && file.content) {
                         const decoded = atob(file.content.replace(/\\s/g, ''));
