@@ -186,6 +186,13 @@ jobs:
             rm -f "$tmp"
             return $status
           }
+
+          format_ns() {
+            python - "$1" <<'PY'
+import sys
+print(f"{int(sys.argv[1]):,}")
+PY
+          }
           
           EXIT_CODE=0
           
@@ -194,10 +201,11 @@ jobs:
               if ! run_capture result_out runtime_ns ./baselines/dijkstra "${FILES[0]}"; then
                 EXIT_CODE=1
               fi
+              runtime_fmt=$(format_ns "$runtime_ns")
               {
                 echo "[Dijkstra]"
                 echo "$result_out"
-                echo "Runtime (ns): $runtime_ns"
+                echo "Runtime (ns): $runtime_fmt"
               } >> outputs/result.txt
               ;;
             glasgow)
@@ -207,10 +215,12 @@ jobs:
               if ! run_capture glasgow_all_out glasgow_all_ns ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
+              glasgow_first_fmt=$(format_ns "$glasgow_first_ns")
+              glasgow_all_fmt=$(format_ns "$glasgow_all_ns")
               {
                 echo "[Glasgow Subgraph Solver]"
                 echo "$glasgow_all_out"
-                echo "Runtime (ns): first=$glasgow_first_ns all=$glasgow_all_ns"
+                echo "Runtime (ns): first=$glasgow_first_fmt all=$glasgow_all_fmt"
               } >> outputs/result.txt
               ;;
             vf3)
@@ -220,6 +230,8 @@ jobs:
               if ! run_capture vf3_base_all_out vf3_base_all_ns ./baselines/vf3lib/bin/vf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
+              vf3_base_first_fmt=$(format_ns "$vf3_base_first_ns")
+              vf3_base_all_fmt=$(format_ns "$vf3_base_all_ns")
               vf3_base_result_line=$(echo "$vf3_base_all_out" | head -n1)
               vf3_base_result=$(echo "$vf3_base_result_line" | awk '{print $1}')
               if [ -z "$vf3_base_result" ]; then
@@ -228,7 +240,7 @@ jobs:
               {
                 echo "[VF3 baseline]"
                 echo "$vf3_base_result"
-                echo "Runtime (ns): first=$vf3_base_first_ns all=$vf3_base_all_ns"
+                echo "Runtime (ns): first=$vf3_base_first_fmt all=$vf3_base_all_fmt"
                 echo
               } >> outputs/result.txt
               
@@ -238,10 +250,12 @@ jobs:
               if ! run_capture vf3_all_out vf3_all_ns ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
+              vf3_first_fmt=$(format_ns "$vf3_first_ns")
+              vf3_all_fmt=$(format_ns "$vf3_all_ns")
               {
                 echo "[VF3 Gemini]"
                 echo "$vf3_all_out"
-                echo "Runtime (ns): first=$vf3_first_ns all=$vf3_all_ns"
+                echo "Runtime (ns): first=$vf3_first_fmt all=$vf3_all_fmt"
                 echo
               } >> outputs/result.txt
               
@@ -251,10 +265,12 @@ jobs:
               if ! run_capture chatvf3_all_out chatvf3_all_ns ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
               fi
+              chatvf3_first_fmt=$(format_ns "$chatvf3_first_ns")
+              chatvf3_all_fmt=$(format_ns "$chatvf3_all_ns")
               {
                 echo "[VF3 ChatGPT]"
                 echo "$chatvf3_all_out"
-                echo "Runtime (ns): first=$chatvf3_first_ns all=$chatvf3_all_ns"
+                echo "Runtime (ns): first=$chatvf3_first_fmt all=$chatvf3_all_fmt"
               } >> outputs/result.txt
               ;;
             *)
