@@ -1,8 +1,8 @@
 {
   "algorithm": "vf3",
-  "timestamp": "2025-12-10 00:05:45 UTC",
+  "timestamp": "2025-12-12 21:28:32 UTC",
   "status": "success",
-  "output": "6 1.32784e-06 3.04531e-06\n\n--- Gemini VF3 Output ---\n6 260 1272\n\n--- ChatGPT VF3 Output ---\n6 0.000000 0.000005",
+  "output": "[VF3 baseline]\n6\nRuntime (ns): first=1031466504 all=1020452898\n\n[VF3 Gemini]\n6 251 1293\nRuntime (ns): first=2780265 all=2617782\n\n[VF3 ChatGPT]\n6\nRuntime (ns): first=2686547 all=2712148",
   "error": "",
-  "request_id": "e9b32a8b-d80b-4e48-bbc3-713c31414d78"
+  "request_id": "981a98ca-c443-4f25-8b64-7cbd072931f7"
 }
