@@ -181,7 +181,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 try {
                     contents = await apiRequest(`/contents/data${ref}`);
                 } catch (error) {
-                    if (config.token && error.message.includes('404')) {
+                    const msg = (error && error.message) ? error.message : '';
+                    if (config.token && (msg.includes('404') || msg.includes('401') || msg.includes('403'))) {
                         try {
                             contents = await apiRequest(`/contents/data${ref}`, 'GET', null, { useAuth: false });
                         } catch (fallbackError) {
@@ -212,8 +213,18 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 container.innerHTML = html;
                 
             } catch (error) {
+                    reportDebugError('loadDataFiles', error, {
+                        owner: config.owner,
+                        repo: config.repo,
+                        ref: 'main'
+                    });
                     let hint = 'Verify the repo has a top-level "data" folder on the selected branch.';
-                    container.innerHTML = `<div class="error">Error loading files: ${escapeHtml(error.message)}<br>${hint}</div>`;
+                    let extra = '';
+                    const msg = (error && error.message) ? error.message : '';
+                    if (msg.includes('401')) {
+                        extra = ' (check that your PAT is valid and has repo/workflow scopes; if the repo is public, retry without auth)';
+                    }
+                    container.innerHTML = `<div class="error">Error loading files: ${escapeHtml(error.message)}${escapeHtml(extra)}<br>${hint}</div>`;
             }
         }
         
@@ -370,6 +381,11 @@ async function runAlgorithm() {
                 statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
             } catch (error) {
                 outputDiv.textContent = `Failure: ${error.message || error}`;
+                reportDebugError('runAlgorithm', error, {
+                    algorithm: config.selectedAlgorithm,
+                    files: config.selectedFiles.map(f => f.path).join(','),
+                    ref: branchRef
+                });
                 statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
             } finally {
                 runBtn.disabled = false;
@@ -446,7 +462,11 @@ async function runAlgorithm() {
             const response = await fetch(url, requestOptions);
                         
             if (!response.ok) {
-                throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
+                let responseText = '';
+                try {
+                    responseText = await response.text();
+                } catch (_) {}
+                throw new Error(`GitHub API error: ${response.status} ${response.statusText} | endpoint=${endpoint} method=${method} ref=${config.ref || 'main'} | body=${responseText}`);
             }
             
             if (method === 'POST' && response.status === 204) {
@@ -454,6 +474,16 @@ async function runAlgorithm() {
             }
             
             return await response.json();
+        }
+
+        function reportDebugError(context, error, meta = {}) {
+            const detail = (error && error.message) ? error.message : String(error);
+            const metaStr = Object.entries(meta).map(([k,v]) => `${k}=${v}`).join(', ');
+            const debugMsg = `[${context}] ${detail}${metaStr ? ' | ' + metaStr : ''}`;
+            showStatus(debugMsg, 'error');
+            if (console && console.error) {
+                console.error(debugMsg, error);
+            }
         }
         
         function showStatus(message, type) {
