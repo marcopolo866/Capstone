@@ -1,8 +1,8 @@
 {
-  "algorithm": "glasgow",
-  "timestamp": "2025-12-12 20:24:28 UTC",
+  "algorithm": "dijkstra",
+  "timestamp": "2025-12-12 20:27:47 UTC",
   "status": "success",
-  "output": "[Glasgow Subgraph Solver]\nhostname = runnervm6qbrg\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad data/glasgowpattern1.lad data/glasgowtarget1.lad\nstarted_at = 2025-12-12 20:24:28\npattern_file = data/glasgowpattern1.lad\ntarget_file = data/glasgowtarget1.lad\npattern_properties =\npattern_vertices = 4\npattern_directed_edges = 6\ntarget_properties =\ntarget_vertices = 6\ntarget_directed_edges = 12\nstatus = true\nsolution_count = 14\nnodes = 24\npropagations = 24\nruntime = 0\nshape_graphs = 5\nsearch_time = 0\nsupplemental_graph_names = original exact_path_1 exact_path_2 exact_path_3 exact_path_4\nRuntime (ns): first=3590829 all=3428919",
+  "output": "[Dijkstra]\n7; A B E F G\nRuntime (ns): 7537948",
   "error": "",
-  "request_id": "31ba5457-3747-4689-b2c3-79ebccfcc1fa"
+  "request_id": "79868ce3-1b39-4471-9b35-ed001da76bd0"
 }
