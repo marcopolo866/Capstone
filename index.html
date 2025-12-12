@@ -176,7 +176,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             container.innerHTML = '<p class="loading">Loading data files...</p>';
             
             try {
-                const ref = '?ref=main';
+                const ref = config.ref ? `?ref=${encodeURIComponent(config.ref)}` : '';
                 let contents;
                 try {
                     contents = await apiRequest(`/contents/data${ref}`);
@@ -216,7 +216,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     reportDebugError('loadDataFiles', error, {
                         owner: config.owner,
                         repo: config.repo,
-                        ref: 'main'
+                        ref: config.ref
                     });
                     let hint = 'Verify the repo has a top-level "data" folder on the selected branch.';
                     let extra = '';
@@ -352,7 +352,7 @@ async function runAlgorithm() {
 
             const requestId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 
-            const branchRef = 'main';
+            const branchRef = config.ref || 'main';
             const workflowData = {
                 ref: branchRef,
                 inputs: {
