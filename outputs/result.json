@@ -1,8 +1,8 @@
 {
-  "algorithm": "vf3",
-  "timestamp": "2025-12-12 21:47:07 UTC",
+  "algorithm": "dijkstra",
+  "timestamp": "2025-12-12 21:49:03 UTC",
   "status": "success",
-  "output": "[VF3 baseline]\n6\nRuntime (ns): first=1030549136 all=1020195985\n\n[VF3 Gemini]\n6 261 1283\nRuntime (ns): first=2804076 all=2546516\n\n[VF3 ChatGPT]\n6\nRuntime (ns): first=2592169 all=2597712",
+  "output": "[Dijkstra]\n7; A B C\nRuntime (ns): 11656628",
   "error": "",
-  "request_id": "1c036134-765c-4318-9d86-e9ff237bff2d"
+  "request_id": "1a624709-2468-46f5-a413-259d20ff666c"
 }
