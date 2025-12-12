@@ -1,8 +1,8 @@
 {
-  "algorithm": "glasgow",
-  "timestamp": "2025-12-12 21:43:57 UTC",
+  "algorithm": "vf3",
+  "timestamp": "2025-12-12 21:47:07 UTC",
   "status": "success",
-  "output": "[Glasgow Subgraph Solver]\nhostname = runnervm6qbrg\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad data/glasgowpattern1.lad data/glasgowtarget1.lad\nstarted_at = 2025-12-12 21:43:57\npattern_file = data/glasgowpattern1.lad\ntarget_file = data/glasgowtarget1.lad\npattern_properties =\npattern_vertices = 4\npattern_directed_edges = 6\ntarget_properties =\ntarget_vertices = 6\ntarget_directed_edges = 12\nstatus = true\nsolution_count = 14\nnodes = 24\npropagations = 24\nruntime = 0\nshape_graphs = 5\nsearch_time = 0\nsupplemental_graph_names = original exact_path_1 exact_path_2 exact_path_3 exact_path_4\nRuntime (ns): first=3492236 all=3394777",
+  "output": "[VF3 baseline]\n6\nRuntime (ns): first=1030549136 all=1020195985\n\n[VF3 Gemini]\n6 261 1283\nRuntime (ns): first=2804076 all=2546516\n\n[VF3 ChatGPT]\n6\nRuntime (ns): first=2592169 all=2597712",
   "error": "",
-  "request_id": "8a894844-7ac5-419e-b757-e3dc694a9520"
+  "request_id": "1c036134-765c-4318-9d86-e9ff237bff2d"
 }
