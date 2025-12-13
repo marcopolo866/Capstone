@@ -19,10 +19,17 @@ on:
         description: 'Client request identifier'
         required: false
         type: string
+  repository_dispatch:
+    types:
+      - run-algorithm
 
 jobs:
   run-algorithm:
     runs-on: ubuntu-latest
+    env:
+      ALGORITHM_INPUT: ${{ github.event.inputs.algorithm || github.event.client_payload.algorithm }}
+      INPUT_FILES_INPUT: ${{ github.event.inputs.input_files || github.event.client_payload.input_files }}
+      REQUEST_ID_INPUT: ${{ github.event.inputs.request_id || github.event.client_payload.request_id }}
     
     permissions:
       contents: write
@@ -162,8 +169,9 @@ jobs:
         id: run
         run: |
           set -euo pipefail
-          ALGORITHM="${{ github.event.inputs.algorithm }}"
-          INPUT_FILES="${{ github.event.inputs.input_files }}"
+          ALGORITHM="${ALGORITHM_INPUT:-}"
+          INPUT_FILES="${INPUT_FILES_INPUT:-}"
+          REQUEST_ID="${REQUEST_ID_INPUT:-}"
           
           mkdir -p outputs
           : > outputs/result.txt
@@ -289,14 +297,15 @@ PY
           esac
           
           echo "EXIT_CODE=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "REQUEST_ID=${REQUEST_ID}" >> "$GITHUB_OUTPUT"
           exit "$EXIT_CODE"
       
       - name: Create result JSON
         run: |
-          ALGORITHM="${{ github.event.inputs.algorithm }}"
+          ALGORITHM="${ALGORITHM_INPUT:-}"
           EXIT_CODE="${{ steps.run.outputs.EXIT_CODE }}"
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          REQUEST_ID="${{ github.event.inputs.request_id }}"
+          REQUEST_ID="${REQUEST_ID_INPUT:-}"
           
           if [ "$EXIT_CODE" = "0" ]; then
             STATUS="success"

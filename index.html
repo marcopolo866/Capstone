@@ -364,8 +364,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
             try {
                 await ensureWorkflowDispatch(branchRef);
-                const dispatchEndpoint = await getWorkflowDispatchEndpoint();
-                await apiRequest(dispatchEndpoint, 'POST', workflowData);
+                await dispatchWorkflow(workflowData);
                 const result = await waitForResult(requestId, branchRef);
                 if (result.status !== 'success') {
                     throw new Error(result.error || 'Workflow reported failure');
@@ -415,6 +414,29 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             }
             workflowDispatchEndpointCache = '/actions/workflows/run-algorithm.yml/dispatches';
             return workflowDispatchEndpointCache;
+        }
+
+        async function dispatchWorkflow(workflowData) {
+            const dispatchEndpoint = await getWorkflowDispatchEndpoint();
+            try {
+                await apiRequest(dispatchEndpoint, 'POST', workflowData);
+            } catch (error) {
+                const msg = (error && error.message) ? error.message : '';
+                const isMissingTrigger = msg.includes("Workflow does not have 'workflow_dispatch' trigger") || msg.includes('422');
+                if (!isMissingTrigger) {
+                    throw error;
+                }
+                // Fallback to repository_dispatch event
+                const repoPayload = {
+                    event_type: 'run-algorithm',
+                    client_payload: {
+                        algorithm: workflowData.inputs.algorithm,
+                        input_files: workflowData.inputs.input_files,
+                        request_id: workflowData.inputs.request_id || ''
+                    }
+                };
+                await apiRequest('/dispatches', 'POST', repoPayload);
+            }
         }
 
         function delay(ms) {
