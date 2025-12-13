@@ -363,6 +363,7 @@ async function runAlgorithm() {
             };
 
             try {
+                await ensureWorkflowDispatch(branchRef);
                 await apiRequest('/actions/workflows/run-algorithm.yml/dispatches', 'POST', workflowData);
                 const result = await waitForResult(requestId, branchRef);
                 if (result.status !== 'success') {
@@ -394,6 +395,22 @@ async function runAlgorithm() {
 
         function delay(ms) {
             return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function ensureWorkflowDispatch(branchRef) {
+            const refParam = branchRef ? `?ref=${encodeURIComponent(branchRef)}` : '';
+            const path = `/contents/.github/workflows/run-algorithm.yml${refParam}`;
+            try {
+                const wf = await apiRequest(path);
+                if (!wf || !wf.content) return;
+                const decoded = atob(wf.content.replace(/\s/g, ''));
+                if (!decoded.includes('workflow_dispatch')) {
+                    throw new Error('run-algorithm.yml is missing a workflow_dispatch trigger on this branch');
+                }
+            } catch (error) {
+                // Surface a clear error for the common 422 case
+                throw new Error(`Workflow unavailable on branch ${branchRef || 'main'}: ${error.message || error}`);
+            }
         }
 
         async function waitForResult(requestId, branchRef) {
