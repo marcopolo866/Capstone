@@ -301,7 +301,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             infoDiv.innerHTML = html;
         }
         
-async function runAlgorithm() {
+        async function runAlgorithm() {
             const outputDiv = document.getElementById('output');
             const statusBadge = document.getElementById('status-badge');
             const runBtn = document.getElementById('run-btn');
@@ -364,7 +364,8 @@ async function runAlgorithm() {
 
             try {
                 await ensureWorkflowDispatch(branchRef);
-                await apiRequest('/actions/workflows/run-algorithm.yml/dispatches', 'POST', workflowData);
+                const dispatchEndpoint = await getWorkflowDispatchEndpoint();
+                await apiRequest(dispatchEndpoint, 'POST', workflowData);
                 const result = await waitForResult(requestId, branchRef);
                 if (result.status !== 'success') {
                     throw new Error(result.error || 'Workflow reported failure');
@@ -391,6 +392,29 @@ async function runAlgorithm() {
             } finally {
                 runBtn.disabled = false;
             }
+        }
+
+        let workflowDispatchEndpointCache = null;
+        async function getWorkflowDispatchEndpoint() {
+            if (workflowDispatchEndpointCache) return workflowDispatchEndpointCache;
+            // Prefer workflow ID to avoid path mismatches; fall back to path if needed.
+            try {
+                const data = await apiRequest('/actions/workflows');
+                if (data && Array.isArray(data.workflows)) {
+                    const match = data.workflows.find(wf =>
+                        wf.path === '.github/workflows/run-algorithm.yml' ||
+                        (wf.name && wf.name.toLowerCase().includes('run algorithm'))
+                    );
+                    if (match && match.id) {
+                        workflowDispatchEndpointCache = `/actions/workflows/${match.id}/dispatches`;
+                        return workflowDispatchEndpointCache;
+                    }
+                }
+            } catch (error) {
+                // Ignore and fall back
+            }
+            workflowDispatchEndpointCache = '/actions/workflows/run-algorithm.yml/dispatches';
+            return workflowDispatchEndpointCache;
         }
 
         function delay(ms) {
