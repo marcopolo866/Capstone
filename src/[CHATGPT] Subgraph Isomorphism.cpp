@@ -349,10 +349,11 @@ int main(int argc, char **argv) {
     const string target_path = argv[1];
     const string pattern_path = argv[2];
 
-    auto t0 = chrono::steady_clock::now();
-
     Graph target = read_graph_auto(target_path);
     Graph pattern = read_graph_auto(pattern_path);
+
+    auto t0 = chrono::steady_clock::now();
+    chrono::steady_clock::duration output_overhead = chrono::steady_clock::duration::zero();
 
     maybe_build_bitset(target);
 
@@ -373,17 +374,17 @@ int main(int argc, char **argv) {
 
     // Empty / impossible cases
     if (pattern.n == 0) {
-        cout << 1 << "\n";
         auto t1 = chrono::steady_clock::now();
         double ms = chrono::duration<double, milli>(t1 - t0).count();
+        cout << 1 << "\n";
         cout.setf(std::ios::fixed);
         cout << setprecision(3) << ms << "\n";
         return 0;
     }
     if (pattern.n > target.n) {
-        cout << 0 << "\n";
         auto t1 = chrono::steady_clock::now();
         double ms = chrono::duration<double, milli>(t1 - t0).count();
+        cout << 0 << "\n";
         cout.setf(std::ios::fixed);
         cout << setprecision(3) << ms << "\n";
         return 0;
@@ -417,9 +418,9 @@ int main(int argc, char **argv) {
             cand[u].push_back(v);
         }
         if (cand[u].empty()) {
-            cout << 0 << "\n";
             auto t1 = chrono::steady_clock::now();
             double ms = chrono::duration<double, milli>(t1 - t0).count();
+            cout << 0 << "\n";
             cout.setf(std::ios::fixed);
             cout << setprecision(3) << ms << "\n";
             return 0;
@@ -487,6 +488,8 @@ int main(int argc, char **argv) {
         if (depth == pattern.n) {
             ++solutions;
 
+            auto out_start = chrono::steady_clock::now();
+
             // Print mapping as: "1:<tid> 2:<tid> ... n:<tid>"
             for (int i = 0; i < pattern.n; ++i) {
                 if (i) outbuf.push_back(' ');
@@ -497,6 +500,8 @@ int main(int argc, char **argv) {
             outbuf.push_back('\n');
 
             if (outbuf.size() > (1u << 22)) flush_out(); // ~4MB
+
+            output_overhead += (chrono::steady_clock::now() - out_start);
             return;
         }
 
@@ -553,17 +558,18 @@ int main(int argc, char **argv) {
     };
 
     dfs(0);
+
+    auto t1 = chrono::steady_clock::now();
+    double ms = chrono::duration<double, milli>((t1 - t0) - output_overhead).count();
+
     flush_out();
 
     // After all mappings, print count
     cout << solutions << "\n";
 
     // Last line: runtime in milliseconds (with 3 decimals)
-    auto t1 = chrono::steady_clock::now();
-    double ms = chrono::duration<double, milli>(t1 - t0).count();
     cout.setf(std::ios::fixed);
     cout << setprecision(3) << ms << "\n";
 
     return 0;
 }
-

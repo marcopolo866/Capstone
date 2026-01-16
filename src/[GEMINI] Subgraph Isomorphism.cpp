@@ -305,10 +305,10 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    auto start_time = chrono::high_resolution_clock::now();
-
     Graph pat = load_graph(pat_file);
     Graph tar = load_graph(tar_file);
+
+    auto start_time = chrono::steady_clock::now();
 
     // Heuristic: Determine matching order (Node Ordering)
     // Greedy approach: Start with node with max degree, then BFS/DFS
@@ -357,7 +357,7 @@ int main(int argc, char** argv) {
     State state(pat.n, tar.n);
     solve(pat, tar, state, order);
 
-    auto end_time = chrono::high_resolution_clock::now();
+    auto end_time = chrono::steady_clock::now();
     double duration = chrono::duration<double, milli>(end_time - start_time).count();
 
     // Output
