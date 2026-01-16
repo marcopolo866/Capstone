@@ -30,142 +30,144 @@ jobs:
       ALGORITHM_INPUT: ${{ github.event.inputs.algorithm || github.event.client_payload.algorithm }}
       INPUT_FILES_INPUT: ${{ github.event.inputs.input_files || github.event.client_payload.input_files }}
       REQUEST_ID_INPUT: ${{ github.event.inputs.request_id || github.event.client_payload.request_id }}
-    
+
     permissions:
       contents: write
-      actions: write
-    
+      actions: read
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
-        with:
-          submodules: recursive
+        uses: actions/checkout@v4
 
-      - name: Cache VF3 build
-        uses: actions/cache@v3
-        with:
-          path: baselines/vf3lib/bin
-          key: ${{ runner.os }}-vf3-${{ hashFiles('baselines/vf3lib/**') }}
-          restore-keys: |
-            ${{ runner.os }}-vf3-
-
-      - name: Cache VF3 (src) build
-        uses: actions/cache@v3
-        with:
-          path: src/vf3  # <-- The path to the compiled executable
-          key: ${{ runner.os }}-vf3-src-${{ hashFiles('src/VF3.cpp') }} # <-- The source file
-          restore-keys: |
-            ${{ runner.os }}-vf3-src-
-
-      - name: Cache Glasgow build
-        uses: actions/cache@v3
-        with:
-          path: baselines/glasgow-subgraph-solver/build
-          key: ${{ runner.os }}-glasgow-${{ hashFiles('baselines/glasgow-subgraph-solver/**') }}
-          restore-keys: |
-            ${{ runner.os }}-glasgow-
-      
-      - name: Cache Dijkstra build
-        uses: actions/cache@v3
-        with:
-          path: baselines/dijkstra
-          key: ${{ runner.os }}-dijkstra-${{ hashFiles('baselines/Dijkastra Shortest Path/**') }}
-      
-      - name: Install minimal dependencies
+      - name: Download prebuilt binaries
+        id: binaries
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          # Only install jq, everything else is already available
-          sudo apt-get update -qq && sudo apt-get install -y -qq jq
-      
-      - name: Build algorithms
-        continue-on-error: true
-        run: |
-          echo "Building algorithms..."
-          
-          # Build Dijkstra (only if not cached)
-          if [ -f "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" ] && [ ! -x "baselines/dijkstra" ]; then
-            echo "Building Dijkstra..."
-            g++ -std=c++17 -O3 \
-              -I "baselines/Dijkastra Shortest Path" \
-              "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" \
-              "baselines/Dijkastra Shortest Path/dijkstra.cpp" \
-              -o "baselines/dijkstra"
-            echo "✓ Dijkstra built successfully"
-          elif [ -x "baselines/dijkstra" ]; then
-            echo "✓ Dijkstra already built (cached)"
-          fi
-          
-          # Build LLM Dijkstra (only if not cached)
-          if [ -f "src/[CHATGPT] Shortest Path.cpp" ]; then
-            if [ ! -x "src/dijkstra_llm" ]; then
-              echo "Building LLM Dijkstra..."
-              g++ -std=c++17 -O3 \
-                "src/[CHATGPT] Shortest Path.cpp" \
-                -o "src/dijkstra_llm"
-              echo "バ" LLM Dijkstra built successfully"
-            else
-              echo "バ" LLM Dijkstra already built (cached)"
-            fi
-          fi
-          
-          # Build Glasgow Subgraph Solver (only if not cached)
-          if [ -d "baselines/glasgow-subgraph-solver" ]; then
-            if [ ! -f "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver" ]; then
-              echo "Building Glasgow Subgraph Solver..."
-              cd baselines/glasgow-subgraph-solver
-              mkdir -p build
-              cd build
-              cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3"
-              make -j$(nproc)
-              cd ../../..
-              echo "✓ Glasgow built successfully"
-            else
-              echo "✓ Glasgow already built (cached)"
-            fi
-          fi
+          mkdir -p outputs
+          : > outputs/binaries_download_error.txt
+          set +e
+          output="$(python - <<'PY'
+import json
+import os
+import stat
+import subprocess
+import urllib.parse
+import urllib.request
+import zipfile
+from pathlib import Path
 
-          # Build VF3 Subgraph Solver (only if not cached)
-          if [ -d "baselines/vf3lib" ]; then
-            if [ ! -f "baselines/vf3lib/bin/vf3" ]; then
-              echo "Building VF3 Subgraph Solver..."
-              # Go into the directory that contains the Makefile
-              cd baselines/vf3lib
-              # Run make for the 'vf3' target
-              # The Makefile will create the 'bin/vf3' executable
-              make vf3
-              # Go back to the root directory
-              cd ../..
-              echo "✓ VF3 built successfully"
-            else
-              echo "✓ VF3 already built (cached)"
-            fi
-          fi
+repo = os.environ.get("REPO")
+branch = os.environ.get("BRANCH") or "main"
+token = os.environ.get("GITHUB_TOKEN")
+workflow_file = "build-binaries.yml"
+artifact_name = "algorithm-binaries-linux"
 
-          if [ -f "src/VF3.cpp" ]; then
-            if [ ! -x "src/vf3" ]; then
-              echo "Building second VF3 (from src)..."
-              g++ -std=c++17 -O3 \
-                "src/VF3.cpp" \
-                -o "src/vf3"
-              echo "✓ Second VF3 built successfully"
-            else
-              echo "✓ Second VF3 already built (cached)"
-            fi
-          fi
+if not repo:
+    raise SystemExit("REPO env var is missing")
+if not token:
+    raise SystemExit("GITHUB_TOKEN env var is missing")
 
-          if [ -f "src/chatVF3.cpp" ]; then
-            if [ ! -x "src/chatvf3" ]; then
-              echo "Building Third VF3 (from src)..."
-              g++ -std=c++17 -O3 \
-                "src/chatVF3.cpp" \
-                -o "src/chatvf3"
-              echo "✓ Third VF3 built successfully"
-            else
-              echo "✓ Third VF3 already built (cached)"
-            fi
+api_base = f"https://api.github.com/repos/{repo}"
+headers = {
+    "Accept": "application/vnd.github+json",
+    "Authorization": f"Bearer {token}",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "capstone-download-binaries",
+}
+
+
+def api_get(path: str):
+    url = api_base + path
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req) as resp:
+        return json.load(resp)
+
+
+query = urllib.parse.urlencode({"branch": branch, "status": "success", "per_page": 1})
+runs = api_get(f"/actions/workflows/{workflow_file}/runs?{query}")
+workflow_runs = runs.get("workflow_runs") or []
+if not workflow_runs:
+    raise SystemExit(
+        f"No successful '{workflow_file}' runs found for branch '{branch}'. "
+        "Run the 'Build Binaries' workflow first."
+    )
+
+run_id = workflow_runs[0].get("id")
+if not run_id:
+    raise SystemExit("Could not read run_id from workflow_runs response.")
+
+artifacts = api_get(f"/actions/runs/{run_id}/artifacts")
+items = artifacts.get("artifacts") or []
+artifact = next((a for a in items if a.get("name") == artifact_name and not a.get("expired")), None)
+if not artifact:
+    available = ", ".join(sorted({a.get("name", "") for a in items if a.get("name")}))
+    raise SystemExit(
+        f"Artifact '{artifact_name}' not found on run {run_id}. "
+        f"Available artifacts: {available or '(none)'}"
+    )
+
+artifact_id = artifact.get("id")
+if not artifact_id:
+    raise SystemExit("Could not read artifact id.")
+
+zip_path = Path("binaries.zip")
+download_url = f"{api_base}/actions/artifacts/{artifact_id}/zip"
+subprocess.run(
+    [
+        "curl",
+        "-fsSL",
+        "-o",
+        str(zip_path),
+        "-H",
+        f"Authorization: Bearer {token}",
+        "-H",
+        "Accept: application/vnd.github+json",
+        download_url,
+    ],
+    check=True,
+)
+
+with zipfile.ZipFile(zip_path, "r") as zf:
+    zf.extractall(".")
+
+expected = [
+    "baselines/dijkstra",
+    "src/dijkstra_llm",
+    "src/vf3",
+    "src/chatvf3",
+    "baselines/vf3lib/bin/vf3",
+    "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver",
+]
+
+missing = []
+for rel in expected:
+    p = Path(rel)
+    if not p.exists():
+        missing.append(rel)
+        continue
+    mode = p.stat().st_mode
+    p.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+if missing:
+    raise SystemExit(f"Missing expected binaries after extraction: {', '.join(missing)}")
+
+print(f"Downloaded artifacts from run {run_id} (artifact_id={artifact_id}).")
+PY
+          )"
+          status=$?
+          set -e
+          if [ $status -eq 0 ]; then
+            echo "READY=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "READY=0" >> "$GITHUB_OUTPUT"
+            echo "$output" > outputs/binaries_download_error.txt
+            echo "$output"
           fi
-          
-          echo "Build complete!"
-      
+          exit 0
+
       - name: Run algorithm
         id: run
         run: |
@@ -173,10 +175,20 @@ jobs:
           ALGORITHM="${ALGORITHM_INPUT:-}"
           INPUT_FILES="${INPUT_FILES_INPUT:-}"
           REQUEST_ID="${REQUEST_ID_INPUT:-}"
-          
+
           mkdir -p outputs
           : > outputs/result.txt
-          
+
+          if [ "${{ steps.binaries.outputs.READY }}" != "1" ]; then
+            echo "Failed to download prebuilt binaries." >> outputs/result.txt
+            if [ -s outputs/binaries_download_error.txt ]; then
+              cat outputs/binaries_download_error.txt >> outputs/result.txt
+            fi
+            echo "EXIT_CODE=1" >> "$GITHUB_OUTPUT"
+            echo "REQUEST_ID=${REQUEST_ID}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Parse input files
           IFS=',' read -ra FILES <<< "$INPUT_FILES"
 
@@ -194,10 +206,9 @@ jobs:
           fi
 
           run_capture() {
-            local _out_var="$1"
-            local _dur_var="$2"
+            local _out_var=$1
+            local _dur_var=$2
             shift 2
-            local tmp
             tmp=$(mktemp)
             local start_ns end_ns duration_ms
             start_ns=$(date +%s%N)
@@ -217,9 +228,9 @@ PY
             rm -f "$tmp"
             return $status
           }
-          
+
           EXIT_CODE=0
-          
+
           case "$ALGORITHM" in
             dijkstra)
               if ! run_capture dijkstra_baseline_out dijkstra_baseline_ms ./baselines/dijkstra "${FILES[0]}"; then
@@ -287,7 +298,7 @@ PY
                   echo
                 } >> outputs/result.txt
               fi
-              
+
               if ! run_capture vf3_first_out vf3_first_ms ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 Gemini] first-solution run failed." >> outputs/result.txt
@@ -306,7 +317,7 @@ PY
                   echo
                 } >> outputs/result.txt
               fi
-              
+
               if ! run_capture chatvf3_first_out chatvf3_first_ms ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 ChatGPT] first-solution run failed." >> outputs/result.txt
@@ -330,48 +341,54 @@ PY
               EXIT_CODE=1
               ;;
           esac
-          
+
           echo "EXIT_CODE=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           echo "REQUEST_ID=${REQUEST_ID}" >> "$GITHUB_OUTPUT"
           # Always exit 0 so later steps run and results are committed
           exit 0
-      
+
       - name: Create result JSON
         if: always()
+        env:
+          EXIT_CODE: ${{ steps.run.outputs.EXIT_CODE }}
         run: |
-          mkdir -p outputs
-          ALGORITHM="${ALGORITHM_INPUT:-}"
-          EXIT_CODE="${{ steps.run.outputs.EXIT_CODE }}"
-          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          REQUEST_ID="${REQUEST_ID_INPUT:-}"
-          
-          if [ "$EXIT_CODE" = "0" ]; then
-            STATUS="success"
-            OUTPUT=$(cat outputs/result.txt 2>/dev/null || echo "No output")
-            ERROR=""
-          else
-            STATUS="error"
-            OUTPUT=""
-            ERROR=$(cat outputs/result.txt 2>/dev/null || echo "Unknown error")
-          fi
-          
-          # Create JSON with proper escaping
-          jq -n \
-            --arg algo "$ALGORITHM" \
-            --arg ts "$TIMESTAMP" \
-            --arg status "$STATUS" \
-            --arg output "$OUTPUT" \
-            --arg error "$ERROR" \
-            --arg requestId "$REQUEST_ID" \
-            '{
-              algorithm: $algo,
-              timestamp: $ts,
-              status: $status,
-              output: $output,
-              error: $error,
-              request_id: $requestId
-            }' > outputs/result.json
-      
+          python - <<'PY'
+import datetime
+import json
+import os
+from pathlib import Path
+
+algorithm = os.environ.get("ALGORITHM_INPUT", "")
+exit_code = os.environ.get("EXIT_CODE", "")
+request_id = os.environ.get("REQUEST_ID_INPUT", "")
+timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+result_txt = Path("outputs/result.txt")
+text = ""
+if result_txt.exists():
+    text = result_txt.read_text(encoding="utf-8", errors="replace")
+
+if exit_code == "0":
+    status = "success"
+    output = text or "No output"
+    error = ""
+else:
+    status = "error"
+    output = ""
+    error = text or "Unknown error"
+
+Path("outputs").mkdir(parents=True, exist_ok=True)
+data = {
+    "algorithm": algorithm,
+    "timestamp": timestamp,
+    "status": status,
+    "output": output,
+    "error": error,
+    "request_id": request_id,
+}
+Path("outputs/result.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+
       - name: Commit results
         if: always()
         run: |

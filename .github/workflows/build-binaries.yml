@@ -1,0 +1,81 @@
+name: Build Binaries
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache Glasgow build
+        uses: actions/cache@v4
+        with:
+          path: baselines/glasgow-subgraph-solver/build
+          key: ${{ runner.os }}-glasgow-${{ hashFiles('baselines/glasgow-subgraph-solver/**') }}
+          restore-keys: |
+            ${{ runner.os }}-glasgow-
+
+      - name: Build binaries
+        run: |
+          set -euo pipefail
+
+          echo "Building baseline Dijkstra..."
+          g++ -std=c++17 -O3 \
+            -I "baselines/Dijkastra Shortest Path" \
+            "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" \
+            "baselines/Dijkastra Shortest Path/dijkstra.cpp" \
+            -o "baselines/dijkstra"
+
+          echo "Building LLM Dijkstra..."
+          g++ -std=c++17 -O3 \
+            "src/[CHATGPT] Shortest Path.cpp" \
+            -o "src/dijkstra_llm"
+
+          echo "Building VF3 baseline..."
+          make -C baselines/vf3lib vf3
+
+          echo "Building VF3 (src)..."
+          g++ -std=c++17 -O3 "src/VF3.cpp" -o "src/vf3"
+
+          echo "Building VF3 ChatGPT (src)..."
+          g++ -std=c++17 -O3 "src/chatVF3.cpp" -o "src/chatvf3"
+
+          echo "Building Glasgow..."
+          cd baselines/glasgow-subgraph-solver
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3"
+          make -j$(nproc)
+          cd ../../..
+
+          chmod +x \
+            baselines/dijkstra \
+            src/dijkstra_llm \
+            src/vf3 \
+            src/chatvf3 \
+            baselines/vf3lib/bin/vf3 \
+            baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: algorithm-binaries-linux
+          path: |
+            baselines/dijkstra
+            src/dijkstra_llm
+            src/vf3
+            src/chatvf3
+            baselines/vf3lib/bin/vf3
+            baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver
+          if-no-files-found: error
+          retention-days: 90
