@@ -44,11 +44,11 @@ jobs:
           echo "Building VF3 baseline..."
           make -C baselines/vf3lib vf3
 
-          echo "Building VF3 (src)..."
-          g++ -std=c++17 -O3 "src/VF3.cpp" -o "src/vf3"
+          echo "Building VF3 Gemini (src)..."
+          g++ -std=c++17 -O3 "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3"
 
           echo "Building VF3 ChatGPT (src)..."
-          g++ -std=c++17 -O3 "src/chatVF3.cpp" -o "src/chatvf3"
+          g++ -std=c++17 -O3 "src/[CHATGPT] Subgraph Isomorphism.cpp" -o "src/chatvf3"
 
           echo "Building Glasgow..."
           cd baselines/glasgow-subgraph-solver
