@@ -345,16 +345,36 @@ jobs:
               EXIT_CODE=1
               ;;
           esac
-
+          
           echo "EXIT_CODE=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           echo "REQUEST_ID=${REQUEST_ID}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_BASELINE_MS=${dijkstra_baseline_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_LLM_MS=${dijkstra_llm_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_FIRST_MS=${glasgow_first_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_ALL_MS=${glasgow_all_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_BASE_FIRST_MS=${vf3_base_first_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_BASE_ALL_MS=${vf3_base_all_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_GEMINI_FIRST_MS=${vf3_first_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_GEMINI_ALL_MS=${vf3_all_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_CHATGPT_FIRST_MS=${chatvf3_first_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_CHATGPT_ALL_MS=${chatvf3_all_ms:-}" >> "$GITHUB_OUTPUT"
           # Always exit 0 so later steps run and results are committed
           exit 0
-
+      
       - name: Create result JSON
         if: always()
         env:
           EXIT_CODE: ${{ steps.run.outputs.EXIT_CODE }}
+          DIJKSTRA_BASELINE_MS: ${{ steps.run.outputs.DIJKSTRA_BASELINE_MS }}
+          DIJKSTRA_LLM_MS: ${{ steps.run.outputs.DIJKSTRA_LLM_MS }}
+          GLASGOW_FIRST_MS: ${{ steps.run.outputs.GLASGOW_FIRST_MS }}
+          GLASGOW_ALL_MS: ${{ steps.run.outputs.GLASGOW_ALL_MS }}
+          VF3_BASE_FIRST_MS: ${{ steps.run.outputs.VF3_BASE_FIRST_MS }}
+          VF3_BASE_ALL_MS: ${{ steps.run.outputs.VF3_BASE_ALL_MS }}
+          VF3_GEMINI_FIRST_MS: ${{ steps.run.outputs.VF3_GEMINI_FIRST_MS }}
+          VF3_GEMINI_ALL_MS: ${{ steps.run.outputs.VF3_GEMINI_ALL_MS }}
+          VF3_CHATGPT_FIRST_MS: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_MS }}
+          VF3_CHATGPT_ALL_MS: ${{ steps.run.outputs.VF3_CHATGPT_ALL_MS }}
         run: |
           python - <<'PY'
           import datetime
@@ -390,6 +410,35 @@ jobs:
               "error": error,
               "request_id": request_id,
           }
+          timings_ms = {}
+          if algorithm == "dijkstra":
+              baseline = os.environ.get("DIJKSTRA_BASELINE_MS", "")
+              llm = os.environ.get("DIJKSTRA_LLM_MS", "")
+              if baseline:
+                  timings_ms["baseline"] = float(baseline)
+              if llm:
+                  timings_ms["llm"] = float(llm)
+          elif algorithm == "glasgow":
+              first = os.environ.get("GLASGOW_FIRST_MS", "")
+              all_ms = os.environ.get("GLASGOW_ALL_MS", "")
+              if first:
+                  timings_ms["first"] = float(first)
+              if all_ms:
+                  timings_ms["all"] = float(all_ms)
+          elif algorithm == "vf3":
+              def maybe_add(name: str, key: str) -> None:
+                  value = os.environ.get(key, "")
+                  if value:
+                      timings_ms[name] = float(value)
+
+              maybe_add("baseline_first", "VF3_BASE_FIRST_MS")
+              maybe_add("baseline_all", "VF3_BASE_ALL_MS")
+              maybe_add("gemini_first", "VF3_GEMINI_FIRST_MS")
+              maybe_add("gemini_all", "VF3_GEMINI_ALL_MS")
+              maybe_add("chatgpt_first", "VF3_CHATGPT_FIRST_MS")
+              maybe_add("chatgpt_all", "VF3_CHATGPT_ALL_MS")
+          if timings_ms:
+              data["timings_ms"] = timings_ms
           Path("outputs/result.json").write_text(
               json.dumps(data, indent=2) + "\n", encoding="utf-8"
           )
