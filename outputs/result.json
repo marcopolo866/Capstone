@@ -1,16 +1,16 @@
 {
   "algorithm": "vf3",
-  "timestamp": "2026-01-16 17:53:14 UTC",
-  "status": "success",
-  "output": "[VF3 baseline]\n6\nRuntime (ms): first=1030.381 all=1020.414\n\n[VF3 Gemini]\n6\nRuntime (ms): first=2.783 all=2.607\n\n[VF3 ChatGPT]\n6\nRuntime (ms): first=2.531 all=2.539\n",
-  "error": "",
-  "request_id": "63cdbeae-bb6f-4ab2-ab00-524dbdde7ecd",
+  "timestamp": "2026-01-16 18:29:25 UTC",
+  "status": "error",
+  "output": "",
+  "error": "[VF3 baseline]\n6\nRuntime (ms): first=1031.615 all=1020.704\n\n[VF3 Gemini] first-solution run failed.\n[VF3 Gemini]\n[0, 1, 2]\n[1, 2, 0]\n[2, 0, 1]\n3\n0.044\nRuntime (ms): first=2.760 all=2.751\n\n[VF3 ChatGPT] first-solution run failed.\n[VF3 ChatGPT]\n0\n0.049\nRuntime (ms): first=95.192 all=2.984\n",
+  "request_id": "dcb4a4a3-32b8-431a-9576-13ef6d34c7f4",
   "timings_ms": {
-    "baseline_first": 1030.381,
-    "baseline_all": 1020.414,
-    "gemini_first": 2.783,
-    "gemini_all": 2.607,
-    "chatgpt_first": 2.531,
-    "chatgpt_all": 2.539
+    "baseline_first": 1031.615,
+    "baseline_all": 1020.704,
+    "gemini_first": 2.76,
+    "gemini_all": 2.751,
+    "chatgpt_first": 95.192,
+    "chatgpt_all": 2.984
   }
 }
