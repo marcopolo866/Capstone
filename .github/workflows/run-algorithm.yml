@@ -279,11 +279,11 @@ jobs:
               fi
               ;;
             vf3)
-              if ! run_capture vf3_base_first_out vf3_base_first_ms ./baselines/vf3lib/bin/vf3 -F "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture vf3_base_first_out vf3_base_first_ms ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 baseline] first-solution run failed." >> outputs/result.txt
               fi
-              if ! run_capture vf3_base_all_out vf3_base_all_ms ./baselines/vf3lib/bin/vf3 "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture vf3_base_all_out vf3_base_all_ms ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 baseline] all-solutions run failed." >> outputs/result.txt
               fi
