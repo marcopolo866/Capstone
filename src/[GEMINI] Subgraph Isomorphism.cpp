@@ -30,6 +30,14 @@
 
 using namespace std;
 
+static inline bool is_blank_or_comment_line(const string& line) {
+    const auto pos = line.find_first_not_of(" \t\r\n");
+    if (pos == string::npos) {
+        return true;
+    }
+    return line[pos] == '#';
+}
+
 // --- Graph Structure ---
 struct Graph {
     int n;
@@ -103,7 +111,7 @@ Graph parse_grf(const string& filename) {
     
     // Find number of nodes
     while (getline(f, line)) {
-        if (line.empty() || line[0] == '#') continue;
+        if (is_blank_or_comment_line(line)) continue;
         stringstream ss(line);
         if (ss >> n) break;
     }
@@ -114,7 +122,7 @@ Graph parse_grf(const string& filename) {
     for (int i = 0; i < n; ++i) {
         // Skip comments
         while (getline(f, line)) {
-            if (line.empty() || line[0] == '#') continue;
+            if (is_blank_or_comment_line(line)) continue;
             break;
         }
         stringstream ss(line);
@@ -128,7 +136,7 @@ Graph parse_grf(const string& filename) {
     for (int i = 0; i < n; ++i) {
         int edge_count = 0;
         while (getline(f, line)) {
-            if (line.empty() || line[0] == '#') continue;
+            if (is_blank_or_comment_line(line)) continue;
             break;
         }
         stringstream ss(line);
@@ -166,6 +174,7 @@ struct State {
 
 long long match_count = 0;
 vector<vector<int>> solutions;
+bool first_only_mode = false;
 
 // --- Feasibility Check ---
 
@@ -206,6 +215,9 @@ bool check_feasibility(const Graph& pat, const Graph& tar, int u, int v, const S
 // --- Recursive Solver ---
 
 void solve(const Graph& pat, const Graph& tar, State& s, const vector<int>& order) {
+    if (first_only_mode && match_count > 0) {
+        return;
+    }
     if (s.core_len == pat.n) {
         match_count++;
         solutions.push_back(s.core_1);
@@ -295,15 +307,27 @@ int main(int argc, char** argv) {
     ios_base::sync_with_stdio(false);
     cin.tie(NULL);
 
-    string pat_file, tar_file;
-    if (argc >= 3) {
-        pat_file = argv[1];
-        tar_file = argv[2];
-    } else {
-        // Fallback for demo purposes if args aren't passed
-        cout << "Usage: ./solver <pattern_file> <target_file>" << endl;
-        return 0;
+    bool first_only = false;
+    vector<string> positional;
+    positional.reserve(static_cast<size_t>(max(0, argc - 1)));
+    for (int i = 1; i < argc; ++i) {
+        string arg = argv[i];
+        if (arg == "--first-only" || arg == "-F") {
+            first_only = true;
+            continue;
+        }
+        positional.push_back(std::move(arg));
     }
+    if (positional.size() != 2) {
+        cerr << "Usage: " << argv[0] << " [--first-only|-F] <pattern_file> <target_file>" << endl;
+        return 1;
+    }
+
+    const string pat_file = positional[0];
+    const string tar_file = positional[1];
+    first_only_mode = first_only;
+    match_count = 0;
+    solutions.clear();
 
     Graph pat = load_graph(pat_file);
     Graph tar = load_graph(tar_file);

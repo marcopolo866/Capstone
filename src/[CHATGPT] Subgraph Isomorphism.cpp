@@ -341,16 +341,28 @@ int main(int argc, char **argv) {
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
 
-    if (argc < 3) {
-        cerr << "Usage: " << argv[0] << " <target_graph.(lad|grf)> <pattern_graph.(lad|grf)>\n";
+    bool first_only = false;
+    vector<string> positional;
+    positional.reserve(static_cast<size_t>(max(0, argc - 1)));
+    for (int i = 1; i < argc; ++i) {
+        string arg = argv[i];
+        if (arg == "--first-only" || arg == "-F") {
+            first_only = true;
+            continue;
+        }
+        positional.push_back(std::move(arg));
+    }
+
+    if (positional.size() != 2) {
+        cerr << "Usage: " << argv[0] << " [--first-only|-F] <pattern_graph.(lad|grf)> <target_graph.(lad|grf)>\n";
         return 1;
     }
 
-    const string target_path = argv[1];
-    const string pattern_path = argv[2];
+    const string pattern_path = positional[0];
+    const string target_path = positional[1];
 
-    Graph target = read_graph_auto(target_path);
     Graph pattern = read_graph_auto(pattern_path);
+    Graph target = read_graph_auto(target_path);
 
     auto t0 = chrono::steady_clock::now();
     chrono::steady_clock::duration output_overhead = chrono::steady_clock::duration::zero();
@@ -485,6 +497,7 @@ int main(int argc, char **argv) {
     };
 
     function<void(int)> dfs = [&](int depth) {
+        if (first_only && solutions > 0) return;
         if (depth == pattern.n) {
             ++solutions;
 
