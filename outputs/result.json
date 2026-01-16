@@ -1,8 +1,12 @@
 {
   "algorithm": "dijkstra",
-  "timestamp": "2026-01-16 02:15:16 UTC",
+  "timestamp": "2026-01-16 03:30:28 UTC",
   "status": "success",
-  "output": "[Dijkstra Baseline]\n7; A B C\nRuntime (ms): 24.775\n\n[Dijkstra LLM]\n7; A->B->C\nRuntime (ms): 3.013\n",
+  "output": "[Dijkstra Baseline]\n7; A B C\nRuntime (ms): 22.866\n\n[Dijkstra LLM]\n7; A->B->C\nRuntime (ms): 2.433\n",
   "error": "",
-  "request_id": "b41a05d0-c1d2-4db0-a235-f4435b158e8d"
+  "request_id": "3e871abe-924a-420a-bfab-00bcc29ac041",
+  "timings_ms": {
+    "baseline": 22.866,
+    "llm": 2.433
+  }
 }
