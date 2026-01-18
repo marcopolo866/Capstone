@@ -173,7 +173,6 @@ struct State {
 };
 
 long long match_count = 0;
-vector<vector<int>> solutions;
 bool first_only_mode = false;
 
 // --- Feasibility Check ---
@@ -220,7 +219,6 @@ void solve(const Graph& pat, const Graph& tar, State& s, const vector<int>& orde
     }
     if (s.core_len == pat.n) {
         match_count++;
-        solutions.push_back(s.core_1);
         return;
     }
 
@@ -327,7 +325,6 @@ int main(int argc, char** argv) {
     const string tar_file = positional[1];
     first_only_mode = first_only;
     match_count = 0;
-    solutions.clear();
 
     Graph pat = load_graph(pat_file);
     Graph tar = load_graph(tar_file);
@@ -384,15 +381,6 @@ int main(int argc, char** argv) {
     auto end_time = chrono::steady_clock::now();
     double duration = chrono::duration<double, milli>(end_time - start_time).count();
 
-    // Output
-    for (const auto& sol : solutions) {
-        cout << "[";
-        for (size_t i = 0; i < sol.size(); ++i) {
-            cout << sol[i] << (i < sol.size() - 1 ? ", " : "");
-        }
-        cout << "]" << endl;
-    }
-    
     cout << match_count << endl;
     cout << fixed << setprecision(3) << duration << endl;
 

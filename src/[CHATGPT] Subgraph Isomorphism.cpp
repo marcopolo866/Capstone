@@ -365,7 +365,6 @@ int main(int argc, char **argv) {
     Graph target = read_graph_auto(target_path);
 
     auto t0 = chrono::steady_clock::now();
-    chrono::steady_clock::duration output_overhead = chrono::steady_clock::duration::zero();
 
     maybe_build_bitset(target);
 
@@ -465,13 +464,6 @@ int main(int argc, char **argv) {
     vector<char> usedT(target.n, 0);         // target used flags
     vector<int> mapped; mapped.reserve(pattern.n);
 
-    string outbuf;
-    outbuf.reserve(1 << 20);
-
-    auto flush_out = [&]() {
-        if (!outbuf.empty()) { cout << outbuf; outbuf.clear(); }
-    };
-
     long long solutions = 0;
 
     auto consistent = [&](int u, int v) -> bool {
@@ -500,21 +492,6 @@ int main(int argc, char **argv) {
         if (first_only && solutions > 0) return;
         if (depth == pattern.n) {
             ++solutions;
-
-            auto out_start = chrono::steady_clock::now();
-
-            // Print mapping as: "1:<tid> 2:<tid> ... n:<tid>"
-            for (int i = 0; i < pattern.n; ++i) {
-                if (i) outbuf.push_back(' ');
-                char tmp[64];
-                int len = snprintf(tmp, sizeof(tmp), "%d:%d", i + 1, target.id_of[mapP[i]]);
-                outbuf.append(tmp, tmp + len);
-            }
-            outbuf.push_back('\n');
-
-            if (outbuf.size() > (1u << 22)) flush_out(); // ~4MB
-
-            output_overhead += (chrono::steady_clock::now() - out_start);
             return;
         }
 
@@ -573,9 +550,7 @@ int main(int argc, char **argv) {
     dfs(0);
 
     auto t1 = chrono::steady_clock::now();
-    double ms = chrono::duration<double, milli>((t1 - t0) - output_overhead).count();
-
-    flush_out();
+    double ms = chrono::duration<double, milli>(t1 - t0).count();
 
     // After all mappings, print count
     cout << solutions << "\n";
