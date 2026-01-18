@@ -1,16 +1,12 @@
 {
-  "algorithm": "vf3",
-  "timestamp": "2026-01-18 06:27:20 UTC",
+  "algorithm": "glasgow",
+  "timestamp": "2026-01-18 06:30:04 UTC",
   "status": "success",
-  "output": "[VF3 baseline]\n126\nRuntime (ms): first=3.629 all=3.977\n\n[VF3 Gemini]\n126\n0.665\nRuntime (ms): first=3.399 all=3.916\n\n[VF3 ChatGPT]\n126\n10.241\nRuntime (ms): first=3.628 all=13.281\n",
+  "output": "[Glasgow Subgraph Solver]\nhostname = runnervmmtnos\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad data/glasgowpattern1.lad data/glasgowtarget1.lad\nstarted_at = 2026-01-18 06:30:04\npattern_file = data/glasgowpattern1.lad\ntarget_file = data/glasgowtarget1.lad\npattern_properties =\npattern_vertices = 4\npattern_directed_edges = 6\ntarget_properties =\ntarget_vertices = 6\ntarget_directed_edges = 12\nstatus = true\nsolution_count = 14\nnodes = 24\npropagations = 24\nruntime = 0\nshape_graphs = 5\nsearch_time = 0\nsupplemental_graph_names = original exact_path_1 exact_path_2 exact_path_3 exact_path_4\nRuntime (ms): first=3.515 all=3.325\n",
   "error": "",
-  "request_id": "5eebd30d-7ce3-4b46-98a9-fbd20133b529",
+  "request_id": "1b8f091c-3cea-46b7-a0de-b6e508ea3318",
   "timings_ms": {
-    "baseline_first": 3.629,
-    "baseline_all": 3.977,
-    "gemini_first": 3.399,
-    "gemini_all": 3.916,
-    "chatgpt_first": 3.628,
-    "chatgpt_all": 13.281
+    "first": 3.515,
+    "all": 3.325
   }
 }
