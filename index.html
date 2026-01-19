@@ -26,6 +26,10 @@
                 <label>Personal Access Token (Required for running algorithms)</label>
                 <input type="password" id="token" placeholder="ghp_xxxxxxxxxxxx">
             </div>
+            <div class="input-group">
+                <label>Benchmark iterations</label>
+                <input type="number" id="iterations" value="5" min="1" max="1000">
+            </div>
             <button class="btn" onclick="connect()">Connect to Repository</button>
         </div>
         
@@ -351,12 +355,21 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             statusBadge.innerHTML = '<span class="status-badge status-running">Running...</span>';
 
             const requestId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+            const iterationsEl = document.getElementById('iterations');
+            const iterationsRaw = iterationsEl ? String(iterationsEl.value || '').trim() : '';
+            let iterations = 1;
+            if (iterationsRaw) {
+                const parsed = parseInt(iterationsRaw, 10);
+                if (Number.isFinite(parsed) && parsed >= 1) iterations = parsed;
+            }
+            if (iterations > 1000) iterations = 1000;
 
             const branchRef = config.ref || 'main';
             const workflowData = {
                 ref: branchRef,
                 inputs: {
                     algorithm: config.selectedAlgorithm,
+                    iterations: String(iterations),
                     input_files: config.selectedFiles.map(f => f.path).join(','),
                     request_id: requestId
                 }
@@ -431,6 +444,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     event_type: 'run-algorithm',
                     client_payload: {
                         algorithm: workflowData.inputs.algorithm,
+                        iterations: workflowData.inputs.iterations,
                         input_files: workflowData.inputs.input_files,
                         request_id: workflowData.inputs.request_id || ''
                     }

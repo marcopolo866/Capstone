@@ -11,6 +11,11 @@ on:
           - dijkstra
           - glasgow
           - vf3
+      iterations:
+        description: 'Number of benchmark iterations'
+        required: false
+        type: string
+        default: '1'
       input_files:
         description: 'Comma-separated input file paths'
         required: true
@@ -28,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ALGORITHM_INPUT: ${{ github.event.inputs.algorithm || github.event.client_payload.algorithm }}
+      ITERATIONS_INPUT: ${{ github.event.inputs.iterations || github.event.client_payload.iterations }}
       INPUT_FILES_INPUT: ${{ github.event.inputs.input_files || github.event.client_payload.input_files }}
       REQUEST_ID_INPUT: ${{ github.event.inputs.request_id || github.event.client_payload.request_id }}
 
@@ -177,6 +183,7 @@ jobs:
         run: |
           set -uo pipefail
           ALGORITHM="${ALGORITHM_INPUT:-}"
+          ITERATIONS_RAW="${ITERATIONS_INPUT:-1}"
           INPUT_FILES="${INPUT_FILES_INPUT:-}"
           REQUEST_ID="${REQUEST_ID_INPUT:-}"
 
@@ -209,10 +216,19 @@ jobs:
             exit 0
           fi
 
+          ITERATIONS="1"
+          if [[ "$ITERATIONS_RAW" =~ ^[0-9]+$ ]] && [ "$ITERATIONS_RAW" -ge 1 ]; then
+            ITERATIONS="$ITERATIONS_RAW"
+          fi
+          if [ "$ITERATIONS" -gt 1000 ]; then
+            ITERATIONS="1000"
+          fi
+
           run_capture() {
             local _out_var=$1
             local _dur_var=$2
             shift 2
+            local tmp
             tmp=$(mktemp)
             local start_ns end_ns duration_ms
             start_ns=$(date +%s%N)
@@ -233,11 +249,38 @@ jobs:
             return $status
           }
 
+          bench_capture_n() {
+            local _out_var=$1
+            local _times_var=$2
+            local _runs=$3
+            shift 3
+
+            local out dur
+            local -a times
+            local out_first=""
+
+            for ((i=1; i<=_runs; i++)); do
+              if ! run_capture out dur "$@"; then
+                printf -v "$_out_var" "%s" "$out"
+                return 1
+              fi
+              if [ $i -eq 1 ]; then
+                out_first="$out"
+              fi
+              times+=("$dur")
+            done
+
+            printf -v "$_out_var" "%s" "$out_first"
+            printf -v "$_times_var" "%s" "${times[*]}"
+            return 0
+          }
+
           run_capture_rss() {
             local _out_var=$1
             local _dur_var=$2
             local _rss_var=$3
             shift 3
+            local tmp rss_tmp
             tmp=$(mktemp)
             rss_tmp=$(mktemp)
             local start_ns end_ns duration_ms rss_kb
@@ -268,62 +311,223 @@ jobs:
             return $status
           }
 
+          bench_capture_rss_n() {
+            local _out_var=$1
+            local _times_var=$2
+            local _rss_var=$3
+            local _runs=$4
+            shift 4
+
+            local out dur rss
+            local -a times rsses
+            local out_first=""
+
+            for ((i=1; i<=_runs; i++)); do
+              if ! run_capture_rss out dur rss "$@"; then
+                printf -v "$_out_var" "%s" "$out"
+                return 1
+              fi
+              if [ $i -eq 1 ]; then
+                out_first="$out"
+              fi
+              times+=("$dur")
+              rsses+=("$rss")
+            done
+
+            printf -v "$_out_var" "%s" "$out_first"
+            printf -v "$_times_var" "%s" "${times[*]}"
+            printf -v "$_rss_var" "%s" "${rsses[*]}"
+            return 0
+          }
+
+          calc_stats_ms() {
+            python - <<'PY' "$@"
+          import statistics
+          import sys
+
+          vals = []
+          for x in sys.argv[1:]:
+              try:
+                  vals.append(float(x))
+              except ValueError:
+                  pass
+
+          if not vals:
+              print("")
+              raise SystemExit(0)
+
+          n = len(vals)
+          mean = statistics.fmean(vals)
+          median = statistics.median(vals)
+          stdev = statistics.stdev(vals) if n > 1 else 0.0
+          print(
+              f"{median:.3f} {mean:.3f} {stdev:.3f} {min(vals):.3f} {max(vals):.3f} {n}"
+          )
+          PY
+          }
+
+          calc_stats_kb() {
+            python - <<'PY' "$@"
+          import statistics
+          import sys
+
+          vals = []
+          for x in sys.argv[1:]:
+              try:
+                  vals.append(int(x))
+              except ValueError:
+                  pass
+
+          if not vals:
+              print("")
+              raise SystemExit(0)
+
+          n = len(vals)
+          mean = statistics.fmean(vals)
+          median = statistics.median_low(vals)
+          stdev = statistics.stdev(vals) if n > 1 else 0.0
+          print(
+              f"{median} {int(round(mean))} {int(round(stdev))} {min(vals)} {max(vals)} {n}"
+          )
+          PY
+          }
+
           EXIT_CODE=0
 
           case "$ALGORITHM" in
             dijkstra)
-              if ! run_capture dijkstra_baseline_out dijkstra_baseline_ms ./baselines/dijkstra "${FILES[0]}"; then
+              dijkstra_baseline_out=""
+              dijkstra_baseline_ms_runs=""
+              dijkstra_llm_out=""
+              dijkstra_llm_ms_runs=""
+
+              if ! bench_capture_n dijkstra_baseline_out dijkstra_baseline_ms_runs "$ITERATIONS" ./baselines/dijkstra "${FILES[0]}"; then
                 EXIT_CODE=1
                 echo "[Dijkstra Baseline] failed to run." >> outputs/result.txt
               else
+                read dijkstra_baseline_ms_median dijkstra_baseline_ms_mean dijkstra_baseline_ms_stdev dijkstra_baseline_ms_min dijkstra_baseline_ms_max dijkstra_baseline_ms_n <<< "$(calc_stats_ms $dijkstra_baseline_ms_runs)"
+                dijkstra_baseline_ms="$dijkstra_baseline_ms_median"
                 {
                   echo "[Dijkstra Baseline]"
                   echo "$dijkstra_baseline_out"
-                  echo "Runtime (ms): $dijkstra_baseline_ms"
+                  echo "Iterations: $ITERATIONS"
+                  if [ -n "${dijkstra_baseline_ms_median:-}" ]; then
+                    echo "Runtime (ms): median=$dijkstra_baseline_ms_median mean=$dijkstra_baseline_ms_mean stdev=$dijkstra_baseline_ms_stdev min=$dijkstra_baseline_ms_min max=$dijkstra_baseline_ms_max"
+                  fi
                   echo
                 } >> outputs/result.txt
               fi
-              if ! run_capture dijkstra_llm_out dijkstra_llm_ms ./src/dijkstra_llm "${FILES[0]}"; then
+              if ! bench_capture_n dijkstra_llm_out dijkstra_llm_ms_runs "$ITERATIONS" ./src/dijkstra_llm "${FILES[0]}"; then
                 EXIT_CODE=1
                 echo "[Dijkstra LLM] failed to run." >> outputs/result.txt
               else
+                read dijkstra_llm_ms_median dijkstra_llm_ms_mean dijkstra_llm_ms_stdev dijkstra_llm_ms_min dijkstra_llm_ms_max dijkstra_llm_ms_n <<< "$(calc_stats_ms $dijkstra_llm_ms_runs)"
+                dijkstra_llm_ms="$dijkstra_llm_ms_median"
                 {
                   echo "[Dijkstra LLM]"
                   echo "$dijkstra_llm_out"
-                  echo "Runtime (ms): $dijkstra_llm_ms"
+                  echo "Iterations: $ITERATIONS"
+                  if [ -n "${dijkstra_llm_ms_median:-}" ]; then
+                    echo "Runtime (ms): median=$dijkstra_llm_ms_median mean=$dijkstra_llm_ms_mean stdev=$dijkstra_llm_ms_stdev min=$dijkstra_llm_ms_min max=$dijkstra_llm_ms_max"
+                  fi
+                  echo
                 } >> outputs/result.txt
               fi
               ;;
             glasgow)
-              if ! run_capture_rss glasgow_first_out glasgow_first_ms glasgow_first_rss_kb ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
+              glasgow_first_out=""
+              glasgow_first_ms_runs=""
+              glasgow_first_rss_runs=""
+              glasgow_all_out=""
+              glasgow_all_ms_runs=""
+              glasgow_all_rss_runs=""
+
+              if ! bench_capture_rss_n glasgow_first_out glasgow_first_ms_runs glasgow_first_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Subgraph Solver] first-solution run failed." >> outputs/result.txt
               fi
-              if ! run_capture_rss glasgow_all_out glasgow_all_ms glasgow_all_rss_kb ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n glasgow_all_out glasgow_all_ms_runs glasgow_all_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Subgraph Solver] all-solutions run failed." >> outputs/result.txt
+              fi
+
+              if [ -n "${glasgow_first_ms_runs:-}" ]; then
+                read glasgow_first_ms_median glasgow_first_ms_mean glasgow_first_ms_stdev glasgow_first_ms_min glasgow_first_ms_max glasgow_first_ms_n <<< "$(calc_stats_ms $glasgow_first_ms_runs)"
+                glasgow_first_ms="$glasgow_first_ms_median"
+              fi
+              if [ -n "${glasgow_all_ms_runs:-}" ]; then
+                read glasgow_all_ms_median glasgow_all_ms_mean glasgow_all_ms_stdev glasgow_all_ms_min glasgow_all_ms_max glasgow_all_ms_n <<< "$(calc_stats_ms $glasgow_all_ms_runs)"
+                glasgow_all_ms="$glasgow_all_ms_median"
+              fi
+              if [ -n "${glasgow_first_rss_runs:-}" ]; then
+                read glasgow_first_rss_median glasgow_first_rss_mean glasgow_first_rss_stdev glasgow_first_rss_min glasgow_first_rss_max glasgow_first_rss_n <<< "$(calc_stats_kb $glasgow_first_rss_runs)"
+                glasgow_first_rss_kb="$glasgow_first_rss_median"
+              fi
+              if [ -n "${glasgow_all_rss_runs:-}" ]; then
+                read glasgow_all_rss_median glasgow_all_rss_mean glasgow_all_rss_stdev glasgow_all_rss_min glasgow_all_rss_max glasgow_all_rss_n <<< "$(calc_stats_kb $glasgow_all_rss_runs)"
+                glasgow_all_rss_kb="$glasgow_all_rss_median"
               fi
               if [ -n "${glasgow_all_out:-}" ]; then
                 {
                   echo "[Glasgow Subgraph Solver]"
                   echo "$glasgow_all_out"
-                  if [ -n "${glasgow_first_ms:-}" ] && [ -n "${glasgow_all_ms:-}" ]; then
-                    echo "Runtime (ms): first=$glasgow_first_ms all=$glasgow_all_ms"
+                  echo "Iterations: $ITERATIONS"
+                  if [ -n "${glasgow_first_ms_median:-}" ] && [ -n "${glasgow_all_ms_median:-}" ]; then
+                    echo "Runtime (ms): first median=$glasgow_first_ms_median mean=$glasgow_first_ms_mean stdev=$glasgow_first_ms_stdev min=$glasgow_first_ms_min max=$glasgow_first_ms_max | all median=$glasgow_all_ms_median mean=$glasgow_all_ms_mean stdev=$glasgow_all_ms_stdev min=$glasgow_all_ms_min max=$glasgow_all_ms_max"
                   fi
-                  if [ -n "${glasgow_first_rss_kb:-}" ] && [ -n "${glasgow_all_rss_kb:-}" ]; then
-                    echo "Max RSS (kB): first=$glasgow_first_rss_kb all=$glasgow_all_rss_kb"
+                  if [ -n "${glasgow_first_rss_median:-}" ] && [ -n "${glasgow_all_rss_median:-}" ]; then
+                    echo "Max RSS (kB): first median=$glasgow_first_rss_median mean=$glasgow_first_rss_mean stdev=$glasgow_first_rss_stdev min=$glasgow_first_rss_min max=$glasgow_first_rss_max | all median=$glasgow_all_rss_median mean=$glasgow_all_rss_mean stdev=$glasgow_all_rss_stdev min=$glasgow_all_rss_min max=$glasgow_all_rss_max"
                   fi
+                  echo
                 } >> outputs/result.txt
               fi
               ;;
             vf3)
-              if ! run_capture_rss vf3_base_first_out vf3_base_first_ms vf3_base_first_rss_kb ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
+              vf3_base_first_out=""
+              vf3_base_first_ms_runs=""
+              vf3_base_first_rss_runs=""
+              vf3_base_all_out=""
+              vf3_base_all_ms_runs=""
+              vf3_base_all_rss_runs=""
+
+              vf3_first_out=""
+              vf3_first_ms_runs=""
+              vf3_first_rss_runs=""
+              vf3_all_out=""
+              vf3_all_ms_runs=""
+              vf3_all_rss_runs=""
+
+              chatvf3_first_out=""
+              chatvf3_first_ms_runs=""
+              chatvf3_first_rss_runs=""
+              chatvf3_all_out=""
+              chatvf3_all_ms_runs=""
+              chatvf3_all_rss_runs=""
+
+              if ! bench_capture_rss_n vf3_base_first_out vf3_base_first_ms_runs vf3_base_first_rss_runs "$ITERATIONS" ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 baseline] first-solution run failed." >> outputs/result.txt
               fi
-              if ! run_capture_rss vf3_base_all_out vf3_base_all_ms vf3_base_all_rss_kb ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n vf3_base_all_out vf3_base_all_ms_runs vf3_base_all_rss_runs "$ITERATIONS" ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 baseline] all-solutions run failed." >> outputs/result.txt
+              fi
+
+              if [ -n "${vf3_base_first_ms_runs:-}" ]; then
+                read vf3_base_first_ms_median vf3_base_first_ms_mean vf3_base_first_ms_stdev vf3_base_first_ms_min vf3_base_first_ms_max vf3_base_first_ms_n <<< "$(calc_stats_ms $vf3_base_first_ms_runs)"
+                vf3_base_first_ms="$vf3_base_first_ms_median"
+              fi
+              if [ -n "${vf3_base_all_ms_runs:-}" ]; then
+                read vf3_base_all_ms_median vf3_base_all_ms_mean vf3_base_all_ms_stdev vf3_base_all_ms_min vf3_base_all_ms_max vf3_base_all_ms_n <<< "$(calc_stats_ms $vf3_base_all_ms_runs)"
+                vf3_base_all_ms="$vf3_base_all_ms_median"
+              fi
+              if [ -n "${vf3_base_first_rss_runs:-}" ]; then
+                read vf3_base_first_rss_median vf3_base_first_rss_mean vf3_base_first_rss_stdev vf3_base_first_rss_min vf3_base_first_rss_max vf3_base_first_rss_n <<< "$(calc_stats_kb $vf3_base_first_rss_runs)"
+                vf3_base_first_rss_kb="$vf3_base_first_rss_median"
+              fi
+              if [ -n "${vf3_base_all_rss_runs:-}" ]; then
+                read vf3_base_all_rss_median vf3_base_all_rss_mean vf3_base_all_rss_stdev vf3_base_all_rss_min vf3_base_all_rss_max vf3_base_all_rss_n <<< "$(calc_stats_kb $vf3_base_all_rss_runs)"
+                vf3_base_all_rss_kb="$vf3_base_all_rss_median"
               fi
               if [ -n "${vf3_base_all_out:-}" ]; then
                 vf3_base_result_line=$(echo "$vf3_base_all_out" | head -n1)
@@ -334,56 +538,96 @@ jobs:
                 {
                   echo "[VF3 baseline]"
                   echo "$vf3_base_result"
-                  if [ -n "${vf3_base_first_ms:-}" ] && [ -n "${vf3_base_all_ms:-}" ]; then
-                    echo "Runtime (ms): first=$vf3_base_first_ms all=$vf3_base_all_ms"
+                  echo "Iterations: $ITERATIONS"
+                  if [ -n "${vf3_base_first_ms_median:-}" ] && [ -n "${vf3_base_all_ms_median:-}" ]; then
+                    echo "Runtime (ms): first median=$vf3_base_first_ms_median mean=$vf3_base_first_ms_mean stdev=$vf3_base_first_ms_stdev min=$vf3_base_first_ms_min max=$vf3_base_first_ms_max | all median=$vf3_base_all_ms_median mean=$vf3_base_all_ms_mean stdev=$vf3_base_all_ms_stdev min=$vf3_base_all_ms_min max=$vf3_base_all_ms_max"
                   fi
-                  if [ -n "${vf3_base_first_rss_kb:-}" ] && [ -n "${vf3_base_all_rss_kb:-}" ]; then
-                    echo "Max RSS (kB): first=$vf3_base_first_rss_kb all=$vf3_base_all_rss_kb"
+                  if [ -n "${vf3_base_first_rss_median:-}" ] && [ -n "${vf3_base_all_rss_median:-}" ]; then
+                    echo "Max RSS (kB): first median=$vf3_base_first_rss_median mean=$vf3_base_first_rss_mean stdev=$vf3_base_first_rss_stdev min=$vf3_base_first_rss_min max=$vf3_base_first_rss_max | all median=$vf3_base_all_rss_median mean=$vf3_base_all_rss_mean stdev=$vf3_base_all_rss_stdev min=$vf3_base_all_rss_min max=$vf3_base_all_rss_max"
                   fi
                   echo
                 } >> outputs/result.txt
               fi
 
-              if ! run_capture_rss vf3_first_out vf3_first_ms vf3_first_rss_kb ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n vf3_first_out vf3_first_ms_runs vf3_first_rss_runs "$ITERATIONS" ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 Gemini] first-solution run failed." >> outputs/result.txt
               fi
-              if ! run_capture_rss vf3_all_out vf3_all_ms vf3_all_rss_kb ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n vf3_all_out vf3_all_ms_runs vf3_all_rss_runs "$ITERATIONS" ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 Gemini] all-solutions run failed." >> outputs/result.txt
               fi
+
+              if [ -n "${vf3_first_ms_runs:-}" ]; then
+                read vf3_first_ms_median vf3_first_ms_mean vf3_first_ms_stdev vf3_first_ms_min vf3_first_ms_max vf3_first_ms_n <<< "$(calc_stats_ms $vf3_first_ms_runs)"
+                vf3_first_ms="$vf3_first_ms_median"
+              fi
+              if [ -n "${vf3_all_ms_runs:-}" ]; then
+                read vf3_all_ms_median vf3_all_ms_mean vf3_all_ms_stdev vf3_all_ms_min vf3_all_ms_max vf3_all_ms_n <<< "$(calc_stats_ms $vf3_all_ms_runs)"
+                vf3_all_ms="$vf3_all_ms_median"
+              fi
+              if [ -n "${vf3_first_rss_runs:-}" ]; then
+                read vf3_first_rss_median vf3_first_rss_mean vf3_first_rss_stdev vf3_first_rss_min vf3_first_rss_max vf3_first_rss_n <<< "$(calc_stats_kb $vf3_first_rss_runs)"
+                vf3_first_rss_kb="$vf3_first_rss_median"
+              fi
+              if [ -n "${vf3_all_rss_runs:-}" ]; then
+                read vf3_all_rss_median vf3_all_rss_mean vf3_all_rss_stdev vf3_all_rss_min vf3_all_rss_max vf3_all_rss_n <<< "$(calc_stats_kb $vf3_all_rss_runs)"
+                vf3_all_rss_kb="$vf3_all_rss_median"
+              fi
               if [ -n "${vf3_all_out:-}" ]; then
+                vf3_gemini_result="$(echo "$vf3_all_out" | head -n1)"
                 {
                   echo "[VF3 Gemini]"
-                  echo "$vf3_all_out"
-                  if [ -n "${vf3_first_ms:-}" ] && [ -n "${vf3_all_ms:-}" ]; then
-                    echo "Runtime (ms): first=$vf3_first_ms all=$vf3_all_ms"
+                  echo "$vf3_gemini_result"
+                  echo "Iterations: $ITERATIONS"
+                  if [ -n "${vf3_first_ms_median:-}" ] && [ -n "${vf3_all_ms_median:-}" ]; then
+                    echo "Runtime (ms): first median=$vf3_first_ms_median mean=$vf3_first_ms_mean stdev=$vf3_first_ms_stdev min=$vf3_first_ms_min max=$vf3_first_ms_max | all median=$vf3_all_ms_median mean=$vf3_all_ms_mean stdev=$vf3_all_ms_stdev min=$vf3_all_ms_min max=$vf3_all_ms_max"
                   fi
-                  if [ -n "${vf3_first_rss_kb:-}" ] && [ -n "${vf3_all_rss_kb:-}" ]; then
-                    echo "Max RSS (kB): first=$vf3_first_rss_kb all=$vf3_all_rss_kb"
+                  if [ -n "${vf3_first_rss_median:-}" ] && [ -n "${vf3_all_rss_median:-}" ]; then
+                    echo "Max RSS (kB): first median=$vf3_first_rss_median mean=$vf3_first_rss_mean stdev=$vf3_first_rss_stdev min=$vf3_first_rss_min max=$vf3_first_rss_max | all median=$vf3_all_rss_median mean=$vf3_all_rss_mean stdev=$vf3_all_rss_stdev min=$vf3_all_rss_min max=$vf3_all_rss_max"
                   fi
                   echo
                 } >> outputs/result.txt
               fi
 
-              if ! run_capture_rss chatvf3_first_out chatvf3_first_ms chatvf3_first_rss_kb ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n chatvf3_first_out chatvf3_first_ms_runs chatvf3_first_rss_runs "$ITERATIONS" ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 ChatGPT] first-solution run failed." >> outputs/result.txt
               fi
-              if ! run_capture_rss chatvf3_all_out chatvf3_all_ms chatvf3_all_rss_kb ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n chatvf3_all_out chatvf3_all_ms_runs chatvf3_all_rss_runs "$ITERATIONS" ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 ChatGPT] all-solutions run failed." >> outputs/result.txt
               fi
+
+              if [ -n "${chatvf3_first_ms_runs:-}" ]; then
+                read chatvf3_first_ms_median chatvf3_first_ms_mean chatvf3_first_ms_stdev chatvf3_first_ms_min chatvf3_first_ms_max chatvf3_first_ms_n <<< "$(calc_stats_ms $chatvf3_first_ms_runs)"
+                chatvf3_first_ms="$chatvf3_first_ms_median"
+              fi
+              if [ -n "${chatvf3_all_ms_runs:-}" ]; then
+                read chatvf3_all_ms_median chatvf3_all_ms_mean chatvf3_all_ms_stdev chatvf3_all_ms_min chatvf3_all_ms_max chatvf3_all_ms_n <<< "$(calc_stats_ms $chatvf3_all_ms_runs)"
+                chatvf3_all_ms="$chatvf3_all_ms_median"
+              fi
+              if [ -n "${chatvf3_first_rss_runs:-}" ]; then
+                read chatvf3_first_rss_median chatvf3_first_rss_mean chatvf3_first_rss_stdev chatvf3_first_rss_min chatvf3_first_rss_max chatvf3_first_rss_n <<< "$(calc_stats_kb $chatvf3_first_rss_runs)"
+                chatvf3_first_rss_kb="$chatvf3_first_rss_median"
+              fi
+              if [ -n "${chatvf3_all_rss_runs:-}" ]; then
+                read chatvf3_all_rss_median chatvf3_all_rss_mean chatvf3_all_rss_stdev chatvf3_all_rss_min chatvf3_all_rss_max chatvf3_all_rss_n <<< "$(calc_stats_kb $chatvf3_all_rss_runs)"
+                chatvf3_all_rss_kb="$chatvf3_all_rss_median"
+              fi
               if [ -n "${chatvf3_all_out:-}" ]; then
+                chatvf3_result="$(echo "$chatvf3_all_out" | head -n1)"
                 {
                   echo "[VF3 ChatGPT]"
-                  echo "$chatvf3_all_out"
-                  if [ -n "${chatvf3_first_ms:-}" ] && [ -n "${chatvf3_all_ms:-}" ]; then
-                    echo "Runtime (ms): first=$chatvf3_first_ms all=$chatvf3_all_ms"
+                  echo "$chatvf3_result"
+                  echo "Iterations: $ITERATIONS"
+                  if [ -n "${chatvf3_first_ms_median:-}" ] && [ -n "${chatvf3_all_ms_median:-}" ]; then
+                    echo "Runtime (ms): first median=$chatvf3_first_ms_median mean=$chatvf3_first_ms_mean stdev=$chatvf3_first_ms_stdev min=$chatvf3_first_ms_min max=$chatvf3_first_ms_max | all median=$chatvf3_all_ms_median mean=$chatvf3_all_ms_mean stdev=$chatvf3_all_ms_stdev min=$chatvf3_all_ms_min max=$chatvf3_all_ms_max"
                   fi
-                  if [ -n "${chatvf3_first_rss_kb:-}" ] && [ -n "${chatvf3_all_rss_kb:-}" ]; then
-                    echo "Max RSS (kB): first=$chatvf3_first_rss_kb all=$chatvf3_all_rss_kb"
+                  if [ -n "${chatvf3_first_rss_median:-}" ] && [ -n "${chatvf3_all_rss_median:-}" ]; then
+                    echo "Max RSS (kB): first median=$chatvf3_first_rss_median mean=$chatvf3_first_rss_mean stdev=$chatvf3_first_rss_stdev min=$chatvf3_first_rss_min max=$chatvf3_first_rss_max | all median=$chatvf3_all_rss_median mean=$chatvf3_all_rss_mean stdev=$chatvf3_all_rss_stdev min=$chatvf3_all_rss_min max=$chatvf3_all_rss_max"
                   fi
+                  echo
                 } >> outputs/result.txt
               fi
               ;;
@@ -395,6 +639,7 @@ jobs:
           
           echo "EXIT_CODE=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           echo "REQUEST_ID=${REQUEST_ID}" >> "$GITHUB_OUTPUT"
+          echo "ITERATIONS=${ITERATIONS}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_BASELINE_MS=${dijkstra_baseline_ms:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_LLM_MS=${dijkstra_llm_ms:-}" >> "$GITHUB_OUTPUT"
           echo "GLASGOW_FIRST_MS=${glasgow_first_ms:-}" >> "$GITHUB_OUTPUT"
@@ -420,6 +665,7 @@ jobs:
         if: always()
         env:
           EXIT_CODE: ${{ steps.run.outputs.EXIT_CODE }}
+          ITERATIONS: ${{ steps.run.outputs.ITERATIONS }}
           DIJKSTRA_BASELINE_MS: ${{ steps.run.outputs.DIJKSTRA_BASELINE_MS }}
           DIJKSTRA_LLM_MS: ${{ steps.run.outputs.DIJKSTRA_LLM_MS }}
           GLASGOW_FIRST_MS: ${{ steps.run.outputs.GLASGOW_FIRST_MS }}
@@ -473,6 +719,12 @@ jobs:
               "error": error,
               "request_id": request_id,
           }
+          iterations = os.environ.get("ITERATIONS", "").strip()
+          if iterations:
+              try:
+                  data["iterations"] = int(iterations)
+              except ValueError:
+                  pass
           timings_ms = {}
           if algorithm == "dijkstra":
               baseline = os.environ.get("DIJKSTRA_BASELINE_MS", "")
