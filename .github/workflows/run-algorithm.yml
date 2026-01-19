@@ -180,6 +180,8 @@ jobs:
 
       - name: Run algorithm
         id: run
+        env:
+          BINARIES_READY: ${{ steps.binaries.outputs.READY }}
         run: |
           set -uo pipefail
           ALGORITHM="${ALGORITHM_INPUT:-}"
@@ -190,7 +192,7 @@ jobs:
           mkdir -p outputs
           : > outputs/result.txt
 
-          if [ "${{ steps.binaries.outputs.READY }}" != "1" ]; then
+          if [ "${BINARIES_READY:-}" != "1" ]; then
             echo "Failed to download prebuilt binaries." >> outputs/result.txt
             if [ -s outputs/binaries_download_error.txt ]; then
               cat outputs/binaries_download_error.txt >> outputs/result.txt
