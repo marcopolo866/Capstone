@@ -1,24 +1,25 @@
 {
   "algorithm": "vf3",
-  "timestamp": "2026-01-19 03:14:22 UTC",
+  "timestamp": "2026-01-19 04:50:53 UTC",
   "status": "success",
-  "output": "[VF3 baseline]\n126\nRuntime (ms): first=10.663 all=4.582\nMax RSS (kB): first=4636 all=4628\n\n[VF3 Gemini]\n126\n0.725\nRuntime (ms): first=3.581 all=4.551\nMax RSS (kB): first=4204 all=4200\n\n[VF3 ChatGPT]\n126\n9.983\nRuntime (ms): first=4.104 all=14.244\nMax RSS (kB): first=4212 all=4176\n",
+  "output": "[VF3 baseline]\n126\nIterations: 50\nRuntime (ms): first median=4.155 mean=4.291 stdev=0.748 min=4.087 max=9.439 | all median=4.567 mean=4.574 stdev=0.043 min=4.503 max=4.695\nMax RSS (kB): first median=4468 mean=4426 stdev=75 min=4300 max=4520 | all median=4492 mean=4448 stdev=68 min=4324 max=4520\n\n[VF3 Gemini]\n126\nIterations: 50\nRuntime (ms): first median=3.971 mean=3.978 stdev=0.041 min=3.897 max=4.122 | all median=4.619 mean=4.617 stdev=0.038 min=4.545 max=4.703\nMax RSS (kB): first median=4052 mean=4042 stdev=33 min=3996 max=4160 | all median=4056 mean=4045 stdev=37 min=3980 max=4160\n\n[VF3 ChatGPT]\n126\nIterations: 50\nRuntime (ms): first median=4.411 mean=4.427 stdev=0.083 min=4.330 max=4.920 | all median=14.047 mean=14.081 stdev=0.126 min=13.923 max=14.459\nMax RSS (kB): first median=4084 mean=4072 stdev=21 min=4028 max=4088 | all median=4080 mean=4065 stdev=24 min=4004 max=4088\n\n",
   "error": "",
-  "request_id": "91667c40-522f-4ad7-a0dd-998633aed252",
+  "request_id": "0f4c878e-ae7e-4572-86f2-fbeccd4452c7",
+  "iterations": 50,
   "timings_ms": {
-    "baseline_first": 10.663,
-    "baseline_all": 4.582,
-    "gemini_first": 3.581,
-    "gemini_all": 4.551,
-    "chatgpt_first": 4.104,
-    "chatgpt_all": 14.244
+    "baseline_first": 4.155,
+    "baseline_all": 4.567,
+    "gemini_first": 3.971,
+    "gemini_all": 4.619,
+    "chatgpt_first": 4.411,
+    "chatgpt_all": 14.047
   },
   "memory_kb": {
-    "baseline_first": 4636,
-    "baseline_all": 4628,
-    "gemini_first": 4204,
-    "gemini_all": 4200,
-    "chatgpt_first": 4212,
-    "chatgpt_all": 4176
+    "baseline_first": 4468,
+    "baseline_all": 4492,
+    "gemini_first": 4052,
+    "gemini_all": 4056,
+    "chatgpt_first": 4084,
+    "chatgpt_all": 4080
   }
 }
