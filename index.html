@@ -78,6 +78,16 @@
                     </button>
                     <button class="btn" onclick="clearOutput()">Clear Output</button>
                 </div>
+
+                <div class="progress-wrapper" id="progress-wrapper" hidden>
+                    <div class="progress-meta">
+                        <div class="progress-phase" id="progress-phase">Preparing…</div>
+                        <div class="progress-count" id="progress-count">0/0</div>
+                    </div>
+                    <div class="progress-bar" id="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                </div>
                 
                 <div style="margin-top: 20px;">
                     <h3 style="margin-bottom: 10px;">Output:</h3>
@@ -123,6 +133,149 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 fileLabels: ['Subgraph File', 'Graph File']
             }
         };
+
+        const progressState = {
+            requestId: '',
+            runSha: '',
+            total: 0,
+            completed: 0,
+            phase: ''
+        };
+
+        function getTestsPerIteration(algoId) {
+            if (algoId === 'dijkstra') return 2;
+            if (algoId === 'glasgow') return 2;
+            if (algoId === 'vf3') return 6;
+            return 0;
+        }
+
+        function getProgressEls() {
+            return {
+                wrapper: document.getElementById('progress-wrapper'),
+                phase: document.getElementById('progress-phase'),
+                count: document.getElementById('progress-count'),
+                bar: document.getElementById('progress-bar'),
+                fill: document.getElementById('progress-fill')
+            };
+        }
+
+        function setProgressVisible(visible) {
+            const els = getProgressEls();
+            if (!els.wrapper) return;
+            els.wrapper.hidden = !visible;
+        }
+
+        function progressReset(algoId, iterations, requestId) {
+            const testsPerIter = getTestsPerIteration(algoId);
+            progressState.requestId = requestId || '';
+            progressState.runSha = '';
+            progressState.total = Math.max(0, Number(iterations) || 0) * testsPerIter;
+            progressState.completed = 0;
+            progressState.phase = '';
+
+            setProgressVisible(true);
+            progressSetIndeterminate('Queued…');
+        }
+
+        function progressClear() {
+            progressState.requestId = '';
+            progressState.runSha = '';
+            progressState.total = 0;
+            progressState.completed = 0;
+            progressState.phase = '';
+
+            const els = getProgressEls();
+            if (els.wrapper) {
+                els.wrapper.classList.remove('indeterminate');
+                els.wrapper.hidden = true;
+            }
+            if (els.fill) els.fill.style.width = '0%';
+            if (els.bar) els.bar.setAttribute('aria-valuenow', '0');
+            if (els.phase) els.phase.textContent = '';
+            if (els.count) els.count.textContent = '';
+        }
+
+        function progressSetIndeterminate(phaseText) {
+            const els = getProgressEls();
+            if (els.wrapper) els.wrapper.classList.add('indeterminate');
+            if (els.phase) els.phase.textContent = phaseText || 'Running…';
+            const total = progressState.total || 0;
+            if (els.count) els.count.textContent = total ? `0/${total}` : '0/0';
+            if (els.bar) els.bar.setAttribute('aria-valuenow', '0');
+        }
+
+        function progressSetDeterminate(phaseText, completed, total) {
+            const els = getProgressEls();
+            if (els.wrapper) els.wrapper.classList.remove('indeterminate');
+
+            const safeTotal = Math.max(0, Number(total) || 0);
+            const safeCompleted = Math.max(0, Math.min(safeTotal || 0, Number(completed) || 0));
+            const percent = safeTotal ? (safeCompleted / safeTotal) * 100 : 0;
+
+            progressState.completed = safeCompleted;
+            progressState.total = safeTotal;
+            progressState.phase = phaseText || '';
+
+            if (els.phase) els.phase.textContent = phaseText || 'Running…';
+            if (els.count) els.count.textContent = safeTotal ? `${safeCompleted}/${safeTotal} (${percent.toFixed(1)}%)` : `${safeCompleted}/0`;
+            if (els.fill) els.fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+            if (els.bar) els.bar.setAttribute('aria-valuenow', String(Math.round(percent)));
+        }
+
+        function encodePathPreservingSlashes(value) {
+            return String(value || '').split('/').map(part => encodeURIComponent(part)).join('/');
+        }
+
+        async function getBranchHeadSha(branchRef) {
+            const ref = String(branchRef || '').trim();
+            if (!ref) return '';
+
+            try {
+                const data = await apiRequest(`/git/ref/heads/${encodePathPreservingSlashes(ref)}`);
+                if (data && data.object && data.object.sha) return data.object.sha;
+            } catch (_) {}
+
+            try {
+                const data = await apiRequest(`/commits/${encodePathPreservingSlashes(ref)}`);
+                if (data && data.sha) return data.sha;
+            } catch (_) {}
+
+            return '';
+        }
+
+        async function tryUpdateProgressFromChecks(requestId, runSha) {
+            if (!requestId || !runSha) return false;
+
+            let data;
+            try {
+                data = await apiRequest(`/commits/${runSha}/check-runs?per_page=100&filter=latest`);
+            } catch (_) {
+                return false;
+            }
+
+            const checkRuns = (data && Array.isArray(data.check_runs)) ? data.check_runs : [];
+            if (!checkRuns.length) return false;
+
+            const match = checkRuns.find(cr => typeof cr.name === 'string' && cr.name.includes(requestId)) ||
+                          checkRuns.find(cr => cr.output && typeof cr.output.text === 'string' && cr.output.text.includes(requestId));
+            if (!match) return false;
+
+            let progress = null;
+            if (match.output && typeof match.output.text === 'string') {
+                try {
+                    progress = JSON.parse(match.output.text);
+                } catch (_) {
+                    progress = null;
+                }
+            }
+
+            const completed = progress && Number.isFinite(Number(progress.completed)) ? Number(progress.completed) : 0;
+            const total = progress && Number.isFinite(Number(progress.total)) ? Number(progress.total) : (progressState.total || 0);
+            const phase = progress && typeof progress.phase === 'string' ? progress.phase : '';
+
+            progressSetDeterminate(phase || 'Running…', completed, total);
+            return true;
+        }
         
         function selectAlgorithm(evt, algoId) {
             config.selectedAlgorithm = algoId;
@@ -312,6 +465,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             runBtn.disabled = true;
 
             const fail = (message) => {
+                progressClear();
                 outputDiv.textContent = `Failure: ${message}`;
                 statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
                 runBtn.disabled = false;
@@ -365,6 +519,14 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (iterations > 1000) iterations = 1000;
 
             const branchRef = config.ref || 'main';
+            progressReset(config.selectedAlgorithm, iterations, requestId);
+
+            let runSha = '';
+            try {
+                runSha = await getBranchHeadSha(branchRef);
+                if (runSha) progressState.runSha = runSha;
+            } catch (_) {}
+
             const workflowData = {
                 ref: branchRef,
                 inputs: {
@@ -375,10 +537,13 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 }
             };
 
+            let dispatched = false;
             try {
                 await ensureWorkflowDispatch(branchRef);
                 await dispatchWorkflow(workflowData);
-                const result = await waitForResult(requestId, branchRef);
+                dispatched = true;
+                progressSetIndeterminate('Running…');
+                const result = await waitForResult(requestId, branchRef, runSha);
                 if (result.status !== 'success') {
                     throw new Error(result.error || 'Workflow reported failure');
                 }
@@ -393,14 +558,29 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 ];
                 outputDiv.textContent = finalLines.join('\n');
                 statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
+                if (progressState.total > 0) {
+                    progressSetDeterminate('Completed', progressState.total, progressState.total);
+                }
             } catch (error) {
-                outputDiv.textContent = `Failure: ${error.message || error}`;
+                const message = error && error.message ? error.message : String(error);
+                outputDiv.textContent = `Failure: ${message}`;
                 reportDebugError('runAlgorithm', error, {
                     algorithm: config.selectedAlgorithm,
                     files: config.selectedFiles.map(f => f.path).join(','),
                     ref: branchRef
                 });
                 statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
+
+                if (!dispatched) {
+                    progressClear();
+                } else {
+                    const phaseText = message.length > 120 ? message.slice(0, 117) + '…' : message;
+                    if (progressState.total > 0) {
+                        progressSetDeterminate(phaseText, progressState.completed, progressState.total);
+                    } else {
+                        progressSetIndeterminate(phaseText);
+                    }
+                }
             } finally {
                 runBtn.disabled = false;
             }
@@ -473,12 +653,24 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             }
         }
 
-        async function waitForResult(requestId, branchRef) {
-            const maxAttempts = 40;
+        async function waitForResult(requestId, branchRef, runSha) {
             const waitMs = 5000;
+            const maxAttempts = 720; // ~60 minutes at 5s intervals
             let lastError = null;
+            let sha = runSha || '';
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                if (!sha) {
+                    try {
+                        sha = await getBranchHeadSha(branchRef || config.ref || 'main');
+                        if (sha) progressState.runSha = sha;
+                    } catch (_) {}
+                }
+                if (sha) {
+                    try {
+                        await tryUpdateProgressFromChecks(requestId, sha);
+                    } catch (_) {}
+                }
                 try {
                     const refParam = branchRef ? `?ref=${encodeURIComponent(branchRef)}` : '';
                     const file = await apiRequest(`/contents/outputs/result.json${refParam}`);
@@ -509,6 +701,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         function clearOutput() {
             document.getElementById('output').textContent = 'Output cleared.';
             document.getElementById('status-badge').innerHTML = '';
+            progressClear();
         }
         
         async function apiRequest(endpoint, method = 'GET', body = null, options = {}) {
