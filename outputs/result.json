@@ -1,25 +1,8 @@
 {
   "algorithm": "vf3",
-  "timestamp": "2026-01-19 23:34:35 UTC",
-  "status": "success",
-  "output": "[VF3 baseline]\n126\nIterations: 5\nRuntime (ms): first median=     4.666 mean=     4.908 stdev=     0.685 min=     4.448 max=     6.122\n              all   median=     4.985 mean=     4.958 stdev=     0.101 min=     4.835 max=     5.080\nMax RSS (kB): first median=      4496 mean=      4453 stdev=        74 min=      4372 max=      4520\n              all   median=      4372 mean=      4386 stdev=        63 min=      4324 max=      4492\n\n[VF3 Gemini]\n126\nIterations: 5\nRuntime (ms): first median=     4.302 mean=     4.290 stdev=     0.067 min=     4.187 max=     4.356\n              all   median=     5.143 mean=     5.111 stdev=     0.155 min=     4.932 max=     5.334\nMax RSS (kB): first median=      4056 mean=      4047 stdev=        16 min=      4020 max=      4056\n              all   median=      4056 mean=      4064 stdev=        60 min=      3992 max=      4160\n\n[VF3 ChatGPT]\n126\nIterations: 5\nRuntime (ms): first median=     4.649 mean=     4.729 stdev=     0.273 min=     4.480 max=     5.193\n              all   median=    14.328 mean=    14.448 stdev=     0.322 min=    14.117 max=    14.933\nMax RSS (kB): first median=      4088 mean=      4075 stdev=        24 min=      4032 max=      4088\n              all   median=      4088 mean=      4060 stdev=        43 min=      3992 max=      4088\n\n",
-  "error": "",
-  "request_id": "fe08c930-5e7f-4c72-a967-469a30767b11",
-  "iterations": 5,
-  "timings_ms": {
-    "baseline_first": 4.666,
-    "baseline_all": 4.985,
-    "gemini_first": 4.302,
-    "gemini_all": 5.143,
-    "chatgpt_first": 4.649,
-    "chatgpt_all": 14.328
-  },
-  "memory_kb": {
-    "baseline_first": 4496,
-    "baseline_all": 4372,
-    "gemini_first": 4056,
-    "gemini_all": 4056,
-    "chatgpt_first": 4088,
-    "chatgpt_all": 4088
-  }
+  "timestamp": "2026-01-19 23:50:45 UTC",
+  "status": "error",
+  "output": "",
+  "error": "Unknown error",
+  "request_id": "a101ab75-286b-43c3-9e23-5f4706fbb9c2"
 }
