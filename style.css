@@ -274,20 +274,7 @@ body {
     width: 0%;
     background: linear-gradient(90deg, #2ea44f 0%, #34d058 100%);
     border-radius: 999px;
-    transition: width 0.2s ease;
-}
-
-.progress-wrapper.indeterminate .progress-fill {
-    width: 30%;
-    position: absolute;
-    left: 0;
-    transition: none;
-    animation: progress-indeterminate 1.2s infinite ease-in-out;
-}
-
-@keyframes progress-indeterminate {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(350%); }
+    transition: width 0.8s ease;
 }
 
 .output-content {

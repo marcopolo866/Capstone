@@ -81,7 +81,7 @@
 
                 <div class="progress-wrapper" id="progress-wrapper" hidden>
                     <div class="progress-meta">
-                        <div class="progress-phase" id="progress-phase">Preparing…</div>
+                        <div class="progress-phase" id="progress-phase">Preparing...</div>
                         <div class="progress-count" id="progress-count">0/0</div>
                     </div>
                     <div class="progress-bar" id="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -174,7 +174,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             progressState.phase = '';
 
             setProgressVisible(true);
-            progressSetIndeterminate('Queued…');
+            progressSetDeterminate('Queued...', 0, progressState.total);
         }
 
         function progressClear() {
@@ -186,7 +186,6 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
             const els = getProgressEls();
             if (els.wrapper) {
-                els.wrapper.classList.remove('indeterminate');
                 els.wrapper.hidden = true;
             }
             if (els.fill) els.fill.style.width = '0%';
@@ -195,31 +194,43 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (els.count) els.count.textContent = '';
         }
 
-        function progressSetIndeterminate(phaseText) {
-            const els = getProgressEls();
-            if (els.wrapper) els.wrapper.classList.add('indeterminate');
-            if (els.phase) els.phase.textContent = phaseText || 'Running…';
-            const total = progressState.total || 0;
-            if (els.count) els.count.textContent = total ? `0/${total}` : '0/0';
-            if (els.bar) els.bar.setAttribute('aria-valuenow', '0');
-        }
-
         function progressSetDeterminate(phaseText, completed, total) {
             const els = getProgressEls();
-            if (els.wrapper) els.wrapper.classList.remove('indeterminate');
+
+            const prevTotal = Number.isFinite(Number(progressState.total)) ? Number(progressState.total) : 0;
+            const prevCompleted = Number.isFinite(Number(progressState.completed)) ? Number(progressState.completed) : 0;
 
             const safeTotal = Math.max(0, Number(total) || 0);
-            const safeCompleted = Math.max(0, Math.min(safeTotal || 0, Number(completed) || 0));
-            const percent = safeTotal ? (safeCompleted / safeTotal) * 100 : 0;
+            const effectiveTotal = safeTotal || prevTotal;
+            const requestedCompleted = Math.max(0, Math.min(effectiveTotal || 0, Number(completed) || 0));
+            const safeCompleted = Math.max(prevCompleted, requestedCompleted);
+            const percent = effectiveTotal ? (safeCompleted / effectiveTotal) * 100 : 0;
+            const displayCompleted = Math.floor(safeCompleted);
 
             progressState.completed = safeCompleted;
-            progressState.total = safeTotal;
+            progressState.total = effectiveTotal;
             progressState.phase = phaseText || '';
 
-            if (els.phase) els.phase.textContent = phaseText || 'Running…';
-            if (els.count) els.count.textContent = safeTotal ? `${safeCompleted}/${safeTotal} (${percent.toFixed(1)}%)` : `${safeCompleted}/0`;
+            if (els.phase) els.phase.textContent = phaseText || 'Running...';
+            if (els.count) els.count.textContent = effectiveTotal ? `${displayCompleted}/${effectiveTotal} (${percent.toFixed(1)}%)` : `${displayCompleted}/0`;
             if (els.fill) els.fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
             if (els.bar) els.bar.setAttribute('aria-valuenow', String(Math.round(percent)));
+        }
+
+        function progressUpdateEstimated(attempt, maxAttempts, phaseText) {
+            const total = Number.isFinite(Number(progressState.total)) ? Number(progressState.total) : 0;
+            if (!total) {
+                progressSetDeterminate(phaseText || 'Running...', 0, 0);
+                return;
+            }
+
+            const denom = Math.max(1, Number(maxAttempts) || 1);
+            const step = Math.min(Math.max(1, Number(attempt) || 1), denom);
+            const targetPercent = Math.min(95, (step / denom) * 95);
+            const currentPercent = (progressState.completed / total) * 100;
+            const percent = Math.max(currentPercent, targetPercent);
+            const estimatedCompleted = (percent / 100) * total;
+            progressSetDeterminate(phaseText || 'Running...', estimatedCompleted, total);
         }
 
         function encodePathPreservingSlashes(value) {
@@ -244,21 +255,45 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         }
 
         async function tryUpdateProgressFromChecks(requestId, runSha) {
-            if (!requestId || !runSha) return false;
+            if (!requestId || !runSha) return { updated: false, reason: 'missing' };
 
-            let data;
+            const endpoint = `/commits/${runSha}/check-runs?per_page=100&filter=latest`;
+
+            let data = null;
+            let authError = null;
             try {
-                data = await apiRequest(`/commits/${runSha}/check-runs?per_page=100&filter=latest`);
-            } catch (_) {
-                return false;
+                data = await apiRequest(endpoint);
+            } catch (error) {
+                authError = error;
+            }
+
+            if (!data) {
+                const msg = authError && authError.message ? authError.message : '';
+                // If a fine-grained token lacks Checks: Read but the repo is public, retry without auth.
+                if (config.token && (msg.includes('403') || msg.includes('401'))) {
+                    try {
+                        data = await apiRequest(endpoint, 'GET', null, { useAuth: false });
+                    } catch (fallbackError) {
+                        const fallbackMsg = fallbackError && fallbackError.message ? fallbackError.message : '';
+                        if (msg.includes('403') || fallbackMsg.includes('403')) {
+                            return { updated: false, reason: 'forbidden' };
+                        }
+                        return { updated: false, reason: 'error' };
+                    }
+                } else {
+                    if (msg.includes('403')) {
+                        return { updated: false, reason: 'forbidden' };
+                    }
+                    return { updated: false, reason: 'error' };
+                }
             }
 
             const checkRuns = (data && Array.isArray(data.check_runs)) ? data.check_runs : [];
-            if (!checkRuns.length) return false;
+            if (!checkRuns.length) return { updated: false, reason: 'no_check_runs' };
 
             const match = checkRuns.find(cr => typeof cr.name === 'string' && cr.name.includes(requestId)) ||
                           checkRuns.find(cr => cr.output && typeof cr.output.text === 'string' && cr.output.text.includes(requestId));
-            if (!match) return false;
+            if (!match) return { updated: false, reason: 'not_found' };
 
             let progress = null;
             if (match.output && typeof match.output.text === 'string') {
@@ -273,8 +308,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const total = progress && Number.isFinite(Number(progress.total)) ? Number(progress.total) : (progressState.total || 0);
             const phase = progress && typeof progress.phase === 'string' ? progress.phase : '';
 
-            progressSetDeterminate(phase || 'Running…', completed, total);
-            return true;
+            progressSetDeterminate(phase || 'Running...', completed, total);
+            return { updated: true, reason: 'ok' };
         }
         
         function selectAlgorithm(evt, algoId) {
@@ -542,7 +577,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 await ensureWorkflowDispatch(branchRef);
                 await dispatchWorkflow(workflowData);
                 dispatched = true;
-                progressSetIndeterminate('Running…');
+                progressSetDeterminate('Running...', 0, progressState.total);
                 const result = await waitForResult(requestId, branchRef, runSha);
                 if (result.status !== 'success') {
                     throw new Error(result.error || 'Workflow reported failure');
@@ -574,12 +609,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 if (!dispatched) {
                     progressClear();
                 } else {
-                    const phaseText = message.length > 120 ? message.slice(0, 117) + '…' : message;
-                    if (progressState.total > 0) {
-                        progressSetDeterminate(phaseText, progressState.completed, progressState.total);
-                    } else {
-                        progressSetIndeterminate(phaseText);
-                    }
+                    const phaseText = message.length > 120 ? message.slice(0, 117) + '...' : message;
+                    progressSetDeterminate(phaseText, progressState.completed, progressState.total);
                 }
             } finally {
                 runBtn.disabled = false;
@@ -666,10 +697,20 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         if (sha) progressState.runSha = sha;
                     } catch (_) {}
                 }
+                let progressUpdated = false;
+                let progressReason = '';
                 if (sha) {
                     try {
-                        await tryUpdateProgressFromChecks(requestId, sha);
+                        const progressRes = await tryUpdateProgressFromChecks(requestId, sha);
+                        progressUpdated = !!(progressRes && progressRes.updated);
+                        progressReason = progressRes && progressRes.reason ? progressRes.reason : '';
                     } catch (_) {}
+                }
+                if (!progressUpdated) {
+                    const phase = progressReason === 'forbidden'
+                        ? 'Running... (enable Checks: Read)'
+                        : 'Running...';
+                    progressUpdateEstimated(attempt, maxAttempts, phase);
                 }
                 try {
                     const refParam = branchRef ? `?ref=${encodeURIComponent(branchRef)}` : '';
