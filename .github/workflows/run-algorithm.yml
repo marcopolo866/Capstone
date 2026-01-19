@@ -233,6 +233,41 @@ jobs:
             return $status
           }
 
+          run_capture_rss() {
+            local _out_var=$1
+            local _dur_var=$2
+            local _rss_var=$3
+            shift 3
+            tmp=$(mktemp)
+            rss_tmp=$(mktemp)
+            local start_ns end_ns duration_ms rss_kb
+            start_ns=$(date +%s%N)
+            set +e
+            if [ -x /usr/bin/time ]; then
+              /usr/bin/time -f "%M" -o "$rss_tmp" "$@" >"$tmp" 2>&1
+            else
+              "$@" >"$tmp" 2>&1
+            fi
+            local status=$?
+            set -e
+            end_ns=$(date +%s%N)
+            duration_ms=$(python - <<'PY' "$start_ns" "$end_ns"
+          import sys
+          start=int(sys.argv[1]); end=int(sys.argv[2])
+          print(f"{(end - start)/1_000_000:.3f}")
+          PY
+            )
+            rss_kb=""
+            if [ -s "$rss_tmp" ]; then
+              rss_kb="$(head -n1 "$rss_tmp" | tr -d '\r' | awk '{print $1}')"
+            fi
+            printf -v "$_out_var" "%s" "$(cat "$tmp")"
+            printf -v "$_dur_var" "%s" "$duration_ms"
+            printf -v "$_rss_var" "%s" "$rss_kb"
+            rm -f "$tmp" "$rss_tmp"
+            return $status
+          }
+
           EXIT_CODE=0
 
           case "$ALGORITHM" in
@@ -260,11 +295,11 @@ jobs:
               fi
               ;;
             glasgow)
-              if ! run_capture glasgow_first_out glasgow_first_ms ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture_rss glasgow_first_out glasgow_first_ms glasgow_first_rss_kb ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Subgraph Solver] first-solution run failed." >> outputs/result.txt
               fi
-              if ! run_capture glasgow_all_out glasgow_all_ms ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture_rss glasgow_all_out glasgow_all_ms glasgow_all_rss_kb ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Subgraph Solver] all-solutions run failed." >> outputs/result.txt
               fi
@@ -275,15 +310,18 @@ jobs:
                   if [ -n "${glasgow_first_ms:-}" ] && [ -n "${glasgow_all_ms:-}" ]; then
                     echo "Runtime (ms): first=$glasgow_first_ms all=$glasgow_all_ms"
                   fi
+                  if [ -n "${glasgow_first_rss_kb:-}" ] && [ -n "${glasgow_all_rss_kb:-}" ]; then
+                    echo "Max RSS (kB): first=$glasgow_first_rss_kb all=$glasgow_all_rss_kb"
+                  fi
                 } >> outputs/result.txt
               fi
               ;;
             vf3)
-              if ! run_capture vf3_base_first_out vf3_base_first_ms ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture_rss vf3_base_first_out vf3_base_first_ms vf3_base_first_rss_kb ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 baseline] first-solution run failed." >> outputs/result.txt
               fi
-              if ! run_capture vf3_base_all_out vf3_base_all_ms ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture_rss vf3_base_all_out vf3_base_all_ms vf3_base_all_rss_kb ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 baseline] all-solutions run failed." >> outputs/result.txt
               fi
@@ -299,15 +337,18 @@ jobs:
                   if [ -n "${vf3_base_first_ms:-}" ] && [ -n "${vf3_base_all_ms:-}" ]; then
                     echo "Runtime (ms): first=$vf3_base_first_ms all=$vf3_base_all_ms"
                   fi
+                  if [ -n "${vf3_base_first_rss_kb:-}" ] && [ -n "${vf3_base_all_rss_kb:-}" ]; then
+                    echo "Max RSS (kB): first=$vf3_base_first_rss_kb all=$vf3_base_all_rss_kb"
+                  fi
                   echo
                 } >> outputs/result.txt
               fi
 
-              if ! run_capture vf3_first_out vf3_first_ms ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture_rss vf3_first_out vf3_first_ms vf3_first_rss_kb ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 Gemini] first-solution run failed." >> outputs/result.txt
               fi
-              if ! run_capture vf3_all_out vf3_all_ms ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture_rss vf3_all_out vf3_all_ms vf3_all_rss_kb ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 Gemini] all-solutions run failed." >> outputs/result.txt
               fi
@@ -318,15 +359,18 @@ jobs:
                   if [ -n "${vf3_first_ms:-}" ] && [ -n "${vf3_all_ms:-}" ]; then
                     echo "Runtime (ms): first=$vf3_first_ms all=$vf3_all_ms"
                   fi
+                  if [ -n "${vf3_first_rss_kb:-}" ] && [ -n "${vf3_all_rss_kb:-}" ]; then
+                    echo "Max RSS (kB): first=$vf3_first_rss_kb all=$vf3_all_rss_kb"
+                  fi
                   echo
                 } >> outputs/result.txt
               fi
 
-              if ! run_capture chatvf3_first_out chatvf3_first_ms ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture_rss chatvf3_first_out chatvf3_first_ms chatvf3_first_rss_kb ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 ChatGPT] first-solution run failed." >> outputs/result.txt
               fi
-              if ! run_capture chatvf3_all_out chatvf3_all_ms ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
+              if ! run_capture_rss chatvf3_all_out chatvf3_all_ms chatvf3_all_rss_kb ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 ChatGPT] all-solutions run failed." >> outputs/result.txt
               fi
@@ -336,6 +380,9 @@ jobs:
                   echo "$chatvf3_all_out"
                   if [ -n "${chatvf3_first_ms:-}" ] && [ -n "${chatvf3_all_ms:-}" ]; then
                     echo "Runtime (ms): first=$chatvf3_first_ms all=$chatvf3_all_ms"
+                  fi
+                  if [ -n "${chatvf3_first_rss_kb:-}" ] && [ -n "${chatvf3_all_rss_kb:-}" ]; then
+                    echo "Max RSS (kB): first=$chatvf3_first_rss_kb all=$chatvf3_all_rss_kb"
                   fi
                 } >> outputs/result.txt
               fi
@@ -352,12 +399,20 @@ jobs:
           echo "DIJKSTRA_LLM_MS=${dijkstra_llm_ms:-}" >> "$GITHUB_OUTPUT"
           echo "GLASGOW_FIRST_MS=${glasgow_first_ms:-}" >> "$GITHUB_OUTPUT"
           echo "GLASGOW_ALL_MS=${glasgow_all_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_FIRST_RSS_KB=${glasgow_first_rss_kb:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_ALL_RSS_KB=${glasgow_all_rss_kb:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_BASE_FIRST_MS=${vf3_base_first_ms:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_BASE_ALL_MS=${vf3_base_all_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_BASE_FIRST_RSS_KB=${vf3_base_first_rss_kb:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_BASE_ALL_RSS_KB=${vf3_base_all_rss_kb:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_GEMINI_FIRST_MS=${vf3_first_ms:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_GEMINI_ALL_MS=${vf3_all_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_GEMINI_FIRST_RSS_KB=${vf3_first_rss_kb:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_GEMINI_ALL_RSS_KB=${vf3_all_rss_kb:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_CHATGPT_FIRST_MS=${chatvf3_first_ms:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_CHATGPT_ALL_MS=${chatvf3_all_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_CHATGPT_FIRST_RSS_KB=${chatvf3_first_rss_kb:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_CHATGPT_ALL_RSS_KB=${chatvf3_all_rss_kb:-}" >> "$GITHUB_OUTPUT"
           # Always exit 0 so later steps run and results are committed
           exit 0
       
@@ -369,12 +424,20 @@ jobs:
           DIJKSTRA_LLM_MS: ${{ steps.run.outputs.DIJKSTRA_LLM_MS }}
           GLASGOW_FIRST_MS: ${{ steps.run.outputs.GLASGOW_FIRST_MS }}
           GLASGOW_ALL_MS: ${{ steps.run.outputs.GLASGOW_ALL_MS }}
+          GLASGOW_FIRST_RSS_KB: ${{ steps.run.outputs.GLASGOW_FIRST_RSS_KB }}
+          GLASGOW_ALL_RSS_KB: ${{ steps.run.outputs.GLASGOW_ALL_RSS_KB }}
           VF3_BASE_FIRST_MS: ${{ steps.run.outputs.VF3_BASE_FIRST_MS }}
           VF3_BASE_ALL_MS: ${{ steps.run.outputs.VF3_BASE_ALL_MS }}
+          VF3_BASE_FIRST_RSS_KB: ${{ steps.run.outputs.VF3_BASE_FIRST_RSS_KB }}
+          VF3_BASE_ALL_RSS_KB: ${{ steps.run.outputs.VF3_BASE_ALL_RSS_KB }}
           VF3_GEMINI_FIRST_MS: ${{ steps.run.outputs.VF3_GEMINI_FIRST_MS }}
           VF3_GEMINI_ALL_MS: ${{ steps.run.outputs.VF3_GEMINI_ALL_MS }}
+          VF3_GEMINI_FIRST_RSS_KB: ${{ steps.run.outputs.VF3_GEMINI_FIRST_RSS_KB }}
+          VF3_GEMINI_ALL_RSS_KB: ${{ steps.run.outputs.VF3_GEMINI_ALL_RSS_KB }}
           VF3_CHATGPT_FIRST_MS: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_MS }}
           VF3_CHATGPT_ALL_MS: ${{ steps.run.outputs.VF3_CHATGPT_ALL_MS }}
+          VF3_CHATGPT_FIRST_RSS_KB: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_RSS_KB }}
+          VF3_CHATGPT_ALL_RSS_KB: ${{ steps.run.outputs.VF3_CHATGPT_ALL_RSS_KB }}
         run: |
           python - <<'PY'
           import datetime
@@ -439,6 +502,40 @@ jobs:
               maybe_add("chatgpt_all", "VF3_CHATGPT_ALL_MS")
           if timings_ms:
               data["timings_ms"] = timings_ms
+
+          memory_kb = {}
+          if algorithm == "glasgow":
+              first = os.environ.get("GLASGOW_FIRST_RSS_KB", "")
+              all_kb = os.environ.get("GLASGOW_ALL_RSS_KB", "")
+              if first:
+                  try:
+                      memory_kb["first"] = int(first)
+                  except ValueError:
+                      pass
+              if all_kb:
+                  try:
+                      memory_kb["all"] = int(all_kb)
+                  except ValueError:
+                      pass
+          elif algorithm == "vf3":
+              def maybe_add_int(name: str, key: str) -> None:
+                  value = os.environ.get(key, "")
+                  if not value:
+                      return
+                  try:
+                      memory_kb[name] = int(value)
+                  except ValueError:
+                      return
+
+              maybe_add_int("baseline_first", "VF3_BASE_FIRST_RSS_KB")
+              maybe_add_int("baseline_all", "VF3_BASE_ALL_RSS_KB")
+              maybe_add_int("gemini_first", "VF3_GEMINI_FIRST_RSS_KB")
+              maybe_add_int("gemini_all", "VF3_GEMINI_ALL_RSS_KB")
+              maybe_add_int("chatgpt_first", "VF3_CHATGPT_FIRST_RSS_KB")
+              maybe_add_int("chatgpt_all", "VF3_CHATGPT_ALL_RSS_KB")
+
+          if memory_kb:
+              data["memory_kb"] = memory_kb
           Path("outputs/result.json").write_text(
               json.dumps(data, indent=2) + "\n", encoding="utf-8"
           )
