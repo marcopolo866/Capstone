@@ -392,6 +392,28 @@ jobs:
           PY
           }
 
+          print_stats_ms_first_all() {
+            local prefix="$1"
+            shift
+            local indent
+            indent="$(printf '%*s' ${#prefix} '')"
+            printf "%s%-5s median=%10.3f mean=%10.3f stdev=%10.3f min=%10.3f max=%10.3f\n" \
+              "$prefix" "first" "$1" "$2" "$3" "$4" "$5"
+            printf "%s%-5s median=%10.3f mean=%10.3f stdev=%10.3f min=%10.3f max=%10.3f\n" \
+              "$indent" "all" "$6" "$7" "$8" "$9" "${10}"
+          }
+
+          print_stats_kb_first_all() {
+            local prefix="$1"
+            shift
+            local indent
+            indent="$(printf '%*s' ${#prefix} '')"
+            printf "%s%-5s median=%10d mean=%10d stdev=%10d min=%10d max=%10d\n" \
+              "$prefix" "first" "$1" "$2" "$3" "$4" "$5"
+            printf "%s%-5s median=%10d mean=%10d stdev=%10d min=%10d max=%10d\n" \
+              "$indent" "all" "$6" "$7" "$8" "$9" "${10}"
+          }
+
           EXIT_CODE=0
 
           case "$ALGORITHM" in
@@ -473,10 +495,14 @@ jobs:
                   echo "$glasgow_all_out"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${glasgow_first_ms_median:-}" ] && [ -n "${glasgow_all_ms_median:-}" ]; then
-                    echo "Runtime (ms): first median=$glasgow_first_ms_median mean=$glasgow_first_ms_mean stdev=$glasgow_first_ms_stdev min=$glasgow_first_ms_min max=$glasgow_first_ms_max | all median=$glasgow_all_ms_median mean=$glasgow_all_ms_mean stdev=$glasgow_all_ms_stdev min=$glasgow_all_ms_min max=$glasgow_all_ms_max"
+                    print_stats_ms_first_all "Runtime (ms): " \
+                      "$glasgow_first_ms_median" "$glasgow_first_ms_mean" "$glasgow_first_ms_stdev" "$glasgow_first_ms_min" "$glasgow_first_ms_max" \
+                      "$glasgow_all_ms_median" "$glasgow_all_ms_mean" "$glasgow_all_ms_stdev" "$glasgow_all_ms_min" "$glasgow_all_ms_max"
                   fi
                   if [ -n "${glasgow_first_rss_median:-}" ] && [ -n "${glasgow_all_rss_median:-}" ]; then
-                    echo "Max RSS (kB): first median=$glasgow_first_rss_median mean=$glasgow_first_rss_mean stdev=$glasgow_first_rss_stdev min=$glasgow_first_rss_min max=$glasgow_first_rss_max | all median=$glasgow_all_rss_median mean=$glasgow_all_rss_mean stdev=$glasgow_all_rss_stdev min=$glasgow_all_rss_min max=$glasgow_all_rss_max"
+                    print_stats_kb_first_all "Max RSS (kB): " \
+                      "$glasgow_first_rss_median" "$glasgow_first_rss_mean" "$glasgow_first_rss_stdev" "$glasgow_first_rss_min" "$glasgow_first_rss_max" \
+                      "$glasgow_all_rss_median" "$glasgow_all_rss_mean" "$glasgow_all_rss_stdev" "$glasgow_all_rss_min" "$glasgow_all_rss_max"
                   fi
                   echo
                 } >> outputs/result.txt
@@ -540,10 +566,14 @@ jobs:
                   echo "$vf3_base_result"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${vf3_base_first_ms_median:-}" ] && [ -n "${vf3_base_all_ms_median:-}" ]; then
-                    echo "Runtime (ms): first median=$vf3_base_first_ms_median mean=$vf3_base_first_ms_mean stdev=$vf3_base_first_ms_stdev min=$vf3_base_first_ms_min max=$vf3_base_first_ms_max | all median=$vf3_base_all_ms_median mean=$vf3_base_all_ms_mean stdev=$vf3_base_all_ms_stdev min=$vf3_base_all_ms_min max=$vf3_base_all_ms_max"
+                    print_stats_ms_first_all "Runtime (ms): " \
+                      "$vf3_base_first_ms_median" "$vf3_base_first_ms_mean" "$vf3_base_first_ms_stdev" "$vf3_base_first_ms_min" "$vf3_base_first_ms_max" \
+                      "$vf3_base_all_ms_median" "$vf3_base_all_ms_mean" "$vf3_base_all_ms_stdev" "$vf3_base_all_ms_min" "$vf3_base_all_ms_max"
                   fi
                   if [ -n "${vf3_base_first_rss_median:-}" ] && [ -n "${vf3_base_all_rss_median:-}" ]; then
-                    echo "Max RSS (kB): first median=$vf3_base_first_rss_median mean=$vf3_base_first_rss_mean stdev=$vf3_base_first_rss_stdev min=$vf3_base_first_rss_min max=$vf3_base_first_rss_max | all median=$vf3_base_all_rss_median mean=$vf3_base_all_rss_mean stdev=$vf3_base_all_rss_stdev min=$vf3_base_all_rss_min max=$vf3_base_all_rss_max"
+                    print_stats_kb_first_all "Max RSS (kB): " \
+                      "$vf3_base_first_rss_median" "$vf3_base_first_rss_mean" "$vf3_base_first_rss_stdev" "$vf3_base_first_rss_min" "$vf3_base_first_rss_max" \
+                      "$vf3_base_all_rss_median" "$vf3_base_all_rss_mean" "$vf3_base_all_rss_stdev" "$vf3_base_all_rss_min" "$vf3_base_all_rss_max"
                   fi
                   echo
                 } >> outputs/result.txt
@@ -581,10 +611,14 @@ jobs:
                   echo "$vf3_gemini_result"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${vf3_first_ms_median:-}" ] && [ -n "${vf3_all_ms_median:-}" ]; then
-                    echo "Runtime (ms): first median=$vf3_first_ms_median mean=$vf3_first_ms_mean stdev=$vf3_first_ms_stdev min=$vf3_first_ms_min max=$vf3_first_ms_max | all median=$vf3_all_ms_median mean=$vf3_all_ms_mean stdev=$vf3_all_ms_stdev min=$vf3_all_ms_min max=$vf3_all_ms_max"
+                    print_stats_ms_first_all "Runtime (ms): " \
+                      "$vf3_first_ms_median" "$vf3_first_ms_mean" "$vf3_first_ms_stdev" "$vf3_first_ms_min" "$vf3_first_ms_max" \
+                      "$vf3_all_ms_median" "$vf3_all_ms_mean" "$vf3_all_ms_stdev" "$vf3_all_ms_min" "$vf3_all_ms_max"
                   fi
                   if [ -n "${vf3_first_rss_median:-}" ] && [ -n "${vf3_all_rss_median:-}" ]; then
-                    echo "Max RSS (kB): first median=$vf3_first_rss_median mean=$vf3_first_rss_mean stdev=$vf3_first_rss_stdev min=$vf3_first_rss_min max=$vf3_first_rss_max | all median=$vf3_all_rss_median mean=$vf3_all_rss_mean stdev=$vf3_all_rss_stdev min=$vf3_all_rss_min max=$vf3_all_rss_max"
+                    print_stats_kb_first_all "Max RSS (kB): " \
+                      "$vf3_first_rss_median" "$vf3_first_rss_mean" "$vf3_first_rss_stdev" "$vf3_first_rss_min" "$vf3_first_rss_max" \
+                      "$vf3_all_rss_median" "$vf3_all_rss_mean" "$vf3_all_rss_stdev" "$vf3_all_rss_min" "$vf3_all_rss_max"
                   fi
                   echo
                 } >> outputs/result.txt
@@ -622,10 +656,14 @@ jobs:
                   echo "$chatvf3_result"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${chatvf3_first_ms_median:-}" ] && [ -n "${chatvf3_all_ms_median:-}" ]; then
-                    echo "Runtime (ms): first median=$chatvf3_first_ms_median mean=$chatvf3_first_ms_mean stdev=$chatvf3_first_ms_stdev min=$chatvf3_first_ms_min max=$chatvf3_first_ms_max | all median=$chatvf3_all_ms_median mean=$chatvf3_all_ms_mean stdev=$chatvf3_all_ms_stdev min=$chatvf3_all_ms_min max=$chatvf3_all_ms_max"
+                    print_stats_ms_first_all "Runtime (ms): " \
+                      "$chatvf3_first_ms_median" "$chatvf3_first_ms_mean" "$chatvf3_first_ms_stdev" "$chatvf3_first_ms_min" "$chatvf3_first_ms_max" \
+                      "$chatvf3_all_ms_median" "$chatvf3_all_ms_mean" "$chatvf3_all_ms_stdev" "$chatvf3_all_ms_min" "$chatvf3_all_ms_max"
                   fi
                   if [ -n "${chatvf3_first_rss_median:-}" ] && [ -n "${chatvf3_all_rss_median:-}" ]; then
-                    echo "Max RSS (kB): first median=$chatvf3_first_rss_median mean=$chatvf3_first_rss_mean stdev=$chatvf3_first_rss_stdev min=$chatvf3_first_rss_min max=$chatvf3_first_rss_max | all median=$chatvf3_all_rss_median mean=$chatvf3_all_rss_mean stdev=$chatvf3_all_rss_stdev min=$chatvf3_all_rss_min max=$chatvf3_all_rss_max"
+                    print_stats_kb_first_all "Max RSS (kB): " \
+                      "$chatvf3_first_rss_median" "$chatvf3_first_rss_mean" "$chatvf3_first_rss_stdev" "$chatvf3_first_rss_min" "$chatvf3_first_rss_max" \
+                      "$chatvf3_all_rss_median" "$chatvf3_all_rss_mean" "$chatvf3_all_rss_stdev" "$chatvf3_all_rss_min" "$chatvf3_all_rss_max"
                   fi
                   echo
                 } >> outputs/result.txt
