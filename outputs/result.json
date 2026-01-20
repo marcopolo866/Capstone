@@ -1,8 +1,25 @@
 {
   "algorithm": "vf3",
-  "timestamp": "2026-01-20 00:01:01 UTC",
-  "status": "error",
-  "output": "",
-  "error": "Unknown error",
-  "request_id": "68c0e9a0-7345-4651-a41a-b8c3bed94d35"
+  "timestamp": "2026-01-20 00:01:29 UTC",
+  "status": "success",
+  "output": "[VF3 baseline]\n6\nIterations: 5\nRuntime (ms): first median=     3.603 mean=     4.468 stdev=     2.145 min=     3.284 max=     8.292\n              all   median=     3.360 mean=     3.373 stdev=     0.043 min=     3.337 max=     3.444\nMax RSS (kB): first median=      3988 mean=      4016 stdev=        95 min=      3928 max=      4128\n              all   median=      4116 mean=      4109 stdev=        16 min=      4080 max=      4116\n\n[VF3 Gemini]\n6\nIterations: 5\nRuntime (ms): first median=     3.401 mean=     3.417 stdev=     0.063 min=     3.366 max=     3.524\n              all   median=     3.368 mean=     3.369 stdev=     0.022 min=     3.340 max=     3.400\nMax RSS (kB): first median=      3928 mean=      3915 stdev=        26 min=      3868 max=      3928\n              all   median=      3920 mean=      3903 stdev=        32 min=      3852 max=      3928\n\n[VF3 ChatGPT]\n6\nIterations: 5\nRuntime (ms): first median=     3.447 mean=     3.468 stdev=     0.061 min=     3.407 max=     3.565\n              all   median=     3.388 mean=     3.378 stdev=     0.035 min=     3.330 max=     3.413\nMax RSS (kB): first median=      3960 mean=      3947 stdev=        24 min=      3904 max=      3960\n              all   median=      3916 mean=      3926 stdev=        28 min=      3900 max=      3960\n\n",
+  "error": "",
+  "request_id": "f2e227a9-ec52-462b-9d7f-e3555b0a30c2",
+  "iterations": 5,
+  "timings_ms": {
+    "baseline_first": 3.603,
+    "baseline_all": 3.36,
+    "gemini_first": 3.401,
+    "gemini_all": 3.368,
+    "chatgpt_first": 3.447,
+    "chatgpt_all": 3.388
+  },
+  "memory_kb": {
+    "baseline_first": 3988,
+    "baseline_all": 4116,
+    "gemini_first": 3928,
+    "gemini_all": 3920,
+    "chatgpt_first": 3960,
+    "chatgpt_all": 3916
+  }
 }
