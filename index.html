@@ -30,6 +30,10 @@
                 <label>Benchmark iterations</label>
                 <input type="number" id="iterations" value="5" min="1" max="1000">
             </div>
+            <div class="input-group">
+                <label>Warmup runs (per test)</label>
+                <input type="number" id="warmup" value="1" min="0" max="50">
+            </div>
             <button class="btn" onclick="connect()">Connect to Repository</button>
         </div>
         
@@ -499,9 +503,15 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const runBtn = document.getElementById('run-btn');
             runBtn.disabled = true;
 
+            const nowMs = () => (window.performance && typeof window.performance.now === 'function')
+                ? window.performance.now()
+                : Date.now();
+            const endToEndStartMs = nowMs();
+
             const fail = (message) => {
+                const elapsedMs = nowMs() - endToEndStartMs;
                 progressClear();
-                outputDiv.textContent = `Failure: ${message}`;
+                outputDiv.textContent = `Failure: ${message}\n\nTotal end-to-end time (ms): ${elapsedMs.toFixed(1)}`;
                 statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
                 runBtn.disabled = false;
             };
@@ -545,13 +555,22 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
             const requestId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
             const iterationsEl = document.getElementById('iterations');
+            const warmupEl = document.getElementById('warmup');
             const iterationsRaw = iterationsEl ? String(iterationsEl.value || '').trim() : '';
+            const warmupRaw = warmupEl ? String(warmupEl.value || '').trim() : '';
             let iterations = 1;
             if (iterationsRaw) {
                 const parsed = parseInt(iterationsRaw, 10);
                 if (Number.isFinite(parsed) && parsed >= 1) iterations = parsed;
             }
             if (iterations > 1000) iterations = 1000;
+
+            let warmup = 0;
+            if (warmupRaw) {
+                const parsed = parseInt(warmupRaw, 10);
+                if (Number.isFinite(parsed) && parsed >= 0) warmup = parsed;
+            }
+            if (warmup > 50) warmup = 50;
 
             const branchRef = config.ref || 'main';
             progressReset(config.selectedAlgorithm, iterations, requestId);
@@ -567,6 +586,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 inputs: {
                     algorithm: config.selectedAlgorithm,
                     iterations: String(iterations),
+                    warmup: String(warmup),
                     input_files: config.selectedFiles.map(f => f.path).join(','),
                     request_id: requestId
                 }
@@ -591,6 +611,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     'Result:',
                     result.output || '(No output)'
                 ];
+                const elapsedMs = nowMs() - endToEndStartMs;
+                finalLines.push('', `Total end-to-end time (ms): ${elapsedMs.toFixed(1)}`);
                 outputDiv.textContent = finalLines.join('\n');
                 statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
                 if (progressState.total > 0) {
@@ -598,7 +620,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 }
             } catch (error) {
                 const message = error && error.message ? error.message : String(error);
-                outputDiv.textContent = `Failure: ${message}`;
+                const elapsedMs = nowMs() - endToEndStartMs;
+                outputDiv.textContent = `Failure: ${message}\n\nTotal end-to-end time (ms): ${elapsedMs.toFixed(1)}`;
                 reportDebugError('runAlgorithm', error, {
                     algorithm: config.selectedAlgorithm,
                     files: config.selectedFiles.map(f => f.path).join(','),
@@ -656,6 +679,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     client_payload: {
                         algorithm: workflowData.inputs.algorithm,
                         iterations: workflowData.inputs.iterations,
+                        warmup: workflowData.inputs.warmup,
                         input_files: workflowData.inputs.input_files,
                         request_id: workflowData.inputs.request_id || ''
                     }
