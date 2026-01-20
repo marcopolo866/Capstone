@@ -232,36 +232,49 @@ jobs:
           PROGRESS_ENABLED=0
           CHECK_RUN_ID=""
           CHECK_RUN_NAME="Capstone Benchmark Progress (${REQUEST_ID:-${GITHUB_RUN_ID}})"
-          PROGRESS_TOTAL=0
-          PROGRESS_DONE=0
+          PROGRESS_TOTAL_UNITS=0
+          PROGRESS_TOTAL_TICKS=0
+          PROGRESS_DONE_TICKS=0
           PROGRESS_PHASE=""
           PROGRESS_LAST_UPDATE_EPOCH=0
-          PROGRESS_LAST_REPORTED=-1
+          PROGRESS_LAST_REPORTED_TICKS=-1
 
-          TESTS_PER_ITER=0
+          # Progress semantics: count "per program per iteration".
+          # For Glasgow and VF3, both "first" and "all" runs are counted together as 1 unit.
+          UNITS_PER_ITER=0
+          TICKS_PER_ITER=0
+          TICKS_PER_UNIT=1
           case "$ALGORITHM" in
             dijkstra)
-              TESTS_PER_ITER=2
+              UNITS_PER_ITER=2   # baseline + llm
+              TICKS_PER_ITER=2   # both are directly ticked
               ;;
             glasgow)
-              TESTS_PER_ITER=2
+              UNITS_PER_ITER=1   # one program (solver)
+              TICKS_PER_ITER=2   # first + all (each ticks)
               ;;
             vf3)
-              TESTS_PER_ITER=6
+              UNITS_PER_ITER=3   # baseline + gemini + chatgpt
+              TICKS_PER_ITER=6   # each has first + all (each ticks)
               ;;
             *)
-              TESTS_PER_ITER=0
+              UNITS_PER_ITER=0
+              TICKS_PER_ITER=0
               ;;
           esac
-          PROGRESS_TOTAL=$((ITERATIONS * TESTS_PER_ITER))
+          if [ "$UNITS_PER_ITER" -gt 0 ] && [ "$TICKS_PER_ITER" -gt 0 ]; then
+            TICKS_PER_UNIT=$((TICKS_PER_ITER / UNITS_PER_ITER))
+          fi
+          PROGRESS_TOTAL_UNITS=$((ITERATIONS * UNITS_PER_ITER))
+          PROGRESS_TOTAL_TICKS=$((ITERATIONS * TICKS_PER_ITER))
 
           progress_create_check_run() {
-            if [ -z "${GITHUB_TOKEN:-}" ] || [ "$PROGRESS_TOTAL" -le 0 ]; then
+            if [ -z "${GITHUB_TOKEN:-}" ] || [ "$PROGRESS_TOTAL_UNITS" -le 0 ] || [ "$PROGRESS_TOTAL_TICKS" -le 0 ]; then
               return 0
             fi
 
             CHECK_RUN_ID="$(
-              python - <<'PY' "$CHECK_RUN_NAME" "$REQUEST_ID" "$ALGORITHM" "$ITERATIONS" "$TESTS_PER_ITER" "$PROGRESS_TOTAL" || true
+              python - <<'PY' "$CHECK_RUN_NAME" "$REQUEST_ID" "$ALGORITHM" "$ITERATIONS" "$UNITS_PER_ITER" "$TICKS_PER_UNIT" "$PROGRESS_TOTAL_UNITS" "$PROGRESS_TOTAL_TICKS" || true
           import datetime
           import json
           import os
@@ -272,8 +285,10 @@ jobs:
           request_id = sys.argv[2]
           algorithm = sys.argv[3]
           iterations = int(sys.argv[4])
-          tests_per_iter = int(sys.argv[5])
-          total = int(sys.argv[6])
+          units_per_iter = int(sys.argv[5])
+          ticks_per_unit = int(sys.argv[6])
+          total_units = int(sys.argv[7])
+          total_ticks = int(sys.argv[8])
 
           token = os.environ.get("GITHUB_TOKEN", "")
           repo = os.environ.get("GITHUB_REPOSITORY", "")
@@ -293,9 +308,11 @@ jobs:
               "request_id": request_id,
               "algorithm": algorithm,
               "iterations": iterations,
-              "tests_per_iteration": tests_per_iter,
+              "tests_per_iteration": units_per_iter,
+              "ticks_per_unit": ticks_per_unit,
+              "total_ticks": total_ticks,
               "completed": 0,
-              "total": total,
+              "total": total_units,
               "percent": 0.0,
               "phase": "",
               "run_id": os.environ.get("GITHUB_RUN_ID", ""),
@@ -307,7 +324,7 @@ jobs:
               "started_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
               "output": {
                   "title": name,
-                  "summary": f"Progress: 0/{total} (0.0%)",
+                  "summary": f"Progress: 0/{total_units} (0.0%)",
                   "text": json.dumps(progress),
               },
           }
@@ -329,7 +346,7 @@ jobs:
             if [[ "$CHECK_RUN_ID" =~ ^[0-9]+$ ]]; then
               PROGRESS_ENABLED=1
               PROGRESS_LAST_UPDATE_EPOCH=$(date +%s)
-              PROGRESS_LAST_REPORTED=0
+              PROGRESS_LAST_REPORTED_TICKS=0
             fi
             return 0
           }
@@ -341,7 +358,7 @@ jobs:
               return 0
             fi
 
-            python - <<'PY' "$CHECK_RUN_ID" "$CHECK_RUN_NAME" "$REQUEST_ID" "$ALGORITHM" "$ITERATIONS" "$TESTS_PER_ITER" "$PROGRESS_DONE" "$PROGRESS_TOTAL" "$PROGRESS_PHASE" "$status" "$conclusion" || true
+            python - <<'PY' "$CHECK_RUN_ID" "$CHECK_RUN_NAME" "$REQUEST_ID" "$ALGORITHM" "$ITERATIONS" "$UNITS_PER_ITER" "$TICKS_PER_UNIT" "$PROGRESS_DONE_TICKS" "$PROGRESS_TOTAL_TICKS" "$PROGRESS_TOTAL_UNITS" "$PROGRESS_PHASE" "$status" "$conclusion" || true
           import datetime
           import json
           import os
@@ -353,32 +370,42 @@ jobs:
           request_id = sys.argv[3]
           algorithm = sys.argv[4]
           iterations = int(sys.argv[5])
-          tests_per_iter = int(sys.argv[6])
-          completed = int(sys.argv[7])
-          total = int(sys.argv[8])
-          phase = sys.argv[9]
-          status = sys.argv[10]
-          conclusion = sys.argv[11] if len(sys.argv) > 11 else ""
+          units_per_iter = int(sys.argv[6])
+          ticks_per_unit = int(sys.argv[7])
+          completed_ticks = int(sys.argv[8])
+          total_ticks = int(sys.argv[9])
+          total_units = int(sys.argv[10])
+          phase = sys.argv[11]
+          status = sys.argv[12]
+          conclusion = sys.argv[13] if len(sys.argv) > 13 else ""
 
           token = os.environ.get("GITHUB_TOKEN", "")
           repo = os.environ.get("GITHUB_REPOSITORY", "")
           if not token or not repo:
               raise SystemExit(0)
 
-          percent = (completed / total * 100.0) if total else 0.0
+          completed_units = (completed_ticks / ticks_per_unit) if ticks_per_unit else 0.0
+          percent = (completed_ticks / total_ticks * 100.0) if total_ticks else 0.0
           progress = {
               "request_id": request_id,
               "algorithm": algorithm,
               "iterations": iterations,
-              "tests_per_iteration": tests_per_iter,
-              "completed": completed,
-              "total": total,
+              "tests_per_iteration": units_per_iter,
+              "ticks_per_unit": ticks_per_unit,
+              "completed": round(completed_units, 3),
+              "total": total_units,
+              "total_ticks": total_ticks,
               "percent": round(percent, 3),
               "phase": phase,
               "run_id": os.environ.get("GITHUB_RUN_ID", ""),
           }
 
-          summary = f"Progress: {completed}/{total} ({percent:.1f}%)"
+          if ticks_per_unit > 1:
+              completed_str = f"{completed_units:.1f}"
+          else:
+              completed_str = str(int(completed_units))
+
+          summary = f"Progress: {completed_str}/{total_units} ({percent:.1f}%)"
           if phase:
               summary += f"\\nPhase: {phase}"
 
@@ -418,7 +445,7 @@ jobs:
           PY
 
             PROGRESS_LAST_UPDATE_EPOCH=$(date +%s)
-            PROGRESS_LAST_REPORTED="$PROGRESS_DONE"
+            PROGRESS_LAST_REPORTED_TICKS="$PROGRESS_DONE_TICKS"
             return 0
           }
 
@@ -430,17 +457,17 @@ jobs:
             local now_epoch
             now_epoch=$(date +%s)
 
-            if [ "$PROGRESS_DONE" -ge "$PROGRESS_TOTAL" ]; then
+            if [ "$PROGRESS_DONE_TICKS" -ge "$PROGRESS_TOTAL_TICKS" ]; then
               progress_update_check_run "in_progress"
               return 0
             fi
 
-            if [ "$PROGRESS_DONE" -le 2 ]; then
+            if [ "$PROGRESS_DONE_TICKS" -le 2 ]; then
               progress_update_check_run "in_progress"
               return 0
             fi
 
-            if [ "$PROGRESS_DONE" -ne "$PROGRESS_LAST_REPORTED" ] && [ $((now_epoch - PROGRESS_LAST_UPDATE_EPOCH)) -ge 5 ]; then
+            if [ "$PROGRESS_DONE_TICKS" -ne "$PROGRESS_LAST_REPORTED_TICKS" ] && [ $((now_epoch - PROGRESS_LAST_UPDATE_EPOCH)) -ge 5 ]; then
               progress_update_check_run "in_progress"
             fi
             return 0
@@ -452,7 +479,7 @@ jobs:
           }
 
           progress_tick() {
-            PROGRESS_DONE=$((PROGRESS_DONE + 1))
+            PROGRESS_DONE_TICKS=$((PROGRESS_DONE_TICKS + 1))
             progress_maybe_update
           }
 
@@ -460,7 +487,7 @@ jobs:
             if [ "${PROGRESS_ENABLED:-0}" != "1" ] || [ -z "${CHECK_RUN_ID:-}" ]; then
               return 0
             fi
-            PROGRESS_DONE="$PROGRESS_TOTAL"
+            PROGRESS_DONE_TICKS="$PROGRESS_TOTAL_TICKS"
             local conclusion="success"
             if [ "${EXIT_CODE:-0}" != "0" ]; then
               conclusion="failure"
