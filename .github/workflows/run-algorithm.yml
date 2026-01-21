@@ -242,16 +242,21 @@ jobs:
           if [ "$WARMUP" -gt 50 ]; then
             WARMUP="50"
           fi
+          WARMUP_REQUESTED="$WARMUP"
 
           # Progress reporting via GitHub Checks API (used by the web UI progress bar).
           PROGRESS_ENABLED=0
           CHECK_RUN_ID=""
           CHECK_RUN_NAME="Capstone Benchmark Progress (${REQUEST_ID:-${GITHUB_RUN_ID}})"
+          PROGRESS_STAGE="setup"
+          PROGRESS_SETUP_TOTAL=0
+          PROGRESS_SETUP_DONE=0
           PROGRESS_TOTAL_UNITS=0
           PROGRESS_TOTAL_TICKS=0
           PROGRESS_DONE_TICKS=0
           PROGRESS_PHASE=""
           PROGRESS_LAST_UPDATE_EPOCH=0
+          PROGRESS_LAST_REPORTED_SETUP=-1
           PROGRESS_LAST_REPORTED_TICKS=-1
 
           # Progress semantics: count "per program per iteration".
@@ -282,6 +287,10 @@ jobs:
           fi
           PROGRESS_TOTAL_UNITS=$((ITERATIONS * UNITS_PER_ITER))
           PROGRESS_TOTAL_TICKS=$((ITERATIONS * TICKS_PER_ITER))
+          PROGRESS_SETUP_TOTAL=$((WARMUP_REQUESTED * TICKS_PER_ITER))
+          if [ "$PROGRESS_SETUP_TOTAL" -le 0 ]; then
+            PROGRESS_SETUP_TOTAL=1
+          fi
 
           progress_create_check_run() {
             if [ -z "${GITHUB_TOKEN:-}" ] || [ "$PROGRESS_TOTAL_UNITS" -le 0 ] || [ "$PROGRESS_TOTAL_TICKS" -le 0 ]; then
@@ -289,7 +298,7 @@ jobs:
             fi
 
             CHECK_RUN_ID="$(
-              python - <<'PY' "$CHECK_RUN_NAME" "$REQUEST_ID" "$ALGORITHM" "$ITERATIONS" "$UNITS_PER_ITER" "$TICKS_PER_UNIT" "$PROGRESS_TOTAL_UNITS" "$PROGRESS_TOTAL_TICKS" || true
+              python - <<'PY' "$CHECK_RUN_NAME" "$REQUEST_ID" "$ALGORITHM" "$ITERATIONS" "$UNITS_PER_ITER" "$TICKS_PER_UNIT" "$PROGRESS_TOTAL_UNITS" "$PROGRESS_TOTAL_TICKS" "$PROGRESS_STAGE" "$PROGRESS_SETUP_DONE" "$PROGRESS_SETUP_TOTAL" || true
           import datetime
           import json
           import os
@@ -304,6 +313,9 @@ jobs:
           ticks_per_unit = int(sys.argv[6])
           total_units = int(sys.argv[7])
           total_ticks = int(sys.argv[8])
+          stage = sys.argv[9] if len(sys.argv) > 9 else "tests"
+          setup_done = int(sys.argv[10]) if len(sys.argv) > 10 else 0
+          setup_total = int(sys.argv[11]) if len(sys.argv) > 11 else 0
 
           token = os.environ.get("GITHUB_TOKEN", "")
           repo = os.environ.get("GITHUB_REPOSITORY", "")
@@ -331,7 +343,17 @@ jobs:
               "percent": 0.0,
               "phase": "",
               "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+              "stage": stage,
+              "setup_completed": setup_done,
+              "setup_total": setup_total,
+              "tests_completed": 0,
+              "tests_total": total_units,
           }
+
+          setup_percent = (setup_done / setup_total * 100.0) if setup_total else 0.0
+          summary = f"Progress: 0/{total_units} (0.0%)"
+          if stage == "setup":
+              summary = f"Setup: {setup_done}/{setup_total} ({setup_percent:.1f}%)"
           payload = {
               "name": name,
               "head_sha": sha,
@@ -339,7 +361,7 @@ jobs:
               "started_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
               "output": {
                   "title": name,
-                  "summary": f"Progress: 0/{total_units} (0.0%)",
+                  "summary": summary,
                   "text": json.dumps(progress),
               },
           }
@@ -361,6 +383,7 @@ jobs:
             if [[ "$CHECK_RUN_ID" =~ ^[0-9]+$ ]]; then
               PROGRESS_ENABLED=1
               PROGRESS_LAST_UPDATE_EPOCH=$(date +%s)
+              PROGRESS_LAST_REPORTED_SETUP=0
               PROGRESS_LAST_REPORTED_TICKS=0
             fi
             return 0
@@ -373,7 +396,7 @@ jobs:
               return 0
             fi
 
-            python - <<'PY' "$CHECK_RUN_ID" "$CHECK_RUN_NAME" "$REQUEST_ID" "$ALGORITHM" "$ITERATIONS" "$UNITS_PER_ITER" "$TICKS_PER_UNIT" "$PROGRESS_DONE_TICKS" "$PROGRESS_TOTAL_TICKS" "$PROGRESS_TOTAL_UNITS" "$PROGRESS_PHASE" "$status" "$conclusion" || true
+            python - <<'PY' "$CHECK_RUN_ID" "$CHECK_RUN_NAME" "$REQUEST_ID" "$ALGORITHM" "$ITERATIONS" "$UNITS_PER_ITER" "$TICKS_PER_UNIT" "$PROGRESS_DONE_TICKS" "$PROGRESS_TOTAL_TICKS" "$PROGRESS_TOTAL_UNITS" "$PROGRESS_STAGE" "$PROGRESS_SETUP_DONE" "$PROGRESS_SETUP_TOTAL" "$PROGRESS_PHASE" "$status" "$conclusion" || true
           import datetime
           import json
           import os
@@ -390,9 +413,12 @@ jobs:
           completed_ticks = int(sys.argv[8])
           total_ticks = int(sys.argv[9])
           total_units = int(sys.argv[10])
-          phase = sys.argv[11]
-          status = sys.argv[12]
-          conclusion = sys.argv[13] if len(sys.argv) > 13 else ""
+          stage = sys.argv[11] if len(sys.argv) > 11 else "tests"
+          setup_done = int(sys.argv[12]) if len(sys.argv) > 12 else 0
+          setup_total = int(sys.argv[13]) if len(sys.argv) > 13 else 0
+          phase = sys.argv[14] if len(sys.argv) > 14 else ""
+          status = sys.argv[15] if len(sys.argv) > 15 else "in_progress"
+          conclusion = sys.argv[16] if len(sys.argv) > 16 else ""
 
           token = os.environ.get("GITHUB_TOKEN", "")
           repo = os.environ.get("GITHUB_REPOSITORY", "")
@@ -413,6 +439,11 @@ jobs:
               "percent": round(percent, 3),
               "phase": phase,
               "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+              "stage": stage,
+              "setup_completed": setup_done,
+              "setup_total": setup_total,
+              "tests_completed": round(completed_units, 3),
+              "tests_total": total_units,
           }
 
           if ticks_per_unit > 1:
@@ -420,7 +451,11 @@ jobs:
           else:
               completed_str = str(int(completed_units))
 
-          summary = f"Progress: {completed_str}/{total_units} ({percent:.1f}%)"
+          setup_percent = (setup_done / setup_total * 100.0) if setup_total else 0.0
+          if stage == "setup":
+              summary = f"Setup: {setup_done}/{setup_total} ({setup_percent:.1f}%)"
+          else:
+              summary = f"Progress: {completed_str}/{total_units} ({percent:.1f}%)"
           if phase:
               summary += f"\\nPhase: {phase}"
 
@@ -460,7 +495,11 @@ jobs:
           PY
 
             PROGRESS_LAST_UPDATE_EPOCH=$(date +%s)
-            PROGRESS_LAST_REPORTED_TICKS="$PROGRESS_DONE_TICKS"
+            if [ "${PROGRESS_STAGE:-tests}" = "setup" ]; then
+              PROGRESS_LAST_REPORTED_SETUP="$PROGRESS_SETUP_DONE"
+            else
+              PROGRESS_LAST_REPORTED_TICKS="$PROGRESS_DONE_TICKS"
+            fi
             return 0
           }
 
@@ -472,17 +511,34 @@ jobs:
             local now_epoch
             now_epoch=$(date +%s)
 
-            if [ "$PROGRESS_DONE_TICKS" -ge "$PROGRESS_TOTAL_TICKS" ]; then
+            local stage current total last
+            stage="${PROGRESS_STAGE:-tests}"
+            if [ "$stage" = "setup" ]; then
+              current="${PROGRESS_SETUP_DONE:-0}"
+              total="${PROGRESS_SETUP_TOTAL:-0}"
+              last="${PROGRESS_LAST_REPORTED_SETUP--1}"
+            else
+              current="${PROGRESS_DONE_TICKS:-0}"
+              total="${PROGRESS_TOTAL_TICKS:-0}"
+              last="${PROGRESS_LAST_REPORTED_TICKS--1}"
+            fi
+
+            if [ "${total:-0}" -le 0 ]; then
               progress_update_check_run "in_progress"
               return 0
             fi
 
-            if [ "$PROGRESS_DONE_TICKS" -le 2 ]; then
+            if [ "$current" -ge "$total" ]; then
               progress_update_check_run "in_progress"
               return 0
             fi
 
-            if [ "$PROGRESS_DONE_TICKS" -ne "$PROGRESS_LAST_REPORTED_TICKS" ] && [ $((now_epoch - PROGRESS_LAST_UPDATE_EPOCH)) -ge 5 ]; then
+            if [ "$current" -le 2 ]; then
+              progress_update_check_run "in_progress"
+              return 0
+            fi
+
+            if [ "$current" -ne "$last" ] && [ $((now_epoch - PROGRESS_LAST_UPDATE_EPOCH)) -ge 5 ]; then
               progress_update_check_run "in_progress"
             fi
             return 0
@@ -495,6 +551,14 @@ jobs:
 
           progress_tick() {
             PROGRESS_DONE_TICKS=$((PROGRESS_DONE_TICKS + 1))
+            progress_maybe_update
+          }
+
+          progress_setup_tick() {
+            PROGRESS_SETUP_DONE=$((PROGRESS_SETUP_DONE + 1))
+            if [ "$PROGRESS_SETUP_DONE" -gt "$PROGRESS_SETUP_TOTAL" ]; then
+              PROGRESS_SETUP_DONE="$PROGRESS_SETUP_TOTAL"
+            fi
             progress_maybe_update
           }
 
@@ -537,6 +601,25 @@ jobs:
             printf -v "$_dur_var" "%s" "$duration_ms"
             rm -f "$tmp"
             return $status
+          }
+
+          warmup_only() {
+            local label="$1"
+            shift
+
+            if [ "${WARMUP_REQUESTED:-0}" -le 0 ]; then
+              return 0
+            fi
+
+            local out dur
+            for ((i=1; i<=WARMUP_REQUESTED; i++)); do
+              if ! run_capture out dur "$@"; then
+                echo "[Warmup] ${label} failed." >> outputs/result.txt
+                return 1
+              fi
+              progress_setup_tick
+            done
+            return 0
           }
 
           bench_capture_n() {
@@ -737,6 +820,29 @@ jobs:
               dijkstra_llm_ms_runs=""
               dijkstra_llm_rss_runs=""
 
+              # Phase 1: setup + warmup (web UI fills the progress bar once here)
+              PROGRESS_STAGE="setup"
+              progress_set_phase "Setting up Testing Environment"
+              if [ "${WARMUP_REQUESTED:-0}" -gt 0 ]; then
+                if ! warmup_only "Dijkstra baseline" ./baselines/dijkstra "${FILES[0]}"; then
+                  EXIT_CODE=1
+                fi
+                if ! warmup_only "Dijkstra llm" ./src/dijkstra_llm "${FILES[0]}"; then
+                  EXIT_CODE=1
+                fi
+              else
+                progress_setup_tick
+              fi
+              PROGRESS_SETUP_DONE="$PROGRESS_SETUP_TOTAL"
+              progress_update_check_run "in_progress" || true
+
+              # Phase 2: measured iterations (web UI resets the bar and fills again here)
+              PROGRESS_STAGE="tests"
+              PROGRESS_PHASE=""
+              PROGRESS_DONE_TICKS=0
+              progress_update_check_run "in_progress" || true
+              WARMUP=0
+
               progress_set_phase "Dijkstra baseline"
               if ! bench_capture_rss_n dijkstra_baseline_out dijkstra_baseline_ms_runs dijkstra_baseline_rss_runs "$ITERATIONS" ./baselines/dijkstra "${FILES[0]}"; then
                 EXIT_CODE=1
@@ -751,7 +857,7 @@ jobs:
                 {
                   echo "[Dijkstra Baseline]"
                   echo "$dijkstra_baseline_out"
-                  echo "Warmup: $WARMUP"
+                  echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${dijkstra_baseline_ms_median:-}" ]; then
                     echo "Runtime (ms): median=$dijkstra_baseline_ms_median mean=$dijkstra_baseline_ms_mean stdev=$dijkstra_baseline_ms_stdev min=$dijkstra_baseline_ms_min max=$dijkstra_baseline_ms_max"
@@ -776,7 +882,7 @@ jobs:
                 {
                   echo "[Dijkstra LLM]"
                   echo "$dijkstra_llm_out"
-                  echo "Warmup: $WARMUP"
+                  echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${dijkstra_llm_ms_median:-}" ]; then
                     echo "Runtime (ms): median=$dijkstra_llm_ms_median mean=$dijkstra_llm_ms_mean stdev=$dijkstra_llm_ms_stdev min=$dijkstra_llm_ms_min max=$dijkstra_llm_ms_max"
@@ -795,6 +901,29 @@ jobs:
               glasgow_all_out=""
               glasgow_all_ms_runs=""
               glasgow_all_rss_runs=""
+
+              # Phase 1: setup + warmup (web UI fills the progress bar once here)
+              PROGRESS_STAGE="setup"
+              progress_set_phase "Setting up Testing Environment"
+              if [ "${WARMUP_REQUESTED:-0}" -gt 0 ]; then
+                if ! warmup_only "Glasgow first" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+                if ! warmup_only "Glasgow all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+              else
+                progress_setup_tick
+              fi
+              PROGRESS_SETUP_DONE="$PROGRESS_SETUP_TOTAL"
+              progress_update_check_run "in_progress" || true
+
+              # Phase 2: measured iterations (web UI resets the bar and fills again here)
+              PROGRESS_STAGE="tests"
+              PROGRESS_PHASE=""
+              PROGRESS_DONE_TICKS=0
+              progress_update_check_run "in_progress" || true
+              WARMUP=0
 
               progress_set_phase "Glasgow first"
               if ! bench_capture_rss_n glasgow_first_out glasgow_first_ms_runs glasgow_first_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
@@ -827,7 +956,7 @@ jobs:
                 {
                   echo "[Glasgow Subgraph Solver]"
                   echo "$glasgow_all_out"
-                  echo "Warmup: $WARMUP"
+                  echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${glasgow_first_ms_median:-}" ] && [ -n "${glasgow_all_ms_median:-}" ]; then
                     print_stats_ms_first_all "Runtime (ms): " \
@@ -865,6 +994,41 @@ jobs:
               chatvf3_all_ms_runs=""
               chatvf3_all_rss_runs=""
 
+              # Phase 1: setup + warmup (web UI fills the progress bar once here)
+              PROGRESS_STAGE="setup"
+              progress_set_phase "Setting up Testing Environment"
+              if [ "${WARMUP_REQUESTED:-0}" -gt 0 ]; then
+                if ! warmup_only "VF3 baseline first" ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+                if ! warmup_only "VF3 baseline all" ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+                if ! warmup_only "VF3 Gemini first" ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+                if ! warmup_only "VF3 Gemini all" ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+                if ! warmup_only "VF3 ChatGPT first" ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+                if ! warmup_only "VF3 ChatGPT all" ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+              else
+                progress_setup_tick
+              fi
+              PROGRESS_SETUP_DONE="$PROGRESS_SETUP_TOTAL"
+              progress_update_check_run "in_progress" || true
+
+              # Phase 2: measured iterations (web UI resets the bar and fills again here)
+              PROGRESS_STAGE="tests"
+              PROGRESS_PHASE=""
+              PROGRESS_DONE_TICKS=0
+              progress_update_check_run "in_progress" || true
+              WARMUP=0
+
               progress_set_phase "VF3 baseline first"
               if ! bench_capture_rss_n vf3_base_first_out vf3_base_first_ms_runs vf3_base_first_rss_runs "$ITERATIONS" ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
@@ -901,7 +1065,7 @@ jobs:
                 {
                   echo "[VF3 baseline]"
                   echo "$vf3_base_result"
-                  echo "Warmup: $WARMUP"
+                  echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${vf3_base_first_ms_median:-}" ] && [ -n "${vf3_base_all_ms_median:-}" ]; then
                     print_stats_ms_first_all "Runtime (ms): " \
@@ -949,7 +1113,7 @@ jobs:
                 {
                   echo "[VF3 Gemini]"
                   echo "$vf3_gemini_result"
-                  echo "Warmup: $WARMUP"
+                  echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${vf3_first_ms_median:-}" ] && [ -n "${vf3_all_ms_median:-}" ]; then
                     print_stats_ms_first_all "Runtime (ms): " \
@@ -997,7 +1161,7 @@ jobs:
                 {
                   echo "[VF3 ChatGPT]"
                   echo "$chatvf3_result"
-                  echo "Warmup: $WARMUP"
+                  echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${chatvf3_first_ms_median:-}" ] && [ -n "${chatvf3_all_ms_median:-}" ]; then
                     print_stats_ms_first_all "Runtime (ms): " \
@@ -1022,7 +1186,7 @@ jobs:
           echo "EXIT_CODE=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           echo "REQUEST_ID=${REQUEST_ID}" >> "$GITHUB_OUTPUT"
           echo "ITERATIONS=${ITERATIONS}" >> "$GITHUB_OUTPUT"
-          echo "WARMUP=${WARMUP}" >> "$GITHUB_OUTPUT"
+          echo "WARMUP=${WARMUP_REQUESTED}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_BASELINE_MS=${dijkstra_baseline_ms:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_LLM_MS=${dijkstra_llm_ms:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_BASELINE_RSS_KB=${dijkstra_baseline_rss_kb:-}" >> "$GITHUB_OUTPUT"

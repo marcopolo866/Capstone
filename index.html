@@ -143,6 +143,10 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         const progressState = {
             requestId: '',
             runSha: '',
+            stage: 'idle', // 'idle' | 'setup' | 'tests'
+            setupTotal: 0,
+            testsTotal: 0,
+            hasLiveSetup: false,
             total: 0,
             completed: 0,
             phase: ''
@@ -175,17 +179,25 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const testsPerIter = getTestsPerIteration(algoId);
             progressState.requestId = requestId || '';
             progressState.runSha = '';
-            progressState.total = Math.max(0, Number(iterations) || 0) * testsPerIter;
+            progressState.stage = 'setup';
+            progressState.setupTotal = 100;
+            progressState.testsTotal = Math.max(0, Number(iterations) || 0) * testsPerIter;
+            progressState.hasLiveSetup = false;
+            progressState.total = progressState.setupTotal;
             progressState.completed = 0;
             progressState.phase = '';
 
             setProgressVisible(true);
-            progressSetDeterminate('Queued...', 0, progressState.total);
+            progressSetDeterminate('Setting up Testing Environment', 0, progressState.total, { stage: 'setup', reset: true });
         }
 
         function progressClear() {
             progressState.requestId = '';
             progressState.runSha = '';
+            progressState.stage = 'idle';
+            progressState.setupTotal = 0;
+            progressState.testsTotal = 0;
+            progressState.hasLiveSetup = false;
             progressState.total = 0;
             progressState.completed = 0;
             progressState.phase = '';
@@ -200,20 +212,26 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (els.count) els.count.textContent = '';
         }
 
-        function progressSetDeterminate(phaseText, completed, total) {
+        function progressSetDeterminate(phaseText, completed, total, options = {}) {
             const els = getProgressEls();
 
             const prevTotal = Number.isFinite(Number(progressState.total)) ? Number(progressState.total) : 0;
             const prevCompleted = Number.isFinite(Number(progressState.completed)) ? Number(progressState.completed) : 0;
+            const prevStage = typeof progressState.stage === 'string' ? progressState.stage : 'idle';
+            const nextStage = options && typeof options.stage === 'string' ? options.stage : prevStage;
+            const stageChanged = nextStage !== prevStage;
+            const shouldReset = !!(options && (options.reset || stageChanged));
 
             const safeTotal = Math.max(0, Number(total) || 0);
-            const effectiveTotal = safeTotal || prevTotal;
+            const effectiveTotal = safeTotal ? safeTotal : (shouldReset ? 0 : prevTotal);
             const requestedCompleted = Math.max(0, Math.min(effectiveTotal || 0, Number(completed) || 0));
-            const safeCompleted = Math.max(prevCompleted, requestedCompleted);
-            const percent = effectiveTotal ? (safeCompleted / effectiveTotal) * 100 : 0;
-            const displayCompleted = Math.floor(safeCompleted);
+            const safeCompleted = shouldReset ? requestedCompleted : Math.max(prevCompleted, requestedCompleted);
+            const clampedCompleted = effectiveTotal ? Math.min(effectiveTotal, safeCompleted) : 0;
+            const percent = effectiveTotal ? (clampedCompleted / effectiveTotal) * 100 : 0;
+            const displayCompleted = Math.floor(clampedCompleted);
 
-            progressState.completed = safeCompleted;
+            progressState.stage = nextStage;
+            progressState.completed = clampedCompleted;
             progressState.total = effectiveTotal;
             progressState.phase = phaseText || '';
 
@@ -314,7 +332,27 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const total = progress && Number.isFinite(Number(progress.total)) ? Number(progress.total) : (progressState.total || 0);
             const phase = progress && typeof progress.phase === 'string' ? progress.phase : '';
 
-            progressSetDeterminate(phase || 'Running...', completed, total);
+            const stage = progress && typeof progress.stage === 'string' ? progress.stage : '';
+            if (stage === 'setup') {
+                const setupCompleted = progress && Number.isFinite(Number(progress.setup_completed)) ? Number(progress.setup_completed) : 0;
+                const setupTotal = progress && Number.isFinite(Number(progress.setup_total)) ? Number(progress.setup_total) : (progressState.setupTotal || 100);
+                progressState.setupTotal = setupTotal || progressState.setupTotal || 100;
+                const reset = !progressState.hasLiveSetup;
+                progressState.hasLiveSetup = true;
+                progressSetDeterminate('Setting up Testing Environment', setupCompleted, setupTotal, { stage: 'setup', reset });
+            } else if (stage === 'tests') {
+                const testsCompleted = progress && Number.isFinite(Number(progress.tests_completed))
+                    ? Number(progress.tests_completed)
+                    : completed;
+                const testsTotal = progress && Number.isFinite(Number(progress.tests_total))
+                    ? Number(progress.tests_total)
+                    : total;
+                progressState.testsTotal = testsTotal || progressState.testsTotal || 0;
+                progressSetDeterminate(phase || 'Running tests...', testsCompleted, testsTotal, { stage: 'tests' });
+            } else {
+                // Backwards-compatible: treat legacy payload as test progress.
+                progressSetDeterminate(phase || 'Running tests...', completed, total, { stage: 'tests' });
+            }
             return { updated: true, reason: 'ok' };
         }
         
@@ -607,7 +645,6 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 await ensureWorkflowDispatch(branchRef);
                 await dispatchWorkflow(workflowData);
                 dispatched = true;
-                progressSetDeterminate('Running...', 0, progressState.total);
                 const result = await waitForResult(requestId, branchRef, runSha);
                 if (result.status !== 'success') {
                     throw new Error(result.error || 'Workflow reported failure');
@@ -741,10 +778,29 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     } catch (_) {}
                 }
                 if (!progressUpdated) {
-                    const phase = progressReason === 'forbidden'
-                        ? 'Running... (enable Checks: Read)'
-                        : 'Running...';
-                    progressUpdateEstimated(attempt, maxAttempts, phase);
+                    const stage = (progressState && progressState.stage === 'tests') ? 'tests' : 'setup';
+                    if (stage === 'setup') {
+                        const setupMaxAttempts = 24; // ~2 minutes at 5s intervals
+                        const phase = progressReason === 'forbidden'
+                            ? 'Setting up Testing Environment (enable Checks: Read)'
+                            : 'Setting up Testing Environment';
+                        progressUpdateEstimated(Math.min(attempt, setupMaxAttempts), setupMaxAttempts, phase);
+
+                        // If we can't read Checks, we can't detect the stage transition; still show two phases.
+                        if (progressReason === 'forbidden' && attempt === setupMaxAttempts) {
+                            const setupTotal = Number.isFinite(Number(progressState.total))
+                                ? Number(progressState.total)
+                                : (progressState.setupTotal || 100);
+                            progressSetDeterminate('Setting up Testing Environment (enable Checks: Read)', setupTotal, setupTotal, { stage: 'setup' });
+                            const testsTotal = Number.isFinite(Number(progressState.testsTotal)) ? Number(progressState.testsTotal) : 0;
+                            progressSetDeterminate('Running tests... (enable Checks: Read)', 0, testsTotal, { stage: 'tests', reset: true });
+                        }
+                    } else {
+                        const phase = progressReason === 'forbidden'
+                            ? 'Running tests... (enable Checks: Read)'
+                            : 'Running tests...';
+                        progressUpdateEstimated(attempt, maxAttempts, phase);
+                    }
                 }
                 try {
                     const refParam = branchRef ? `?ref=${encodeURIComponent(branchRef)}` : '';
