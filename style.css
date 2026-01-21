@@ -297,6 +297,17 @@ body {
     border-top: 2px solid #e1e4e8;
 }
 
+.run-params {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 15px;
+    margin-bottom: 15px;
+}
+
+.run-params .input-group {
+    margin-bottom: 0;
+}
+
 .status-badge {
     display: inline-block;
     padding: 4px 12px;
