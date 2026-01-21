@@ -1,26 +1,26 @@
 {
   "algorithm": "vf3",
-  "timestamp": "2026-01-21 21:06:06 UTC",
+  "timestamp": "2026-01-21 21:08:21 UTC",
   "status": "success",
-  "output": "[VF3 baseline]\n6\nWarmup: 1\nIterations: 20\nRuntime (ms): first median=     3.385 mean=     3.433 stdev=     0.106 min=     3.342 max=     3.708\n              all   median=     3.392 mean=     3.397 stdev=     0.040 min=     3.339 max=     3.499\nMax RSS (kB): first median=      3988 mean=      4013 stdev=        68 min=      3928 max=      4124\n              all   median=      3988 mean=      4043 stdev=        80 min=      3932 max=      4136\n\n[VF3 Gemini]\n6\nWarmup: 1\nIterations: 20\nRuntime (ms): first median=     3.402 mean=     3.406 stdev=     0.038 min=     3.343 max=     3.479\n              all   median=     3.431 mean=     3.428 stdev=     0.040 min=     3.356 max=     3.502\nMax RSS (kB): first median=      3928 mean=      3914 stdev=        24 min=      3852 max=      3928\n              all   median=      3924 mean=      3921 stdev=        44 min=      3868 max=      4032\n\n[VF3 ChatGPT]\n6\nWarmup: 1\nIterations: 20\nRuntime (ms): first median=     3.420 mean=     3.432 stdev=     0.055 min=     3.358 max=     3.580\n              all   median=     3.403 mean=     3.413 stdev=     0.041 min=     3.358 max=     3.503\nMax RSS (kB): first median=      3924 mean=      3939 stdev=        20 min=      3900 max=      3960\n              all   median=      3960 mean=      3946 stdev=        21 min=      3904 max=      3960\n\n",
+  "output": "[VF3 baseline]\n6\nWarmup: 1\nIterations: 100\nRuntime (ms): first median=     3.674 mean=     3.717 stdev=     0.343 min=     3.497 max=     6.814\n              all   median=     3.595 mean=     3.598 stdev=     0.063 min=     3.483 max=     3.804\nMax RSS (kB): first median=      4096 mean=      4057 stdev=        73 min=      3928 max=      4140\n              all   median=      4100 mean=      4063 stdev=        71 min=      3916 max=      4140\n\n[VF3 Gemini]\n6\nWarmup: 1\nIterations: 100\nRuntime (ms): first median=     3.591 mean=     3.616 stdev=     0.135 min=     3.478 max=     4.517\n              all   median=     3.670 mean=     3.685 stdev=     0.096 min=     3.541 max=     4.368\nMax RSS (kB): first median=      3928 mean=      3922 stdev=        38 min=      3856 max=      4032\n              all   median=      3924 mean=      3919 stdev=        30 min=      3868 max=      4032\n\n[VF3 ChatGPT]\n6\nWarmup: 1\nIterations: 100\nRuntime (ms): first median=     3.638 mean=     3.645 stdev=     0.082 min=     3.495 max=     3.817\n              all   median=     3.673 mean=     3.681 stdev=     0.078 min=     3.520 max=     3.872\nMax RSS (kB): first median=      3952 mean=      3940 stdev=        25 min=      3864 max=      3960\n              all   median=      3952 mean=      3941 stdev=        26 min=      3780 max=      3960\n\n",
   "error": "",
-  "request_id": "b8c878a3-bf9c-4c8d-8370-8ab17870394d",
-  "iterations": 20,
+  "request_id": "2ccda04c-91b4-49f2-90ff-3997e4b7bc6d",
+  "iterations": 100,
   "warmup": 1,
   "timings_ms": {
-    "baseline_first": 3.385,
-    "baseline_all": 3.392,
-    "gemini_first": 3.402,
-    "gemini_all": 3.431,
-    "chatgpt_first": 3.42,
-    "chatgpt_all": 3.403
+    "baseline_first": 3.674,
+    "baseline_all": 3.595,
+    "gemini_first": 3.591,
+    "gemini_all": 3.67,
+    "chatgpt_first": 3.638,
+    "chatgpt_all": 3.673
   },
   "memory_kb": {
-    "baseline_first": 3988,
-    "baseline_all": 3988,
+    "baseline_first": 4096,
+    "baseline_all": 4100,
     "gemini_first": 3928,
     "gemini_all": 3924,
-    "chatgpt_first": 3924,
-    "chatgpt_all": 3960
+    "chatgpt_first": 3952,
+    "chatgpt_all": 3952
   }
 }
