@@ -227,6 +227,58 @@ jobs:
             exit 0
           fi
 
+          # Normalize graph inputs so the smaller graph is always the pattern/subgraph.
+          # (Order of clicks in the UI should not matter.)
+          if [ "$ALGORITHM" = "glasgow" ] || [ "$ALGORITHM" = "vf3" ]; then
+            graph_nodes() {
+              python - <<'PY' "$1" 2>/dev/null || true
+          import re
+          import sys
+
+          path = sys.argv[1]
+          try:
+              with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                  for line in fh:
+                      s = line.strip()
+                      if not s or s.startswith("#"):
+                          continue
+                      m = re.match(r"^(-?\\d+)", s)
+                      if m:
+                          print(int(m.group(1)))
+                          raise SystemExit(0)
+          except OSError:
+              pass
+          print("")
+          PY
+            }
+
+            file0="${FILES[0]}"
+            file1="${FILES[1]}"
+            nodes0="$(graph_nodes "$file0")"
+            nodes1="$(graph_nodes "$file1")"
+            size0="$(stat -c%s "$file0" 2>/dev/null || echo 0)"
+            size1="$(stat -c%s "$file1" 2>/dev/null || echo 0)"
+
+            swap=0
+            if [[ "$nodes0" =~ ^[0-9]+$ ]] && [[ "$nodes1" =~ ^[0-9]+$ ]]; then
+              if [ "$nodes0" -gt "$nodes1" ]; then
+                swap=1
+              elif [ "$nodes0" -eq "$nodes1" ] && [ "$size0" -gt "$size1" ]; then
+                swap=1
+              fi
+            else
+              if [ "$size0" -gt "$size1" ]; then
+                swap=1
+              fi
+            fi
+
+            if [ "$swap" -eq 1 ]; then
+              FILES[0]="$file1"
+              FILES[1]="$file0"
+              echo "Normalized inputs (smaller graph used as pattern/subgraph)." >> outputs/result.txt
+            fi
+          fi
+
           ITERATIONS="1"
           if [[ "$ITERATIONS_RAW" =~ ^[0-9]+$ ]] && [ "$ITERATIONS_RAW" -ge 1 ]; then
             ITERATIONS="$ITERATIONS_RAW"

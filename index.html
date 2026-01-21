@@ -114,6 +114,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             selectedAlgorithm: null,
             selectedFiles: []
         };
+
+        let dataFileMeta = {};
+        const graphMetricCache = new Map();
         
         const algorithmConfigs = {
             dijkstra: {
@@ -432,6 +435,17 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 let html = '<ul class="file-list">';
                 
                 const files = Array.isArray(contents) ? contents : [contents];
+
+                dataFileMeta = {};
+                files.forEach(item => {
+                    if (item && item.type === 'file' && item.path) {
+                        dataFileMeta[item.path] = {
+                            size: (typeof item.size === 'number') ? item.size : null,
+                            sha: item.sha || '',
+                            downloadUrl: item.download_url || ''
+                        };
+                    }
+                });
                 
                 files.forEach(item => {
                     if (item.type === 'file') {
@@ -464,6 +478,104 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             }
         }
         
+        function isGraphPairAlgorithm(algoId) {
+            return algoId === 'glasgow' || algoId === 'vf3';
+        }
+
+        function parseLeadingIntLine(text) {
+            const lines = String(text || '').split(/\r?\n/);
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('#')) continue;
+                const match = trimmed.match(/^(-?\d+)/);
+                if (!match) continue;
+                const value = parseInt(match[1], 10);
+                if (Number.isFinite(value)) return value;
+            }
+            return null;
+        }
+
+        async function getGraphMetrics(path) {
+            const p = String(path || '');
+            const ref = String(config.ref || '').trim();
+            const cacheKey = `${ref}::${p}`;
+            if (graphMetricCache.has(cacheKey)) return graphMetricCache.get(cacheKey);
+
+            const meta = dataFileMeta && dataFileMeta[p] ? dataFileMeta[p] : null;
+            const bytes = meta && Number.isFinite(Number(meta.size)) ? Number(meta.size) : null;
+
+            const ext = p.toLowerCase().split('.').pop();
+            if (ext !== 'grf' && ext !== 'lad') {
+                const result = { nodes: null, bytes };
+                graphMetricCache.set(cacheKey, result);
+                return result;
+            }
+
+            // Avoid pulling content for very large files; fall back to bytes.
+            if (bytes && bytes > 1500000) {
+                const result = { nodes: null, bytes };
+                graphMetricCache.set(cacheKey, result);
+                return result;
+            }
+
+            try {
+                const refParam = ref ? `?ref=${encodeURIComponent(ref)}` : '';
+                const file = await apiRequest(`/contents/${encodePathPreservingSlashes(p)}${refParam}`);
+                if (file && typeof file.content === 'string' && file.encoding === 'base64') {
+                    const decoded = atob(file.content.replace(/\s/g, ''));
+                    const nodes = parseLeadingIntLine(decoded);
+                    const fallbackBytes = Number.isFinite(Number(file.size)) ? Number(file.size) : null;
+                    const resolvedBytes = (bytes !== null && bytes !== undefined) ? bytes : fallbackBytes;
+                    const result = { nodes, bytes: resolvedBytes };
+                    graphMetricCache.set(cacheKey, result);
+                    return result;
+                }
+            } catch (_) {}
+
+            const result = { nodes: null, bytes };
+            graphMetricCache.set(cacheKey, result);
+            return result;
+        }
+
+        async function normalizeGraphInputOrder(algoId) {
+            const id = String(algoId || '');
+            if (!isGraphPairAlgorithm(id)) return;
+            if (!Array.isArray(config.selectedFiles) || config.selectedFiles.length < 2) return;
+
+            const first = config.selectedFiles[0];
+            const second = config.selectedFiles[1];
+            if (!first || !second || !first.path || !second.path) return;
+
+            // Guard against races if the user changes selection while we fetch metadata.
+            const snapshot = config.selectedFiles.map(f => (f && f.path) ? f.path : '').join(',');
+            const [m0, m1] = await Promise.all([getGraphMetrics(first.path), getGraphMetrics(second.path)]);
+
+            if (!isGraphPairAlgorithm(config.selectedAlgorithm)) return;
+            if (!Array.isArray(config.selectedFiles) || config.selectedFiles.length < 2) return;
+            const current = config.selectedFiles.map(f => (f && f.path) ? f.path : '').join(',');
+            if (current !== snapshot) return;
+
+            const n0 = m0 && Number.isFinite(Number(m0.nodes)) ? Number(m0.nodes) : null;
+            const n1 = m1 && Number.isFinite(Number(m1.nodes)) ? Number(m1.nodes) : null;
+            const b0 = m0 && Number.isFinite(Number(m0.bytes)) ? Number(m0.bytes) : null;
+            const b1 = m1 && Number.isFinite(Number(m1.bytes)) ? Number(m1.bytes) : null;
+
+            const shouldSwap = (() => {
+                if (n0 !== null && n1 !== null) {
+                    if (n0 !== n1) return n0 > n1;
+                    if (b0 !== null && b1 !== null && b0 !== b1) return b0 > b1;
+                    return false;
+                }
+                if (b0 !== null && b1 !== null && b0 !== b1) return b0 > b1;
+                return false;
+            })();
+
+            if (shouldSwap) {
+                config.selectedFiles[0] = second;
+                config.selectedFiles[1] = first;
+            }
+        }
+
         function toggleFileSelection(evt, path, name) {
             const algo = algorithmConfigs[config.selectedAlgorithm];
             if (!algo) {
@@ -491,6 +603,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             
             updateRunButton();
             updateRunInfo();
+            normalizeGraphInputOrder(config.selectedAlgorithm)
+                .then(() => updateRunInfo())
+                .catch(() => {});
         }
         
         function updateRunButton() {
@@ -584,6 +699,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 fail('Personal Access Token is required to run workflows.');
                 return;
             }
+
+            try {
+                await normalizeGraphInputOrder(config.selectedAlgorithm);
+            } catch (_) {}
+            updateRunInfo();
 
             const inputLines = config.selectedFiles.map((file, index) => {
                 const label = algo.fileLabels ? algo.fileLabels[index] : `File ${index + 1}`;
