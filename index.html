@@ -506,12 +506,20 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const nowMs = () => (window.performance && typeof window.performance.now === 'function')
                 ? window.performance.now()
                 : Date.now();
+            const formatDurationMs = (ms) => {
+                if (!Number.isFinite(ms)) return '';
+                const totalSeconds = ms / 1000;
+                const minutes = Math.floor(totalSeconds / 60);
+                const seconds = totalSeconds - minutes * 60;
+                const secondsStr = seconds.toFixed(1).padStart(4, '0');
+                return `${minutes}m ${secondsStr}s`;
+            };
             const endToEndStartMs = nowMs();
 
             const fail = (message) => {
                 const elapsedMs = nowMs() - endToEndStartMs;
                 progressClear();
-                outputDiv.textContent = `Failure: ${message}\n\nTotal end-to-end time (ms): ${elapsedMs.toFixed(1)}`;
+                outputDiv.textContent = `Failure: ${message}\n\nTotal end-to-end time: ${formatDurationMs(elapsedMs)}`;
                 statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
                 runBtn.disabled = false;
             };
@@ -612,7 +620,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     result.output || '(No output)'
                 ];
                 const elapsedMs = nowMs() - endToEndStartMs;
-                finalLines.push('', `Total end-to-end time (ms): ${elapsedMs.toFixed(1)}`);
+                finalLines.push('', `Total end-to-end time: ${formatDurationMs(elapsedMs)}`);
                 outputDiv.textContent = finalLines.join('\n');
                 statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
                 if (progressState.total > 0) {
@@ -621,7 +629,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             } catch (error) {
                 const message = error && error.message ? error.message : String(error);
                 const elapsedMs = nowMs() - endToEndStartMs;
-                outputDiv.textContent = `Failure: ${message}\n\nTotal end-to-end time (ms): ${elapsedMs.toFixed(1)}`;
+                outputDiv.textContent = `Failure: ${message}\n\nTotal end-to-end time: ${formatDurationMs(elapsedMs)}`;
                 reportDebugError('runAlgorithm', error, {
                     algorithm: config.selectedAlgorithm,
                     files: config.selectedFiles.map(f => f.path).join(','),
