@@ -1,8 +1,26 @@
 {
   "algorithm": "vf3",
-  "timestamp": "2026-01-24 20:10:58 UTC",
-  "status": "error",
-  "output": "",
-  "error": "[VF3 baseline]\n6\nWarmup: 1\nIterations: 50000\nRuntime (ms): first median=     3.679 mean=     3.674 stdev=     0.133 min=     3.329 max=     6.261\n              all   median=     3.894 mean=     3.885 stdev=     0.108 min=     3.617 max=     6.203\nMax RSS (kB): first median=      4092 mean=      4052 stdev=        75 min=      3868 max=      4140\n              all   median=      4096 mean=      4054 stdev=        75 min=      3896 max=      4140\n\n",
-  "request_id": "a5ed493f-5648-465c-bda2-c82722081541"
+  "timestamp": "2026-01-24 20:11:31 UTC",
+  "status": "success",
+  "output": "[VF3 baseline]\n6\nWarmup: 1\nIterations: 10\nRuntime (ms): first median=     2.974 mean=     3.086 stdev=     0.339 min=     2.884 max=     4.036\n              all   median=     2.907 mean=     2.906 stdev=     0.066 min=     2.793 max=     3.054\nMax RSS (kB): first median=      4232 mean=      4212 stdev=        65 min=      4044 max=      4260\n              all   median=      4236 mean=      4241 stdev=        13 min=      4228 max=      4268\n\n[VF3 Gemini]\n6\nWarmup: 1\nIterations: 10\nRuntime (ms): first median=     2.995 mean=     3.029 stdev=     0.150 min=     2.852 max=     3.325\n              all   median=     3.232 mean=     3.209 stdev=     0.065 min=     3.129 max=     3.297\nMax RSS (kB): first median=      4068 mean=      4053 stdev=        29 min=      4008 max=      4076\n              all   median=      4068 mean=      4058 stdev=        18 min=      4036 max=      4076\n\n[VF3 ChatGPT]\n6\nWarmup: 1\nIterations: 10\nRuntime (ms): first median=     2.933 mean=     2.981 stdev=     0.136 min=     2.872 max=     3.347\n              all   median=     2.945 mean=     2.975 stdev=     0.109 min=     2.854 max=     3.218\nMax RSS (kB): first median=      4052 mean=      4065 stdev=        24 min=      4028 max=      4088\n              all   median=      4080 mean=      4073 stdev=        22 min=      4032 max=      4088\n\n",
+  "error": "",
+  "request_id": "15a46977-7331-458d-aeff-2253305e3660",
+  "iterations": 10,
+  "warmup": 1,
+  "timings_ms": {
+    "baseline_first": 2.974,
+    "baseline_all": 2.907,
+    "gemini_first": 2.995,
+    "gemini_all": 3.232,
+    "chatgpt_first": 2.933,
+    "chatgpt_all": 2.945
+  },
+  "memory_kb": {
+    "baseline_first": 4232,
+    "baseline_all": 4236,
+    "gemini_first": 4068,
+    "gemini_all": 4068,
+    "chatgpt_first": 4052,
+    "chatgpt_all": 4080
+  }
 }
