@@ -1,26 +1,8 @@
 {
   "algorithm": "vf3",
-  "timestamp": "2026-01-24 07:25:20 UTC",
-  "status": "success",
-  "output": "[VF3 baseline]\n126\nWarmup: 1\nIterations: 1000\nRuntime (ms): first median=     4.247 mean=     4.264 stdev=     0.095 min=     4.113 max=     5.459\n              all   median=     4.765 mean=     4.783 stdev=     0.118 min=     4.618 max=     6.937\nMax RSS (kB): first median=      4468 mean=      4435 stdev=        75 min=      4300 max=      4524\n              all   median=      4468 mean=      4435 stdev=        76 min=      4300 max=      4524\n\n[VF3 Gemini]\n126\nWarmup: 1\nIterations: 1000\nRuntime (ms): first median=     4.083 mean=     4.097 stdev=     0.073 min=     3.965 max=     4.656\n              all   median=     4.780 mean=     4.795 stdev=     0.075 min=     4.655 max=     5.285\nMax RSS (kB): first median=      4056 mean=      4048 stdev=        35 min=      3928 max=      4160\n              all   median=      4052 mean=      4045 stdev=        32 min=      3920 max=      4160\n\n[VF3 ChatGPT]\n126\nWarmup: 1\nIterations: 1000\nRuntime (ms): first median=     4.540 mean=     4.557 stdev=     0.107 min=     4.400 max=     6.415\n              all   median=    14.232 mean=    14.276 stdev=     0.187 min=    14.010 max=    15.668\nMax RSS (kB): first median=      4080 mean=      4069 stdev=        22 min=      3992 max=      4088\n              all   median=      4084 mean=      4070 stdev=        24 min=      3944 max=      4088\n\n",
-  "error": "",
-  "request_id": "ab75dbc8-31a3-40bc-bb8a-32f2d4d017df",
-  "iterations": 1000,
-  "warmup": 1,
-  "timings_ms": {
-    "baseline_first": 4.247,
-    "baseline_all": 4.765,
-    "gemini_first": 4.083,
-    "gemini_all": 4.78,
-    "chatgpt_first": 4.54,
-    "chatgpt_all": 14.232
-  },
-  "memory_kb": {
-    "baseline_first": 4468,
-    "baseline_all": 4468,
-    "gemini_first": 4056,
-    "gemini_all": 4052,
-    "chatgpt_first": 4080,
-    "chatgpt_all": 4084
-  }
+  "timestamp": "2026-01-24 18:19:37 UTC",
+  "status": "error",
+  "output": "",
+  "error": "Unknown error",
+  "request_id": "7a320f8c-ceba-4d4f-8520-f808eaff9ccf"
 }
