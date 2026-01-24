@@ -1,4 +1,5 @@
 name: Run Algorithm
+run-name: Run Algorithm (${{ github.event.inputs.request_id || github.event.client_payload.request_id || github.run_id }})
 
 on:
   workflow_dispatch:
@@ -282,9 +283,6 @@ jobs:
           ITERATIONS="1"
           if [[ "$ITERATIONS_RAW" =~ ^[0-9]+$ ]] && [ "$ITERATIONS_RAW" -ge 1 ]; then
             ITERATIONS="$ITERATIONS_RAW"
-          fi
-          if [ "$ITERATIONS" -gt 1000 ]; then
-            ITERATIONS="1000"
           fi
 
           WARMUP="0"
