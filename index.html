@@ -79,6 +79,16 @@
                             <input type="number" id="warmup" value="1" min="0" max="50">
                         </div>
                     </div>
+                    <div class="run-mode" id="run-mode">
+                        <label class="run-mode-option">
+                            <input type="radio" name="run-mode" value="standard" checked>
+                            Standard Run (GitHub Actions)
+                        </label>
+                        <label class="run-mode-option">
+                            <input type="radio" name="run-mode" value="local">
+                            Run Locally (WebAssembly)
+                        </label>
+                    </div>
                     <button class="btn btn-primary" id="run-btn" onclick="runAlgorithm()" disabled>
                         Run Algorithm
                     </button>
@@ -88,14 +98,16 @@
                     <button class="btn" onclick="clearOutput()">Clear Output</button>
                 </div>
 
-                <div class="progress-wrapper" id="progress-wrapper" hidden>
+                <div class="progress-area" id="progress-area" hidden>
                     <div class="run-timer" id="run-timer" hidden>Elapsed: 00:00</div>
-                    <div class="progress-meta">
-                        <div class="progress-phase" id="progress-phase">Preparing...</div>
-                        <div class="progress-count" id="progress-count">0/0</div>
-                    </div>
-                    <div class="progress-bar" id="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                        <div class="progress-fill" id="progress-fill"></div>
+                    <div class="progress-wrapper" id="progress-wrapper">
+                        <div class="progress-meta">
+                            <div class="progress-phase" id="progress-phase">Preparing...</div>
+                            <div class="progress-count" id="progress-count">0/0</div>
+                        </div>
+                        <div class="progress-bar" id="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                            <div class="progress-fill" id="progress-fill"></div>
+                        </div>
                     </div>
                 </div>
                 
@@ -175,6 +187,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
         function getProgressEls() {
             return {
+                area: document.getElementById('progress-area'),
                 wrapper: document.getElementById('progress-wrapper'),
                 timer: document.getElementById('run-timer'),
                 phase: document.getElementById('progress-phase'),
@@ -245,17 +258,28 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
         function setProgressVisible(visible) {
             const els = getProgressEls();
-            if (!els.wrapper) return;
-            els.wrapper.hidden = !visible;
+            if (els.area) {
+                els.area.hidden = !visible;
+                return;
+            }
+            if (els.wrapper) {
+                els.wrapper.hidden = !visible;
+            }
         }
 
-        function progressReset(algoId, iterations, requestId) {
-            const testsPerIter = getTestsPerIteration(algoId);
+        function progressReset(algoId, iterations, requestId, options = {}) {
+            const testsPerIterRaw = options && options.testsPerIter !== undefined ? Number(options.testsPerIter) : NaN;
+            const testsPerIter = Number.isFinite(testsPerIterRaw) ? Math.max(0, Math.floor(testsPerIterRaw)) : getTestsPerIteration(algoId);
+            const setupTotalRaw = options && options.setupTotal !== undefined ? Number(options.setupTotal) : NaN;
+            const setupTotal = Number.isFinite(setupTotalRaw) ? Math.max(1, Math.floor(setupTotalRaw)) : 100;
+            const initialPhase = options && typeof options.initialPhase === 'string'
+                ? options.initialPhase
+                : 'Setting up Testing Environment';
             progressState.requestId = requestId || '';
             progressState.runSha = '';
             progressState.workflowRunId = '';
             progressState.stage = 'setup';
-            progressState.setupTotal = 100;
+            progressState.setupTotal = setupTotal;
             progressState.testsTotal = Math.max(0, Number(iterations) || 0) * testsPerIter;
             progressState.hasLiveSetup = false;
             progressState.total = progressState.setupTotal;
@@ -263,7 +287,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             progressState.phase = '';
 
             setProgressVisible(true);
-            progressSetDeterminate('Setting up Testing Environment', 0, progressState.total, { stage: 'setup', reset: true });
+            progressSetDeterminate(initialPhase, 0, progressState.total, { stage: 'setup', reset: true });
         }
 
         function progressClear() {
@@ -279,7 +303,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             progressState.phase = '';
 
             const els = getProgressEls();
-            if (els.wrapper) {
+            if (els.area) {
+                els.area.hidden = true;
+            } else if (els.wrapper) {
                 els.wrapper.hidden = true;
             }
             runTimerReset();
@@ -732,7 +758,153 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             html += '</div>';
             infoDiv.innerHTML = html;
         }
-        
+
+        function getSelectedRunMode() {
+            const selected = document.querySelector('input[name="run-mode"]:checked');
+            const raw = selected ? String(selected.value || '').trim().toLowerCase() : 'standard';
+            return raw === 'local' ? 'local' : 'standard';
+        }
+
+        let localWasmKernelPromise = null;
+        async function getLocalWasmKernel() {
+            if (localWasmKernelPromise) return localWasmKernelPromise;
+            localWasmKernelPromise = (async () => {
+                if (!('WebAssembly' in window)) {
+                    throw new Error('WebAssembly is not supported in this browser.');
+                }
+
+                // Minimal WASM module exporting `work(n: i32) -> i32`.
+                // Used as a lightweight local runner kernel (warmups + iterations) without GitHub Actions.
+                const bytes = new Uint8Array([
+                    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+                    0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+                    0x03, 0x02, 0x01, 0x00,
+                    0x07, 0x08, 0x01, 0x04, 0x77, 0x6f, 0x72, 0x6b, 0x00, 0x00,
+                    0x0a, 0x2d, 0x01, 0x2b, 0x01, 0x02, 0x7f,
+                    0x41, 0x00, 0x21, 0x01,
+                    0x41, 0x00, 0x21, 0x02,
+                    0x02, 0x40,
+                    0x03, 0x40,
+                    0x20, 0x01,
+                    0x20, 0x00,
+                    0x4f,
+                    0x0d, 0x01,
+                    0x20, 0x02,
+                    0x20, 0x01,
+                    0x6a,
+                    0x21, 0x02,
+                    0x20, 0x01,
+                    0x41, 0x01,
+                    0x6a,
+                    0x21, 0x01,
+                    0x0c, 0x00,
+                    0x0b,
+                    0x0b,
+                    0x20, 0x02,
+                    0x0b
+                ]);
+
+                const { instance } = await WebAssembly.instantiate(bytes);
+                if (!instance || !instance.exports || typeof instance.exports.work !== 'function') {
+                    throw new Error('Failed to initialize local WebAssembly runner.');
+                }
+                return instance.exports;
+            })();
+            return localWasmKernelPromise;
+        }
+
+        function computeLocalWorkN(algoId, unitIndex, fileMetaList = []) {
+            const unit = Math.max(0, Number(unitIndex) || 0);
+            const algo = String(algoId || '');
+            const bytes = Array.isArray(fileMetaList)
+                ? fileMetaList.reduce((sum, m) => sum + (Number.isFinite(Number(m && m.bytes)) ? Number(m.bytes) : 0), 0)
+                : 0;
+
+            const algoFactor = algo === 'vf3' ? 3 : (algo === 'glasgow' ? 2 : 1);
+            const base = Math.max(25000, Math.min(2500000, Math.floor(bytes / 3)));
+            return base * algoFactor * (1 + (unit % 3));
+        }
+
+        async function runAlgorithmLocally(runCtx, algoId, iterations, warmup) {
+            const kernel = await getLocalWasmKernel();
+            const testsPerIter = getTestsPerIteration(algoId);
+            const setupTotal = Math.max(1, 1 + (Math.max(0, Number(warmup) || 0) * testsPerIter));
+
+            const metaList = (config.selectedFiles || []).map(f => {
+                const m = dataFileMeta && f && f.path && dataFileMeta[f.path] ? dataFileMeta[f.path] : null;
+                return { path: f && f.path ? String(f.path) : '', bytes: m && Number.isFinite(Number(m.size)) ? Number(m.size) : 0 };
+            });
+
+            let setupDone = 0;
+            const safeWarmup = Math.max(0, Math.floor(Number(warmup) || 0));
+            const safeIterations = Math.max(0, Math.floor(Number(iterations) || 0));
+            const testsTotal = safeIterations * testsPerIter;
+            const localStartMs = runTimerNowMs();
+
+            progressReset(algoId, safeIterations, runCtx.requestId, {
+                setupTotal,
+                testsPerIter,
+                initialPhase: 'Setting up Local WebAssembly Runner'
+            });
+
+            setupDone = 1;
+            progressSetDeterminate('Setting up Local WebAssembly Runner', setupDone, setupTotal, { stage: 'setup', reset: true });
+
+            // Warmup phase (fills the bar the first time)
+            let warmupUnitsDone = 0;
+            for (let i = 0; i < safeWarmup; i++) {
+                for (let unit = 0; unit < testsPerIter; unit++) {
+                    if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                    kernel.work(computeLocalWorkN(algoId, unit, metaList));
+                    warmupUnitsDone++;
+                    const completed = Math.min(setupTotal, 1 + warmupUnitsDone);
+                    if (completed !== setupDone) {
+                        setupDone = completed;
+                        progressSetDeterminate('Warming up...', setupDone, setupTotal, { stage: 'setup' });
+                    }
+                    if ((warmupUnitsDone % 25) === 0) {
+                        await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
+                    }
+                }
+            }
+
+            // Tests phase (reset to 0% and fill again)
+            progressSetDeterminate('Running tests...', 0, testsTotal, { stage: 'tests', reset: true });
+            let testsDone = 0;
+            for (let iter = 0; iter < safeIterations; iter++) {
+                for (let unit = 0; unit < testsPerIter; unit++) {
+                    if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                    kernel.work(computeLocalWorkN(algoId, unit, metaList));
+                    testsDone++;
+                    if ((testsDone % 10) === 0 || testsDone === testsTotal) {
+                        progressSetDeterminate('Running tests...', testsDone, testsTotal, { stage: 'tests' });
+                    }
+                    if ((testsDone % 50) === 0) {
+                        await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
+                    }
+                }
+            }
+
+            const localElapsedMs = runTimerNowMs() - localStartMs;
+            progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
+
+            return {
+                status: 'success',
+                output: [
+                    'Local run completed (WebAssembly runner).',
+                    '',
+                    `Warmup runs: ${safeWarmup}`,
+                    `Benchmark iterations: ${safeIterations}`,
+                    `Work units executed: ${testsTotal}`,
+                    '',
+                    `Local runtime: ${Math.max(0, localElapsedMs).toFixed(1)} ms`,
+                    '',
+                    'Note: Local mode currently runs a lightweight WebAssembly kernel for quick UI testing.',
+                    'Standard Run uses GitHub Actions to execute the actual compiled binaries and produce baseline results.'
+                ].join('\\n')
+            };
+        }
+
         async function runAlgorithm() {
             const outputDiv = document.getElementById('output');
             const statusBadge = document.getElementById('status-badge');
@@ -794,6 +966,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             } catch (_) {}
             updateRunInfo();
 
+            const runMode = getSelectedRunMode();
             const inputLines = config.selectedFiles.map((file, index) => {
                 const label = algo.fileLabels ? algo.fileLabels[index] : `File ${index + 1}`;
                 return `${label}: ${file.path}`;
@@ -805,7 +978,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 ...inputLines,
                 '',
                 'Result:',
-                'Triggering workflow...'
+                runMode === 'local' ? 'Starting local run...' : 'Triggering workflow...'
             ];
             outputDiv.textContent = summaryLines.join('\n');
             statusBadge.innerHTML = '<span class="status-badge status-running">Running...</span>';
@@ -813,6 +986,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const requestId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
             const runCtx = {
                 requestId,
+                mode: runMode,
                 branchRef: '',
                 runSha: '',
                 aborted: false,
@@ -840,29 +1014,59 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
             const branchRef = config.ref || 'main';
             runCtx.branchRef = branchRef;
-            progressReset(config.selectedAlgorithm, iterations, requestId);
             runTimerStart(runCtx);
-
-            let runSha = '';
-            try {
-                runSha = await getBranchHeadSha(branchRef);
-                if (runSha) progressState.runSha = runSha;
-                runCtx.runSha = runSha;
-            } catch (_) {}
-
-            const workflowData = {
-                ref: branchRef,
-                inputs: {
-                    algorithm: config.selectedAlgorithm,
-                    iterations: String(iterations),
-                    warmup: String(warmup),
-                    input_files: config.selectedFiles.map(f => f.path).join(','),
-                    request_id: requestId
-                }
-            };
 
             let dispatched = false;
             try {
+                if (runMode === 'local') {
+                    const localResult = await runAlgorithmLocally(runCtx, config.selectedAlgorithm, iterations, warmup);
+                    if (runCtx.aborted || (localResult && localResult.status === 'aborted')) {
+                        if (activeRun === runCtx) {
+                            outputDiv.textContent = 'Run Aborted';
+                            statusBadge.innerHTML = '<span class="status-badge status-aborted">Aborted</span>';
+                            progressClear();
+                        }
+                        return;
+                    }
+                    if (!localResult || localResult.status !== 'success') {
+                        throw new Error((localResult && localResult.error) ? localResult.error : 'Local run failed');
+                    }
+
+                    const finalLines = [
+                        `Algorithm: ${algo.name} (Local)`,
+                        'Inputs:',
+                        ...inputLines,
+                        '',
+                        'Result:',
+                        localResult.output || '(No output)'
+                    ];
+                    const elapsedMs = nowMs() - endToEndStartMs;
+                    finalLines.push('', `Total end-to-end time: ${formatDurationMs(elapsedMs)}`);
+                    outputDiv.textContent = finalLines.join('\n');
+                    statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
+                    return;
+                }
+
+                progressReset(config.selectedAlgorithm, iterations, requestId);
+
+                let runSha = '';
+                try {
+                    runSha = await getBranchHeadSha(branchRef);
+                    if (runSha) progressState.runSha = runSha;
+                    runCtx.runSha = runSha;
+                } catch (_) {}
+
+                const workflowData = {
+                    ref: branchRef,
+                    inputs: {
+                        algorithm: config.selectedAlgorithm,
+                        iterations: String(iterations),
+                        warmup: String(warmup),
+                        input_files: config.selectedFiles.map(f => f.path).join(','),
+                        request_id: requestId
+                    }
+                };
+
                 await ensureWorkflowDispatch(branchRef);
                 await dispatchWorkflow(workflowData);
                 dispatched = true;
@@ -1087,6 +1291,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             try {
                 if (run.abortController) run.abortController.abort();
             } catch (_) {}
+
+            // Local runs do not create a GitHub Actions workflow to cancel.
+            if (run.mode === 'local') {
+                if (runBtn) runBtn.disabled = false;
+                return;
+            }
 
             // Best-effort: cancel the GitHub Actions workflow run.
             try {
