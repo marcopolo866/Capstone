@@ -408,7 +408,7 @@ jobs:
               "name": name,
               "head_sha": sha,
               "status": "in_progress",
-              "started_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "started_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
               "output": {
                   "title": name,
                   "summary": summary,
@@ -518,7 +518,7 @@ jobs:
               },
           }
           if status == "completed":
-              payload["completed_at"] = datetime.datetime.utcnow().strftime(
+              payload["completed_at"] = datetime.datetime.now(datetime.timezone.utc).strftime(
                   "%Y-%m-%dT%H:%M:%SZ"
               )
               if conclusion:
@@ -1296,7 +1296,7 @@ jobs:
           algorithm = os.environ.get("ALGORITHM_INPUT", "")
           exit_code = os.environ.get("EXIT_CODE", "")
           request_id = os.environ.get("REQUEST_ID_INPUT", "")
-          timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+          timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
           result_txt = Path("outputs/result.txt")
           text = ""
