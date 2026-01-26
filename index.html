@@ -891,17 +891,14 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             return {
                 status: 'success',
                 output: [
-                    'Local run completed (WebAssembly runner).',
+                    `[${algoId.toUpperCase()} Local]`,
+                    `Warmup: ${safeWarmup}`,
+                    `Iterations: ${safeIterations}`,
+                    `Runtime (ms): ${Math.max(0, localElapsedMs).toFixed(1)}`,
+                    `Work units: ${testsTotal}`,
                     '',
-                    `Warmup runs: ${safeWarmup}`,
-                    `Benchmark iterations: ${safeIterations}`,
-                    `Work units executed: ${testsTotal}`,
-                    '',
-                    `Local runtime: ${Math.max(0, localElapsedMs).toFixed(1)} ms`,
-                    '',
-                    'Note: Local mode currently runs a lightweight WebAssembly kernel for quick UI testing.',
-                    'Standard Run uses GitHub Actions to execute the actual compiled binaries and produce baseline results.'
-                ].join('\\n')
+                    'Note: Local mode currently runs a lightweight WebAssembly kernel for quick UI testing.'
+                ].join('\n')
             };
         }
 
