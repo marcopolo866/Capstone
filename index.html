@@ -917,6 +917,13 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             return promise;
         }
 
+        async function getFreshEmscriptenModule(spec) {
+            const id = String(spec && spec.id ? spec.id : '').trim();
+            if (!id) throw new Error('Missing wasm module id');
+            invalidateEmscriptenModule(id);
+            return await getEmscriptenModule(spec);
+        }
+
         function ensureEmscriptenDir(mod, path) {
             const dir = String(path || '').trim();
             if (!dir) return;
@@ -1041,147 +1048,202 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             ]);
             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
 
-            const [baselineMod, geminiMod, chatgptMod] = await Promise.all([
-                getEmscriptenModule({
-                    id: 'vf3_baseline',
-                    scriptPath: 'wasm/vf3_baseline.js',
-                    wasmPath: 'wasm/vf3_baseline.wasm',
-                    factoryName: 'createVf3BaselineModule'
-                }),
-                getEmscriptenModule({
-                    id: 'vf3_gemini',
-                    scriptPath: 'wasm/vf3_gemini.js',
-                    wasmPath: 'wasm/vf3_gemini.wasm',
-                    factoryName: 'createVf3GeminiModule'
-                }),
-                getEmscriptenModule({
-                    id: 'vf3_chatgpt',
-                    scriptPath: 'wasm/vf3_chatgpt.js',
-                    wasmPath: 'wasm/vf3_chatgpt.wasm',
-                    factoryName: 'createVf3ChatgptModule'
-                })
-            ]);
-            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+            const baselineSpec = {
+                id: 'vf3_baseline',
+                scriptPath: 'wasm/vf3_baseline.js',
+                wasmPath: 'wasm/vf3_baseline.wasm',
+                factoryName: 'createVf3BaselineModule'
+            };
+            const geminiSpec = {
+                id: 'vf3_gemini',
+                scriptPath: 'wasm/vf3_gemini.js',
+                wasmPath: 'wasm/vf3_gemini.wasm',
+                factoryName: 'createVf3GeminiModule'
+            };
+            const chatgptSpec = {
+                id: 'vf3_chatgpt',
+                scriptPath: 'wasm/vf3_chatgpt.js',
+                wasmPath: 'wasm/vf3_chatgpt.wasm',
+                factoryName: 'createVf3ChatgptModule'
+            };
 
-            // Write inputs into each module's in-memory filesystem.
-            for (const mod of [baselineMod, geminiMod, chatgptMod]) {
+            const writeInputs = (mod) => {
                 ensureEmscriptenDir(mod, '/inputs');
                 writeEmscriptenTextFile(mod, patternFsPath, patternText);
                 writeEmscriptenTextFile(mod, targetFsPath, targetText);
-            }
-
-            const warmupRuns = [
-                { label: 'VF3 baseline first', mod: baselineMod, args: ['-r', '0', '-F', patternFsPath, targetFsPath] },
-                { label: 'VF3 baseline all', mod: baselineMod, args: ['-r', '0', patternFsPath, targetFsPath] },
-                { label: 'VF3 Gemini first', mod: geminiMod, args: ['--first-only', patternFsPath, targetFsPath] },
-                { label: 'VF3 Gemini all', mod: geminiMod, args: [patternFsPath, targetFsPath] },
-                { label: 'VF3 ChatGPT first', mod: chatgptMod, args: ['--first-only', patternFsPath, targetFsPath] },
-                { label: 'VF3 ChatGPT all', mod: chatgptMod, args: [patternFsPath, targetFsPath] }
-            ];
-
-            // Phase 1: setup + warmup (progress bar fills once)
-            if (safeWarmup > 0) {
-                let setupDone = 0;
-                for (let i = 0; i < safeWarmup; i++) {
-                    for (const run of warmupRuns) {
-                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                        progressSetDeterminate(`Warming up: ${run.label}`, setupDone, setupTotal, { stage: 'setup' });
-                        try {
-                            await runEmscriptenMain(run.mod, run.args);
-                        } catch (error) {
-                            const msg = error && error.message ? error.message : String(error);
-                            throw new Error(`Warmup ${i + 1}/${safeWarmup} - ${run.label}: ${msg}`);
-                        }
-                        setupDone++;
-                        progressSetDeterminate(`Warming up: ${run.label}`, setupDone, setupTotal, { stage: 'setup' });
-                        await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
-                    }
-                }
-            } else {
-                // Still complete the setup phase so the bar fills once.
-                progressSetDeterminate('Setting up Local WebAssembly Runner', setupTotal, setupTotal, { stage: 'setup', reset: true });
-            }
-
-            // Phase 2: measured iterations (bar resets and fills again)
-            progressSetDeterminate('Running tests...', 0, testsTotal, { stage: 'tests', reset: true });
-
-            const baseFirst = [];
-            const baseAll = [];
-            const gemFirst = [];
-            const gemAll = [];
-            const chatFirst = [];
-            const chatAll = [];
-            let baseResult = '';
-            let gemResult = '';
-            let chatResult = '';
-
-            const measuredRuns = [
-                { label: 'VF3 baseline first', mod: baselineMod, args: ['-r', '0', '-F', patternFsPath, targetFsPath], times: baseFirst },
-                { label: 'VF3 baseline all', mod: baselineMod, args: ['-r', '0', patternFsPath, targetFsPath], times: baseAll, capture: 'base' },
-                { label: 'VF3 Gemini first', mod: geminiMod, args: ['--first-only', patternFsPath, targetFsPath], times: gemFirst },
-                { label: 'VF3 Gemini all', mod: geminiMod, args: [patternFsPath, targetFsPath], times: gemAll, capture: 'gem' },
-                { label: 'VF3 ChatGPT first', mod: chatgptMod, args: ['--first-only', patternFsPath, targetFsPath], times: chatFirst },
-                { label: 'VF3 ChatGPT all', mod: chatgptMod, args: [patternFsPath, targetFsPath], times: chatAll, capture: 'chat' }
-            ];
-
-            let ticksDone = 0;
-            for (let iter = 0; iter < safeIterations; iter++) {
-                for (const run of measuredRuns) {
-                    if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                    progressSetDeterminate(run.label, ticksDone, testsTotal, { stage: 'tests' });
-                    const t0 = runTimerNowMs();
-                    let stdout = '';
-                    try {
-                        const res = await runEmscriptenMain(run.mod, run.args);
-                        stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
-                    } catch (error) {
-                        const msg = error && error.message ? error.message : String(error);
-                        throw new Error(`Iteration ${iter + 1}/${safeIterations} - ${run.label}: ${msg}`);
-                    }
-                    const t1 = runTimerNowMs();
-                    run.times.push(Math.max(0, t1 - t0));
-
-                    if (run.capture === 'base') {
-                        const line = parseFirstLine(stdout);
-                        baseResult = parseFirstToken(line) || line;
-                    } else if (run.capture === 'gem') {
-                        gemResult = parseFirstLine(stdout);
-                    } else if (run.capture === 'chat') {
-                        chatResult = parseFirstLine(stdout);
-                    }
-
-                    ticksDone++;
-                    progressSetDeterminate(run.label, ticksDone, testsTotal, { stage: 'tests' });
-                    await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
-                }
-            }
-
-            progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
-
-            const sBaseFirst = calcStatsMs(baseFirst);
-            const sBaseAll = calcStatsMs(baseAll);
-            const sGemFirst = calcStatsMs(gemFirst);
-            const sGemAll = calcStatsMs(gemAll);
-            const sChatFirst = calcStatsMs(chatFirst);
-            const sChatAll = calcStatsMs(chatAll);
-
-            const lines = [];
-            const addSection = (title, result, firstStats, allStats) => {
-                lines.push(`[${title}]`);
-                lines.push(result || '(No output)');
-                lines.push(`Warmup: ${safeWarmup}`);
-                lines.push(`Iterations: ${safeIterations}`);
-                if (firstStats && allStats) {
-                    lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
-                }
-                lines.push('');
             };
 
-            addSection('VF3 baseline', baseResult, sBaseFirst, sBaseAll);
-            addSection('VF3 Gemini', gemResult, sGemFirst, sGemAll);
-            addSection('VF3 ChatGPT', chatResult, sChatFirst, sChatAll);
+            // IMPORTANT: vf3lib's baseline leaks in-process memory in ways that can destabilize long local runs.
+            // To mimic "fresh process per invocation" behavior from GitHub Actions, we recreate the baseline
+            // module each iteration (and on every warmup loop).
+            const getFreshBaselineMod = async () => {
+                const mod = await getFreshEmscriptenModule(baselineSpec);
+                writeInputs(mod);
+                return mod;
+            };
 
-            return { status: 'success', output: lines.join('\n') };
+            let geminiMod = null;
+            let chatgptMod = null;
+
+            try {
+                [geminiMod, chatgptMod] = await Promise.all([
+                    getEmscriptenModule(geminiSpec),
+                    getEmscriptenModule(chatgptSpec)
+                ]);
+                if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+
+                // Write inputs into the reused modules' in-memory filesystem.
+                for (const mod of [geminiMod, chatgptMod]) {
+                    writeInputs(mod);
+                }
+
+                const warmupSteps = [
+                    { label: 'VF3 baseline first', solver: 'baseline', args: ['-r', '0', '-F', patternFsPath, targetFsPath] },
+                    { label: 'VF3 baseline all', solver: 'baseline', args: ['-r', '0', patternFsPath, targetFsPath] },
+                    { label: 'VF3 Gemini first', solver: 'gemini', args: ['--first-only', patternFsPath, targetFsPath] },
+                    { label: 'VF3 Gemini all', solver: 'gemini', args: [patternFsPath, targetFsPath] },
+                    { label: 'VF3 ChatGPT first', solver: 'chatgpt', args: ['--first-only', patternFsPath, targetFsPath] },
+                    { label: 'VF3 ChatGPT all', solver: 'chatgpt', args: [patternFsPath, targetFsPath] }
+                ];
+
+                // Phase 1: setup + warmup (progress bar fills once)
+                if (safeWarmup > 0) {
+                    let setupDone = 0;
+                    for (let i = 0; i < safeWarmup; i++) {
+                        let baselineMod = null;
+                        try {
+                            for (const step of warmupSteps) {
+                                if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                                progressSetDeterminate(`Warming up: ${step.label}`, setupDone, setupTotal, { stage: 'setup' });
+                                const mod = (step.solver === 'baseline')
+                                    ? (baselineMod || (baselineMod = await getFreshBaselineMod()))
+                                    : (step.solver === 'gemini' ? geminiMod : chatgptMod);
+                                try {
+                                    await runEmscriptenMain(mod, step.args);
+                                } catch (error) {
+                                    const msg = error && error.message ? error.message : String(error);
+                                    throw new Error(`Warmup ${i + 1}/${safeWarmup} - ${step.label}: ${msg}`);
+                                }
+                                setupDone++;
+                                progressSetDeterminate(`Warming up: ${step.label}`, setupDone, setupTotal, { stage: 'setup' });
+                                await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
+                            }
+                        } finally {
+                            // Drop baseline module instance each warmup cycle.
+                            try { invalidateEmscriptenModule(baselineSpec.id); } catch (_) {}
+                            baselineMod = null;
+                        }
+                    }
+                } else {
+                    // Still complete the setup phase so the bar fills once.
+                    progressSetDeterminate('Setting up Local WebAssembly Runner', setupTotal, setupTotal, { stage: 'setup', reset: true });
+                }
+
+                // Phase 2: measured iterations (bar resets and fills again)
+                progressSetDeterminate('Running tests...', 0, testsTotal, { stage: 'tests', reset: true });
+
+                const baseFirst = [];
+                const baseAll = [];
+                const gemFirst = [];
+                const gemAll = [];
+                const chatFirst = [];
+                const chatAll = [];
+                let baseResult = '';
+                let gemResult = '';
+                let chatResult = '';
+
+                const measuredSteps = [
+                    { label: 'VF3 baseline first', solver: 'baseline', args: ['-r', '0', '-F', patternFsPath, targetFsPath], times: baseFirst },
+                    { label: 'VF3 baseline all', solver: 'baseline', args: ['-r', '0', patternFsPath, targetFsPath], times: baseAll, capture: 'base' },
+                    { label: 'VF3 Gemini first', solver: 'gemini', args: ['--first-only', patternFsPath, targetFsPath], times: gemFirst },
+                    { label: 'VF3 Gemini all', solver: 'gemini', args: [patternFsPath, targetFsPath], times: gemAll, capture: 'gem' },
+                    { label: 'VF3 ChatGPT first', solver: 'chatgpt', args: ['--first-only', patternFsPath, targetFsPath], times: chatFirst },
+                    { label: 'VF3 ChatGPT all', solver: 'chatgpt', args: [patternFsPath, targetFsPath], times: chatAll, capture: 'chat' }
+                ];
+
+                let ticksDone = 0;
+                for (let iter = 0; iter < safeIterations; iter++) {
+                    let baselineMod = null;
+                    try {
+                        for (const step of measuredSteps) {
+                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                            progressSetDeterminate(step.label, ticksDone, testsTotal, { stage: 'tests' });
+                            const t0 = runTimerNowMs();
+                            let stdout = '';
+                            const mod = (step.solver === 'baseline')
+                                ? (baselineMod || (baselineMod = await getFreshBaselineMod()))
+                                : (step.solver === 'gemini' ? geminiMod : chatgptMod);
+
+                            try {
+                                const res = await runEmscriptenMain(mod, step.args);
+                                stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
+                            } catch (error) {
+                                const msg = error && error.message ? error.message : String(error);
+                                throw new Error(`Iteration ${iter + 1}/${safeIterations} - ${step.label}: ${msg}`);
+                            }
+
+                            const t1 = runTimerNowMs();
+                            step.times.push(Math.max(0, t1 - t0));
+
+                            if (step.capture === 'base') {
+                                const line = parseFirstLine(stdout);
+                                baseResult = parseFirstToken(line) || line;
+                            } else if (step.capture === 'gem') {
+                                gemResult = parseFirstLine(stdout);
+                            } else if (step.capture === 'chat') {
+                                chatResult = parseFirstLine(stdout);
+                            }
+
+                            // Dispose baseline immediately after the baseline "all" measurement so it never accumulates
+                            // across iterations.
+                            if (step.capture === 'base') {
+                                try { invalidateEmscriptenModule(baselineSpec.id); } catch (_) {}
+                                baselineMod = null;
+                            }
+
+                            ticksDone++;
+                            progressSetDeterminate(step.label, ticksDone, testsTotal, { stage: 'tests' });
+                            await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
+                        }
+                    } finally {
+                        // Ensure baseline is always dropped between iterations, even on failures.
+                        try { invalidateEmscriptenModule(baselineSpec.id); } catch (_) {}
+                        baselineMod = null;
+                    }
+                }
+
+                progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
+
+                const sBaseFirst = calcStatsMs(baseFirst);
+                const sBaseAll = calcStatsMs(baseAll);
+                const sGemFirst = calcStatsMs(gemFirst);
+                const sGemAll = calcStatsMs(gemAll);
+                const sChatFirst = calcStatsMs(chatFirst);
+                const sChatAll = calcStatsMs(chatAll);
+
+                const lines = [];
+                const addSection = (title, result, firstStats, allStats) => {
+                    lines.push(`[${title}]`);
+                    lines.push(result || '(No output)');
+                    lines.push(`Warmup: ${safeWarmup}`);
+                    lines.push(`Iterations: ${safeIterations}`);
+                    if (firstStats && allStats) {
+                        lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
+                    }
+                    lines.push('');
+                };
+
+                addSection('VF3 baseline', baseResult, sBaseFirst, sBaseAll);
+                addSection('VF3 Gemini', gemResult, sGemFirst, sGemAll);
+                addSection('VF3 ChatGPT', chatResult, sChatFirst, sChatAll);
+
+                return { status: 'success', output: lines.join('\n') };
+            } finally {
+                // Drop cached modules at the end of each local run to keep memory stable between runs.
+                try { invalidateEmscriptenModule(baselineSpec.id); } catch (_) {}
+                try { invalidateEmscriptenModule(geminiSpec.id); } catch (_) {}
+                try { invalidateEmscriptenModule(chatgptSpec.id); } catch (_) {}
+            }
         }
 
         let localWasmKernelPromise = null;
