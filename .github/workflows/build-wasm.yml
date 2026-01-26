@@ -44,15 +44,75 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path("baselines/vf3lib/include/VF3State.hpp")
-          text = path.read_text(encoding="utf-8")
-          old = "(int*)calloc(classes_count, sizeof(int))"
-          new = "(uint32_t*)calloc(classes_count, sizeof(uint32_t))"
-          count = text.count(old)
-          if count == 0:
-              raise SystemExit(f"Expected pattern not found in {path}")
-          path.write_text(text.replace(old, new), encoding="utf-8")
-          print(f"Patched {path} ({count} replacements)")
+          def patch_file(path, replacements, require=True):
+              text = path.read_text(encoding="utf-8")
+              original = text
+              applied = 0
+              for old, new in replacements:
+                  if old in text:
+                      count = text.count(old)
+                      text = text.replace(old, new)
+                      applied += count
+              if require and text == original:
+                  raise SystemExit(f"No expected patterns found in {path}")
+              if text != original:
+                  path.write_text(text, encoding="utf-8")
+              print(f"Patched {path} ({applied} replacements)")
+
+          # vf3lib mixes malloc/calloc with delete[] (UB) which can crash under wasm.
+          # Patch the headers to use new[] (matching the delete[] in destructors).
+          vf3_state = Path("baselines/vf3lib/include/VF3State.hpp")
+          patch_file(vf3_state, [
+              ("termin1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "termin1 = new uint32_t[n1]();"),
+              ("termout1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "termout1 = new uint32_t[n1]();"),
+              ("new1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "new1 = new uint32_t[n1]();"),
+              ("t1both_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1both_len_c = new uint32_t*[n1 + 1];"),
+              ("t1in_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1in_len_c = new uint32_t*[n1 + 1];"),
+              ("t1out_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1out_len_c = new uint32_t*[n1 + 1];"),
+              ("termin1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "termin1_c = new uint32_t*[n1];"),
+              ("termout1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "termout1_c = new uint32_t*[n1];"),
+              ("new1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "new1_c = new uint32_t*[n1];"),
+              ("core_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "core_len_c = new uint32_t[classes_count]();"),
+              ("t2both_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2both_len_c = new uint32_t[classes_count]();"),
+              ("t2in_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2in_len_c = new uint32_t[classes_count]();"),
+              ("t2out_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2out_len_c = new uint32_t[classes_count]();"),
+              ("termin1_c[i] = (int*)calloc(classes_count, sizeof(int));", "termin1_c[i] = new uint32_t[classes_count]();"),
+              ("termout1_c[i] = (int*)calloc(classes_count, sizeof(int));", "termout1_c[i] = new uint32_t[classes_count]();"),
+              ("new1_c[i] = (int*)calloc(classes_count, sizeof(int));", "new1_c[i] = new uint32_t[classes_count]();"),
+              ("t1both_len_c[i] = (int*)calloc(classes_count, sizeof(int));", "t1both_len_c[i] = new uint32_t[classes_count]();"),
+              ("t1in_len_c[i] = (int*)calloc(classes_count, sizeof(int));", "t1in_len_c[i] = new uint32_t[classes_count]();"),
+              ("t1out_len_c[i] = (int*)calloc(classes_count, sizeof(int));", "t1out_len_c[i] = new uint32_t[classes_count]();"),
+              # If the repo already patched int->uint32_t calloc, handle that too.
+              ("termin1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "termin1_c[i] = new uint32_t[classes_count]();"),
+              ("termout1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "termout1_c[i] = new uint32_t[classes_count]();"),
+              ("new1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "new1_c[i] = new uint32_t[classes_count]();"),
+              ("t1both_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1both_len_c[i] = new uint32_t[classes_count]();"),
+              ("t1in_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1in_len_c[i] = new uint32_t[classes_count]();"),
+              ("t1out_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1out_len_c[i] = new uint32_t[classes_count]();"),
+          ])
+
+          vf3_sub = Path("baselines/vf3lib/include/VF3SubState.hpp")
+          patch_file(vf3_sub, [
+              ("termin1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "termin1 = new uint32_t[n1]();"),
+              ("termout1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "termout1 = new uint32_t[n1]();"),
+              ("new1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "new1 = new uint32_t[n1]();"),
+              ("t1both_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1both_len_c = new uint32_t*[n1 + 1];"),
+              ("t1in_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1in_len_c = new uint32_t*[n1 + 1];"),
+              ("t1out_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1out_len_c = new uint32_t*[n1 + 1];"),
+              ("termin1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "termin1_c = new uint32_t*[n1];"),
+              ("termout1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "termout1_c = new uint32_t*[n1];"),
+              ("new1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "new1_c = new uint32_t*[n1];"),
+              ("core_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "core_len_c = new uint32_t[classes_count]();"),
+              ("t2both_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2both_len_c = new uint32_t[classes_count]();"),
+              ("t2in_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2in_len_c = new uint32_t[classes_count]();"),
+              ("t2out_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2out_len_c = new uint32_t[classes_count]();"),
+              ("termin1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "termin1_c[i] = new uint32_t[classes_count]();"),
+              ("termout1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "termout1_c[i] = new uint32_t[classes_count]();"),
+              ("new1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "new1_c[i] = new uint32_t[classes_count]();"),
+              ("t1both_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1both_len_c[i] = new uint32_t[classes_count]();"),
+              ("t1in_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1in_len_c[i] = new uint32_t[classes_count]();"),
+              ("t1out_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1out_len_c[i] = new uint32_t[classes_count]();"),
+          ])
           PY
 
           common_flags=(
