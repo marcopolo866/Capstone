@@ -1,18 +1,18 @@
 {
   "algorithm": "glasgow",
-  "timestamp": "2026-01-26 15:07:08 UTC",
+  "timestamp": "2026-01-26 17:15:50 UTC",
   "status": "success",
-  "output": "[Glasgow Subgraph Solver]\nhostname = runnervmymu0l\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad data/glasgowpattern1.lad data/glasgowtarget1.lad\nstarted_at = 2026-01-26 15:07:03\npattern_file = data/glasgowpattern1.lad\ntarget_file = data/glasgowtarget1.lad\npattern_properties =\npattern_vertices = 4\npattern_directed_edges = 6\ntarget_properties =\ntarget_vertices = 6\ntarget_directed_edges = 12\nstatus = true\nsolution_count = 14\nnodes = 24\npropagations = 24\nruntime = 0\nshape_graphs = 5\nsearch_time = 0\nsupplemental_graph_names = original exact_path_1 exact_path_2 exact_path_3 exact_path_4\nWarmup: 1\nIterations: 100\nRuntime (ms): first median=     4.072 mean=     4.124 stdev=     0.195 min=     3.944 max=     5.666\n              all   median=     4.066 mean=     4.085 stdev=     0.078 min=     3.974 max=     4.418\nMax RSS (kB): first median=      4860 mean=      4874 stdev=        50 min=      4776 max=      5020\n              all   median=      5040 mean=      5040 stdev=        55 min=      4916 max=      5180\n\n",
+  "output": "[Glasgow Subgraph Solver]\nhostname = runnervmymu0l\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad data/glasgowpattern1.lad data/glasgowtarget1.lad\nstarted_at = 2026-01-26 17:15:49\npattern_file = data/glasgowpattern1.lad\ntarget_file = data/glasgowtarget1.lad\npattern_properties =\npattern_vertices = 4\npattern_directed_edges = 6\ntarget_properties =\ntarget_vertices = 6\ntarget_directed_edges = 12\nstatus = true\nsolution_count = 14\nnodes = 24\npropagations = 24\nruntime = 0\nshape_graphs = 5\nsearch_time = 0\nsupplemental_graph_names = original exact_path_1 exact_path_2 exact_path_3 exact_path_4\nWarmup: 1\nIterations: 1\nRuntime (ms): first median=     4.912 mean=     4.912 stdev=     0.000 min=     4.912 max=     4.912\n              all   median=     4.294 mean=     4.294 stdev=     0.000 min=     4.294 max=     4.294\nMax RSS (kB): first median=      4832 mean=      4832 stdev=         0 min=      4832 max=      4832\n              all   median=      5032 mean=      5032 stdev=         0 min=      5032 max=      5032\n\n",
   "error": "",
-  "request_id": "e826afa4-a3da-493d-90a6-3259936751d3",
-  "iterations": 100,
+  "request_id": "5686b7de-5745-494a-bdd2-13550c5d9e16",
+  "iterations": 1,
   "warmup": 1,
   "timings_ms": {
-    "first": 4.072,
-    "all": 4.066
+    "first": 4.912,
+    "all": 4.294
   },
   "memory_kb": {
-    "first": 4860,
-    "all": 5040
+    "first": 4832,
+    "all": 5032
   }
 }
