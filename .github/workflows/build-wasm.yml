@@ -113,6 +113,11 @@ jobs:
               ("t1in_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1in_len_c[i] = new uint32_t[classes_count]();"),
               ("t1out_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1out_len_c[i] = new uint32_t[classes_count]();"),
           ])
+
+          vf3_sorter = Path("baselines/vf3lib/include/VF3NodeSorter.hpp")
+          patch_file(vf3_sorter, [
+              ("return nodes_order;", "for (VF3SortingNode* n : nodes) delete n;\n\t\t\treturn nodes_order;"),
+          ])
           PY
 
           common_flags=(

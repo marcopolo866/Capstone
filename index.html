@@ -768,6 +768,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         const localWasmScriptPromises = new Map();
         const localWasmModulePromises = new Map();
 
+        function invalidateEmscriptenModule(id) {
+            const key = String(id || '').trim();
+            if (!key) return;
+            localWasmModulePromises.delete(key);
+        }
+
         function loadScriptOnce(src) {
             const url = String(src || '').trim();
             if (!url) return Promise.reject(new Error('Missing script URL'));
@@ -903,6 +909,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 }
 
                 module.__capstoneCapture = capture;
+                module.__capstoneId = id;
                 return module;
             })();
 
@@ -957,6 +964,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 if (status !== null) {
                     throw new Error(`WASM program exited with status ${status}: ${msg}`);
                 }
+
+                // Runtime traps (e.g., "function signature mismatch") can poison the module instance.
+                // Drop it so the next run will recreate a fresh instance.
+                try {
+                    if (mod && mod.__capstoneId) invalidateEmscriptenModule(mod.__capstoneId);
+                } catch (_) {}
                 throw error;
             }
 
