@@ -62,6 +62,7 @@ jobs:
             -s MODULARIZE=1
             -s ENVIRONMENT=web
             -s ALLOW_MEMORY_GROWTH=1
+            -s EXIT_RUNTIME=0
             -s FORCE_FILESYSTEM=1
             -s EXPORTED_RUNTIME_METHODS='["FS","callMain"]'
           )

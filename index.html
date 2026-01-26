@@ -886,6 +886,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
                 const module = await factory({
                     noInitialRun: true,
+                    // We call callMain() many times per run; keep the runtime alive between invocations.
+                    noExitRuntime: true,
                     locateFile: (path, prefix) => {
                         if (typeof path === 'string' && path.endsWith('.wasm')) {
                             return wasmPath;
@@ -1071,7 +1073,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     for (const run of warmupRuns) {
                         if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                         progressSetDeterminate(`Warming up: ${run.label}`, setupDone, setupTotal, { stage: 'setup' });
-                        await runEmscriptenMain(run.mod, run.args);
+                        try {
+                            await runEmscriptenMain(run.mod, run.args);
+                        } catch (error) {
+                            const msg = error && error.message ? error.message : String(error);
+                            throw new Error(`Warmup ${i + 1}/${safeWarmup} - ${run.label}: ${msg}`);
+                        }
                         setupDone++;
                         progressSetDeterminate(`Warming up: ${run.label}`, setupDone, setupTotal, { stage: 'setup' });
                         await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
@@ -1110,7 +1117,14 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                     progressSetDeterminate(run.label, ticksDone, testsTotal, { stage: 'tests' });
                     const t0 = runTimerNowMs();
-                    const { stdout } = await runEmscriptenMain(run.mod, run.args);
+                    let stdout = '';
+                    try {
+                        const res = await runEmscriptenMain(run.mod, run.args);
+                        stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
+                    } catch (error) {
+                        const msg = error && error.message ? error.message : String(error);
+                        throw new Error(`Iteration ${iter + 1}/${safeIterations} - ${run.label}: ${msg}`);
+                    }
                     const t1 = runTimerNowMs();
                     run.times.push(Math.max(0, t1 - t0));
 
