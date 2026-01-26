@@ -40,6 +40,21 @@ jobs:
 
           mkdir -p wasm
 
+          echo "Patching vf3lib headers for Emscripten..."
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("baselines/vf3lib/include/VF3State.hpp")
+          text = path.read_text(encoding="utf-8")
+          old = "(int*)calloc(classes_count, sizeof(int))"
+          new = "(uint32_t*)calloc(classes_count, sizeof(uint32_t))"
+          count = text.count(old)
+          if count == 0:
+              raise SystemExit(f"Expected pattern not found in {path}")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          print(f"Patched {path} ({count} replacements)")
+          PY
+
           common_flags=(
             -O3
             -DNDEBUG
