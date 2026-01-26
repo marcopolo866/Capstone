@@ -2,9 +2,16 @@ name: Build WASM Modules
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - wasm/**
 
 jobs:
   build-wasm:
+    # Prevent infinite loops when this workflow commits WASM artifacts back to the repo.
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -49,7 +56,7 @@ jobs:
             "${common_flags[@]}" \
             -I "baselines/vf3lib/include" \
             -DVF3 \
-            "baselines/vf3lib/main.cpp" \
+            "wasm/vf3_baseline_main.cpp" \
             -s EXPORT_NAME=createVf3BaselineModule \
             -o "wasm/vf3_baseline.js"
 
