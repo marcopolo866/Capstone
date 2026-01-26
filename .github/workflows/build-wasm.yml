@@ -1,0 +1,84 @@
+name: Build WASM Modules
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Emscripten SDK
+        run: |
+          set -euo pipefail
+          if [ ! -d emsdk ]; then
+            git clone https://github.com/emscripten-core/emsdk.git emsdk
+          fi
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build VF3 WASM modules
+        run: |
+          set -euo pipefail
+          source emsdk/emsdk_env.sh
+
+          mkdir -p wasm
+
+          common_flags=(
+            -O3
+            -DNDEBUG
+            -s WASM=1
+            -s MODULARIZE=1
+            -s ENVIRONMENT=web
+            -s ALLOW_MEMORY_GROWTH=1
+            -s FORCE_FILESYSTEM=1
+            -s EXPORTED_RUNTIME_METHODS='["FS","callMain"]'
+          )
+
+          echo "Building VF3 baseline (vf3lib)..."
+          em++ -std=c++11 \
+            "${common_flags[@]}" \
+            -I "baselines/vf3lib/include" \
+            -DVF3 \
+            "baselines/vf3lib/main.cpp" \
+            -s EXPORT_NAME=createVf3BaselineModule \
+            -o "wasm/vf3_baseline.js"
+
+          echo "Building VF3 Gemini..."
+          em++ -std=c++17 \
+            "${common_flags[@]}" \
+            -fexceptions \
+            -s DISABLE_EXCEPTION_CATCHING=0 \
+            "src/[GEMINI] Subgraph Isomorphism.cpp" \
+            -s EXPORT_NAME=createVf3GeminiModule \
+            -o "wasm/vf3_gemini.js"
+
+          echo "Building VF3 ChatGPT..."
+          em++ -std=c++17 \
+            "${common_flags[@]}" \
+            -fexceptions \
+            -s DISABLE_EXCEPTION_CATCHING=0 \
+            "src/[CHATGPT] Subgraph Isomorphism.cpp" \
+            -s EXPORT_NAME=createVf3ChatgptModule \
+            -o "wasm/vf3_chatgpt.js"
+
+      - name: Commit updated WASM artifacts
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wasm
+          if git diff --cached --quiet; then
+            echo "No WASM changes to commit."
+            exit 0
+          fi
+          git commit -m "Update WASM modules"
+          git push
+
