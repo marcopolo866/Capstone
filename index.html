@@ -945,6 +945,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 const status = (error && typeof error.status === 'number') ? error.status : null;
                 const stdout = capture.out.join('\n');
                 const stderr = capture.err.join('\n');
+                if (status === 0) {
+                    return {
+                        stdout: stdout.trimEnd(),
+                        stderr: stderr.trimEnd()
+                    };
+                }
                 const msg = stderr || stdout || (error && error.message ? error.message : String(error));
                 if (status !== null) {
                     throw new Error(`WASM program exited with status ${status}: ${msg}`);

@@ -12,6 +12,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
           submodules: recursive
 
       - name: Install Emscripten SDK
@@ -80,5 +82,4 @@ jobs:
             exit 0
           fi
           git commit -m "Update WASM modules"
-          git push
-
+          git push origin "HEAD:${GITHUB_REF_NAME}"
