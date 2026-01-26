@@ -1,18 +1,26 @@
 {
-  "algorithm": "glasgow",
-  "timestamp": "2026-01-26 17:15:50 UTC",
+  "algorithm": "vf3",
+  "timestamp": "2026-01-26 18:02:16 UTC",
   "status": "success",
-  "output": "[Glasgow Subgraph Solver]\nhostname = runnervmymu0l\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad data/glasgowpattern1.lad data/glasgowtarget1.lad\nstarted_at = 2026-01-26 17:15:49\npattern_file = data/glasgowpattern1.lad\ntarget_file = data/glasgowtarget1.lad\npattern_properties =\npattern_vertices = 4\npattern_directed_edges = 6\ntarget_properties =\ntarget_vertices = 6\ntarget_directed_edges = 12\nstatus = true\nsolution_count = 14\nnodes = 24\npropagations = 24\nruntime = 0\nshape_graphs = 5\nsearch_time = 0\nsupplemental_graph_names = original exact_path_1 exact_path_2 exact_path_3 exact_path_4\nWarmup: 1\nIterations: 1\nRuntime (ms): first median=     4.912 mean=     4.912 stdev=     0.000 min=     4.912 max=     4.912\n              all   median=     4.294 mean=     4.294 stdev=     0.000 min=     4.294 max=     4.294\nMax RSS (kB): first median=      4832 mean=      4832 stdev=         0 min=      4832 max=      4832\n              all   median=      5032 mean=      5032 stdev=         0 min=      5032 max=      5032\n\n",
+  "output": "[VF3 baseline]\n126\nWarmup: 1\nIterations: 100\nRuntime (ms): first median=     3.587 mean=     3.596 stdev=     0.100 min=     3.469 max=     4.345\n              all   median=     4.064 mean=     4.091 stdev=     0.093 min=     3.938 max=     4.427\nMax RSS (kB): first median=      4608 mean=      4573 stdev=        72 min=      4416 max=      4652\n              all   median=      4616 mean=      4583 stdev=        72 min=      4424 max=      4652\n\n[VF3 Gemini]\n126\nWarmup: 1\nIterations: 100\nRuntime (ms): first median=     3.447 mean=     3.451 stdev=     0.055 min=     3.324 max=     3.597\n              all   median=     4.213 mean=     4.219 stdev=     0.084 min=     4.063 max=     4.493\nMax RSS (kB): first median=      4196 mean=      4187 stdev=        20 min=      4132 max=      4204\n              all   median=      4196 mean=      4186 stdev=        22 min=      4128 max=      4204\n\n[VF3 ChatGPT]\n126\nWarmup: 1\nIterations: 100\nRuntime (ms): first median=     3.928 mean=     3.937 stdev=     0.077 min=     3.779 max=     4.193\n              all   median=    13.585 mean=    13.597 stdev=     0.171 min=    13.173 max=    13.980\nMax RSS (kB): first median=      4204 mean=      4192 stdev=        24 min=      4120 max=      4216\n              all   median=      4208 mean=      4197 stdev=        23 min=      4136 max=      4216\n\n",
   "error": "",
-  "request_id": "5686b7de-5745-494a-bdd2-13550c5d9e16",
-  "iterations": 1,
+  "request_id": "8b0c3055-5703-4fbb-b6b6-54e0239a806c",
+  "iterations": 100,
   "warmup": 1,
   "timings_ms": {
-    "first": 4.912,
-    "all": 4.294
+    "baseline_first": 3.587,
+    "baseline_all": 4.064,
+    "gemini_first": 3.447,
+    "gemini_all": 4.213,
+    "chatgpt_first": 3.928,
+    "chatgpt_all": 13.585
   },
   "memory_kb": {
-    "first": 4832,
-    "all": 5032
+    "baseline_first": 4608,
+    "baseline_all": 4616,
+    "gemini_first": 4196,
+    "gemini_all": 4196,
+    "chatgpt_first": 4204,
+    "chatgpt_all": 4208
   }
 }
