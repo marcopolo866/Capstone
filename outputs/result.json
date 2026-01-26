@@ -1,16 +1,26 @@
 {
-  "algorithm": "dijkstra",
-  "timestamp": "2026-01-26 18:05:11 UTC",
-  "status": "error",
-  "output": "",
-  "error": "[Warmup] Dijkstra llm failed.\n[Dijkstra Baseline]\n9; A C E D\nWarmup: 1\nIterations: 100\nRuntime (ms): median=3.591 mean=3.603 stdev=0.086 min=3.502 max=4.308\nMax RSS (kB): median=3820 mean=3788 stdev=71 min=3628 max=3856\n\n[Dijkstra LLM] failed to run.\n",
-  "request_id": "10c48a92-6af9-476c-9440-f9a7f09a94ff",
-  "iterations": 100,
+  "algorithm": "vf3",
+  "timestamp": "2026-01-26 18:12:33 UTC",
+  "status": "success",
+  "output": "[VF3 baseline]\n6\nWarmup: 1\nIterations: 50\nRuntime (ms): first median=     3.675 mean=     3.684 stdev=     0.112 min=     3.558 max=     4.392\n              all   median=     3.678 mean=     3.692 stdev=     0.064 min=     3.593 max=     3.881\nMax RSS (kB): first median=      3988 mean=      4030 stdev=        76 min=      3924 max=      4132\n              all   median=      4108 mean=      4062 stdev=        73 min=      3928 max=      4136\n\n[VF3 Gemini]\n6\nWarmup: 1\nIterations: 50\nRuntime (ms): first median=     3.648 mean=     3.652 stdev=     0.060 min=     3.511 max=     3.859\n              all   median=     3.611 mean=     3.612 stdev=     0.072 min=     3.485 max=     3.785\nMax RSS (kB): first median=      3924 mean=      3916 stdev=        30 min=      3868 max=      4024\n              all   median=      3928 mean=      3926 stdev=        42 min=      3832 max=      4032\n\n[VF3 ChatGPT]\n6\nWarmup: 1\nIterations: 50\nRuntime (ms): first median=     3.660 mean=     3.662 stdev=     0.047 min=     3.575 max=     3.765\n              all   median=     3.692 mean=     3.692 stdev=     0.044 min=     3.607 max=     3.860\nMax RSS (kB): first median=      3952 mean=      3942 stdev=        21 min=      3884 max=      3960\n              all   median=      3956 mean=      3940 stdev=        24 min=      3872 max=      3960\n\n",
+  "error": "",
+  "request_id": "d0c6ccce-3c52-431f-9540-b0eb617f92e9",
+  "iterations": 50,
   "warmup": 1,
   "timings_ms": {
-    "baseline": 3.591
+    "baseline_first": 3.675,
+    "baseline_all": 3.678,
+    "gemini_first": 3.648,
+    "gemini_all": 3.611,
+    "chatgpt_first": 3.66,
+    "chatgpt_all": 3.692
   },
   "memory_kb": {
-    "baseline": 3820
+    "baseline_first": 3988,
+    "baseline_all": 4108,
+    "gemini_first": 3924,
+    "gemini_all": 3928,
+    "chatgpt_first": 3952,
+    "chatgpt_all": 3956
   }
 }
