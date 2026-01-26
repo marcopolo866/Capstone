@@ -1,26 +1,18 @@
 {
-  "algorithm": "vf3",
-  "timestamp": "2026-01-26 15:04:50 UTC",
+  "algorithm": "glasgow",
+  "timestamp": "2026-01-26 15:07:08 UTC",
   "status": "success",
-  "output": "[VF3 baseline]\n126\nWarmup: 1\nIterations: 100\nRuntime (ms): first median=     5.023 mean=     5.139 stdev=     1.101 min=     4.746 max=    15.939\n              all   median=     5.372 mean=     5.401 stdev=     0.152 min=     5.100 max=     5.797\nMax RSS (kB): first median=      4468 mean=      4438 stdev=        76 min=      4296 max=      4524\n              all   median=      4492 mean=      4444 stdev=        75 min=      4296 max=      4524\n\n[VF3 Gemini]\n126\nWarmup: 1\nIterations: 100\nRuntime (ms): first median=     4.506 mean=     4.532 stdev=     0.114 min=     4.372 max=     4.906\n              all   median=     5.146 mean=     5.150 stdev=     0.115 min=     4.904 max=     5.424\nMax RSS (kB): first median=      4056 mean=      4042 stdev=        28 min=      3984 max=      4160\n              all   median=      4056 mean=      4042 stdev=        34 min=      3992 max=      4160\n\n[VF3 ChatGPT]\n126\nWarmup: 1\nIterations: 100\nRuntime (ms): first median=     5.095 mean=     5.104 stdev=     0.167 min=     4.699 max=     6.118\n              all   median=    15.245 mean=    15.337 stdev=     0.387 min=    14.845 max=    17.403\nMax RSS (kB): first median=      4080 mean=      4067 stdev=        23 min=      4008 max=      4088\n              all   median=      4080 mean=      4066 stdev=        29 min=      3964 max=      4088\n\n",
+  "output": "[Glasgow Subgraph Solver]\nhostname = runnervmymu0l\ncommandline = ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad data/glasgowpattern1.lad data/glasgowtarget1.lad\nstarted_at = 2026-01-26 15:07:03\npattern_file = data/glasgowpattern1.lad\ntarget_file = data/glasgowtarget1.lad\npattern_properties =\npattern_vertices = 4\npattern_directed_edges = 6\ntarget_properties =\ntarget_vertices = 6\ntarget_directed_edges = 12\nstatus = true\nsolution_count = 14\nnodes = 24\npropagations = 24\nruntime = 0\nshape_graphs = 5\nsearch_time = 0\nsupplemental_graph_names = original exact_path_1 exact_path_2 exact_path_3 exact_path_4\nWarmup: 1\nIterations: 100\nRuntime (ms): first median=     4.072 mean=     4.124 stdev=     0.195 min=     3.944 max=     5.666\n              all   median=     4.066 mean=     4.085 stdev=     0.078 min=     3.974 max=     4.418\nMax RSS (kB): first median=      4860 mean=      4874 stdev=        50 min=      4776 max=      5020\n              all   median=      5040 mean=      5040 stdev=        55 min=      4916 max=      5180\n\n",
   "error": "",
-  "request_id": "713733c7-5369-43a5-af6c-e7b90c426833",
+  "request_id": "e826afa4-a3da-493d-90a6-3259936751d3",
   "iterations": 100,
   "warmup": 1,
   "timings_ms": {
-    "baseline_first": 5.023,
-    "baseline_all": 5.372,
-    "gemini_first": 4.506,
-    "gemini_all": 5.146,
-    "chatgpt_first": 5.095,
-    "chatgpt_all": 15.245
+    "first": 4.072,
+    "all": 4.066
   },
   "memory_kb": {
-    "baseline_first": 4468,
-    "baseline_all": 4492,
-    "gemini_first": 4056,
-    "gemini_all": 4056,
-    "chatgpt_first": 4080,
-    "chatgpt_all": 4080
+    "first": 4860,
+    "all": 5040
   }
 }
