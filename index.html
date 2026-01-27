@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Algorithm Runner Interface</title>
     <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -2157,6 +2158,70 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             }
         }
 
+        async function downloadArtifactZip(artifact) {
+            const item = artifact || {};
+            const id = item.id ? String(item.id) : '';
+            if (!id) throw new Error('Missing artifact id');
+
+            const url = item.archive_download_url ||
+                `https://api.github.com/repos/${config.owner}/${config.repo}/actions/artifacts/${id}/zip`;
+            const headers = buildRequestHeaders({ accept: 'application/vnd.github+json' });
+
+            const response = await fetch(url, { method: 'GET', headers });
+            if (!response.ok) {
+                const text = await response.text().catch(() => '');
+                throw new Error(`Artifact download failed: ${response.status} ${response.statusText} ${text}`);
+            }
+            return await response.arrayBuffer();
+        }
+
+        async function extractResultJsonFromZip(buffer) {
+            if (!window.JSZip) {
+                throw new Error('JSZip is required to read results artifacts.');
+            }
+            const zip = await window.JSZip.loadAsync(buffer);
+            let file = zip.file('outputs/result.json') || zip.file('result.json');
+            if (!file) {
+                const matches = zip.file(/result\.json$/i);
+                if (matches && matches.length) file = matches[0];
+            }
+            if (!file) throw new Error('Result artifact is missing result.json');
+            const text = await file.async('text');
+            return JSON.parse(text);
+        }
+
+        async function fetchResultFromArtifact(requestId, branchRef, runSha) {
+            const runId = await resolveWorkflowRunId(requestId, branchRef, runSha);
+            if (!runId) return null;
+
+            let data;
+            try {
+                data = await apiRequest(`/actions/runs/${runId}/artifacts`);
+            } catch (error) {
+                const msg = error && error.message ? error.message : '';
+                if (msg.includes('401') || msg.includes('403')) {
+                    throw new Error('Cannot access workflow artifacts. Ensure your token has Actions: Read permission.');
+                }
+                return null;
+            }
+
+            const artifactsRaw = (data && Array.isArray(data.artifacts)) ? data.artifacts : [];
+            const artifacts = artifactsRaw.filter(item => item && !item.expired);
+            if (!artifacts.length) return null;
+
+            const match = artifacts.find(item => item.name === 'algorithm-result') ||
+                (requestId ? artifacts.find(item => item.name && item.name.includes(requestId)) : null) ||
+                artifacts[0];
+
+            if (!match) return null;
+            const buffer = await downloadArtifactZip(match);
+            const json = await extractResultJsonFromZip(buffer);
+            if (!requestId || !json.request_id || json.request_id === requestId) {
+                return json;
+            }
+            return null;
+        }
+
         async function waitForResult(requestId, branchRef, runSha, runCtx) {
             const waitMs = 5000;
             const estimateMaxAttempts = 720; // UI-only fallback when Checks can't be read
@@ -2208,21 +2273,15 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     }
                 }
                 try {
-                    const refParam = branchRef ? `?ref=${encodeURIComponent(branchRef)}` : '';
-                    const file = await apiRequest(`/contents/outputs/result.json${refParam}`);
-                    if (file && file.content) {
-                        const decoded = atob(file.content.replace(/\\s/g, ''));
-                        const json = JSON.parse(decoded);
-                        if (!requestId || !json.request_id || json.request_id === requestId) {
-                            return json;
-                        }
+                    const result = await fetchResultFromArtifact(requestId, branchRef, sha);
+                    if (result) {
+                        return result;
                     }
                 } catch (error) {
                     lastError = error;
-                    if (error && error.message && error.message.includes('404')) {
-                        // Not ready yet; continue polling.
-                    } else {
-                        // Remember the error but keep retrying until timeout.
+                    const msg = error && error.message ? error.message : '';
+                    if (msg.includes('workflow artifacts') || msg.includes('JSZip')) {
+                        throw error;
                     }
                 }
                 await delay(waitMs, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
@@ -2235,13 +2294,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             progressClear();
         }
         
-        async function apiRequest(endpoint, method = 'GET', body = null, options = {}) {
-            const { useAuth = true } = options;
+        function buildRequestHeaders(options = {}) {
+            const { useAuth = true, accept = 'application/vnd.github.v3+json' } = options;
             const headers = {
-                'Accept': 'application/vnd.github.v3+json',
-                    'X-GitHub-Api-Version': '2022-11-28'
+                'Accept': accept,
+                'X-GitHub-Api-Version': '2022-11-28'
             };
-            
             if (useAuth && config.token) {
                 const lower = config.token.toLowerCase();
                 const useBearer = lower.startsWith('github_pat_') || lower.startsWith('ghs_') || lower.startsWith('ghu_');
@@ -2249,6 +2307,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     ? `Bearer ${config.token}`
                     : `token ${config.token}`;
             }
+            return headers;
+        }
+
+        async function apiRequest(endpoint, method = 'GET', body = null, options = {}) {
+            const { useAuth = true } = options;
+            const headers = buildRequestHeaders({ useAuth });
             
             const requestOptions = {
                 method: method,

@@ -1540,13 +1540,11 @@ jobs:
           )
           PY
 
-      - name: Commit results
+      - name: Upload results artifact
         if: always()
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add outputs/result.json
-          git commit -m "Add algorithm results [skip ci]" || echo "No changes to commit"
-          git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: algorithm-result
+          path: outputs/result.json
+          if-no-files-found: error
+          retention-days: 14
