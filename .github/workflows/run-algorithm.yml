@@ -320,8 +320,8 @@ jobs:
               TICKS_PER_ITER=2   # both are directly ticked
               ;;
             glasgow)
-              UNITS_PER_ITER=1   # one program (solver)
-              TICKS_PER_ITER=2   # first + all (each ticks)
+              UNITS_PER_ITER=3   # baseline + gemini + chatgpt
+              TICKS_PER_ITER=6   # each has first + all (each ticks)
               ;;
             vf3)
               UNITS_PER_ITER=3   # baseline + gemini + chatgpt
@@ -952,6 +952,20 @@ jobs:
               glasgow_all_ms_runs=""
               glasgow_all_rss_runs=""
 
+              glasgow_gemini_first_out=""
+              glasgow_gemini_first_ms_runs=""
+              glasgow_gemini_first_rss_runs=""
+              glasgow_gemini_all_out=""
+              glasgow_gemini_all_ms_runs=""
+              glasgow_gemini_all_rss_runs=""
+
+              glasgow_chatgpt_first_out=""
+              glasgow_chatgpt_first_ms_runs=""
+              glasgow_chatgpt_first_rss_runs=""
+              glasgow_chatgpt_all_out=""
+              glasgow_chatgpt_all_ms_runs=""
+              glasgow_chatgpt_all_rss_runs=""
+
               # Phase 1: setup + warmup (web UI fills the progress bar once here)
               PROGRESS_STAGE="setup"
               progress_set_phase "Setting up Testing Environment"
@@ -960,6 +974,18 @@ jobs:
                   EXIT_CODE=1
                 fi
                 if ! warmup_only "Glasgow all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+                if ! warmup_only "Glasgow Gemini first" ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+                if ! warmup_only "Glasgow Gemini all" ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+                if ! warmup_only "Glasgow ChatGPT first" ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                fi
+                if ! warmup_only "Glasgow ChatGPT all" ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
                 fi
               else
@@ -984,6 +1010,28 @@ jobs:
               if ! bench_capture_rss_n glasgow_all_out glasgow_all_ms_runs glasgow_all_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Subgraph Solver] all-solutions run failed." >> outputs/result.txt
+              fi
+
+              progress_set_phase "Glasgow Gemini first"
+              if ! bench_capture_rss_n glasgow_gemini_first_out glasgow_gemini_first_ms_runs glasgow_gemini_first_rss_runs "$ITERATIONS" ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+                echo "[Glasgow Gemini] first-solution run failed." >> outputs/result.txt
+              fi
+              progress_set_phase "Glasgow Gemini all"
+              if ! bench_capture_rss_n glasgow_gemini_all_out glasgow_gemini_all_ms_runs glasgow_gemini_all_rss_runs "$ITERATIONS" ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+                echo "[Glasgow Gemini] all-solutions run failed." >> outputs/result.txt
+              fi
+
+              progress_set_phase "Glasgow ChatGPT first"
+              if ! bench_capture_rss_n glasgow_chatgpt_first_out glasgow_chatgpt_first_ms_runs glasgow_chatgpt_first_rss_runs "$ITERATIONS" ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+                echo "[Glasgow ChatGPT] first-solution run failed." >> outputs/result.txt
+              fi
+              progress_set_phase "Glasgow ChatGPT all"
+              if ! bench_capture_rss_n glasgow_chatgpt_all_out glasgow_chatgpt_all_ms_runs glasgow_chatgpt_all_rss_runs "$ITERATIONS" ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
+                EXIT_CODE=1
+                echo "[Glasgow ChatGPT] all-solutions run failed." >> outputs/result.txt
               fi
 
               if [ -n "${glasgow_first_ms_runs:-}" ]; then
@@ -1021,6 +1069,80 @@ jobs:
                     print_stats_kb_first_all "Max RSS (kB): " \
                       "$glasgow_first_rss_median" "$glasgow_first_rss_mean" "$glasgow_first_rss_stdev" "$glasgow_first_rss_min" "$glasgow_first_rss_max" \
                       "$glasgow_all_rss_median" "$glasgow_all_rss_mean" "$glasgow_all_rss_stdev" "$glasgow_all_rss_min" "$glasgow_all_rss_max"
+                  fi
+                  echo
+                } >> outputs/result.txt
+              fi
+
+              if [ -n "${glasgow_gemini_first_ms_runs:-}" ]; then
+                read glasgow_gemini_first_ms_median glasgow_gemini_first_ms_mean glasgow_gemini_first_ms_stdev glasgow_gemini_first_ms_min glasgow_gemini_first_ms_max glasgow_gemini_first_ms_n <<< "$(calc_stats_ms $glasgow_gemini_first_ms_runs)"
+                glasgow_gemini_first_ms="$glasgow_gemini_first_ms_median"
+              fi
+              if [ -n "${glasgow_gemini_all_ms_runs:-}" ]; then
+                read glasgow_gemini_all_ms_median glasgow_gemini_all_ms_mean glasgow_gemini_all_ms_stdev glasgow_gemini_all_ms_min glasgow_gemini_all_ms_max glasgow_gemini_all_ms_n <<< "$(calc_stats_ms $glasgow_gemini_all_ms_runs)"
+                glasgow_gemini_all_ms="$glasgow_gemini_all_ms_median"
+              fi
+              if [ -n "${glasgow_gemini_first_rss_runs:-}" ]; then
+                read glasgow_gemini_first_rss_median glasgow_gemini_first_rss_mean glasgow_gemini_first_rss_stdev glasgow_gemini_first_rss_min glasgow_gemini_first_rss_max glasgow_gemini_first_rss_n <<< "$(calc_stats_kb $glasgow_gemini_first_rss_runs)"
+                glasgow_gemini_first_rss_kb="$glasgow_gemini_first_rss_median"
+              fi
+              if [ -n "${glasgow_gemini_all_rss_runs:-}" ]; then
+                read glasgow_gemini_all_rss_median glasgow_gemini_all_rss_mean glasgow_gemini_all_rss_stdev glasgow_gemini_all_rss_min glasgow_gemini_all_rss_max glasgow_gemini_all_rss_n <<< "$(calc_stats_kb $glasgow_gemini_all_rss_runs)"
+                glasgow_gemini_all_rss_kb="$glasgow_gemini_all_rss_median"
+              fi
+              if [ -n "${glasgow_gemini_all_out:-}" ]; then
+                glasgow_gemini_result="$(echo "$glasgow_gemini_all_out" | tr -d '\r' | head -n1)"
+                {
+                  echo "[Glasgow Gemini]"
+                  echo "${glasgow_gemini_result:-(No output)}"
+                  echo "Warmup: $WARMUP_REQUESTED"
+                  echo "Iterations: $ITERATIONS"
+                  if [ -n "${glasgow_gemini_first_ms_median:-}" ] && [ -n "${glasgow_gemini_all_ms_median:-}" ]; then
+                    print_stats_ms_first_all "Runtime (ms): " \
+                      "$glasgow_gemini_first_ms_median" "$glasgow_gemini_first_ms_mean" "$glasgow_gemini_first_ms_stdev" "$glasgow_gemini_first_ms_min" "$glasgow_gemini_first_ms_max" \
+                      "$glasgow_gemini_all_ms_median" "$glasgow_gemini_all_ms_mean" "$glasgow_gemini_all_ms_stdev" "$glasgow_gemini_all_ms_min" "$glasgow_gemini_all_ms_max"
+                  fi
+                  if [ -n "${glasgow_gemini_first_rss_median:-}" ] && [ -n "${glasgow_gemini_all_rss_median:-}" ]; then
+                    print_stats_kb_first_all "Max RSS (kB): " \
+                      "$glasgow_gemini_first_rss_median" "$glasgow_gemini_first_rss_mean" "$glasgow_gemini_first_rss_stdev" "$glasgow_gemini_first_rss_min" "$glasgow_gemini_first_rss_max" \
+                      "$glasgow_gemini_all_rss_median" "$glasgow_gemini_all_rss_mean" "$glasgow_gemini_all_rss_stdev" "$glasgow_gemini_all_rss_min" "$glasgow_gemini_all_rss_max"
+                  fi
+                  echo
+                } >> outputs/result.txt
+              fi
+
+              if [ -n "${glasgow_chatgpt_first_ms_runs:-}" ]; then
+                read glasgow_chatgpt_first_ms_median glasgow_chatgpt_first_ms_mean glasgow_chatgpt_first_ms_stdev glasgow_chatgpt_first_ms_min glasgow_chatgpt_first_ms_max glasgow_chatgpt_first_ms_n <<< "$(calc_stats_ms $glasgow_chatgpt_first_ms_runs)"
+                glasgow_chatgpt_first_ms="$glasgow_chatgpt_first_ms_median"
+              fi
+              if [ -n "${glasgow_chatgpt_all_ms_runs:-}" ]; then
+                read glasgow_chatgpt_all_ms_median glasgow_chatgpt_all_ms_mean glasgow_chatgpt_all_ms_stdev glasgow_chatgpt_all_ms_min glasgow_chatgpt_all_ms_max glasgow_chatgpt_all_ms_n <<< "$(calc_stats_ms $glasgow_chatgpt_all_ms_runs)"
+                glasgow_chatgpt_all_ms="$glasgow_chatgpt_all_ms_median"
+              fi
+              if [ -n "${glasgow_chatgpt_first_rss_runs:-}" ]; then
+                read glasgow_chatgpt_first_rss_median glasgow_chatgpt_first_rss_mean glasgow_chatgpt_first_rss_stdev glasgow_chatgpt_first_rss_min glasgow_chatgpt_first_rss_max glasgow_chatgpt_first_rss_n <<< "$(calc_stats_kb $glasgow_chatgpt_first_rss_runs)"
+                glasgow_chatgpt_first_rss_kb="$glasgow_chatgpt_first_rss_median"
+              fi
+              if [ -n "${glasgow_chatgpt_all_rss_runs:-}" ]; then
+                read glasgow_chatgpt_all_rss_median glasgow_chatgpt_all_rss_mean glasgow_chatgpt_all_rss_stdev glasgow_chatgpt_all_rss_min glasgow_chatgpt_all_rss_max glasgow_chatgpt_all_rss_n <<< "$(calc_stats_kb $glasgow_chatgpt_all_rss_runs)"
+                glasgow_chatgpt_all_rss_kb="$glasgow_chatgpt_all_rss_median"
+              fi
+              if [ -n "${glasgow_chatgpt_all_out:-}" ]; then
+                glasgow_chatgpt_result="$(echo "$glasgow_chatgpt_all_out" | tr -d '\r' | head -n1)"
+                {
+                  echo "[Glasgow ChatGPT]"
+                  echo "${glasgow_chatgpt_result:-(No output)}"
+                  echo "Warmup: $WARMUP_REQUESTED"
+                  echo "Iterations: $ITERATIONS"
+                  if [ -n "${glasgow_chatgpt_first_ms_median:-}" ] && [ -n "${glasgow_chatgpt_all_ms_median:-}" ]; then
+                    print_stats_ms_first_all "Runtime (ms): " \
+                      "$glasgow_chatgpt_first_ms_median" "$glasgow_chatgpt_first_ms_mean" "$glasgow_chatgpt_first_ms_stdev" "$glasgow_chatgpt_first_ms_min" "$glasgow_chatgpt_first_ms_max" \
+                      "$glasgow_chatgpt_all_ms_median" "$glasgow_chatgpt_all_ms_mean" "$glasgow_chatgpt_all_ms_stdev" "$glasgow_chatgpt_all_ms_min" "$glasgow_chatgpt_all_ms_max"
+                  fi
+                  if [ -n "${glasgow_chatgpt_first_rss_median:-}" ] && [ -n "${glasgow_chatgpt_all_rss_median:-}" ]; then
+                    print_stats_kb_first_all "Max RSS (kB): " \
+                      "$glasgow_chatgpt_first_rss_median" "$glasgow_chatgpt_first_rss_mean" "$glasgow_chatgpt_first_rss_stdev" "$glasgow_chatgpt_first_rss_min" "$glasgow_chatgpt_first_rss_max" \
+                      "$glasgow_chatgpt_all_rss_median" "$glasgow_chatgpt_all_rss_mean" "$glasgow_chatgpt_all_rss_stdev" "$glasgow_chatgpt_all_rss_min" "$glasgow_chatgpt_all_rss_max"
                   fi
                   echo
                 } >> outputs/result.txt
