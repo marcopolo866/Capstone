@@ -11,7 +11,18 @@ The output should only be two lines:
 "Runtime:" <time the program ran precisely>
 */
 
-#include <bits/stdc++.h>
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <limits>
+#include <queue>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 using namespace std;
 
 // Fast trim (in-place)

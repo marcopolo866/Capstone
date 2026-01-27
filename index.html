@@ -1017,6 +1017,211 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             ];
         }
 
+        function formatStatsMsSummary(prefix, stats) {
+            if (!stats) return '';
+            const pfx = String(prefix || '');
+            const fmt = (v) => Number(v).toFixed(3);
+            return `${pfx}median=${fmt(stats.median)} mean=${fmt(stats.mean)} stdev=${fmt(stats.stdev)} min=${fmt(stats.min)} max=${fmt(stats.max)}`;
+        }
+
+        async function runDijkstraLocally(runCtx, iterations, warmup) {
+            const safeWarmup = Math.max(0, Math.floor(Number(warmup) || 0));
+            const safeIterations = Math.max(1, Math.floor(Number(iterations) || 0));
+
+            const inputFile = (config.selectedFiles && config.selectedFiles[0]) ? config.selectedFiles[0] : null;
+            if (!inputFile || !inputFile.path) {
+                throw new Error('Dijkstra requires one input file');
+            }
+
+            const ticksPerIter = 2; // baseline + llm
+            const setupTotal = Math.max(1, safeWarmup * ticksPerIter);
+            const testsTotal = safeIterations * ticksPerIter;
+
+            progressReset('dijkstra', safeIterations, runCtx.requestId, {
+                setupTotal,
+                testsPerIter: ticksPerIter
+            });
+
+            const inputName = sanitizeFsFilename(inputFile.name || 'input');
+            const inputFsPath = `/inputs/${inputName}`;
+
+            const inputText = await getRepoFileText(inputFile.path);
+            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+
+            const baselineSpec = {
+                id: 'dijkstra_baseline',
+                scriptPath: 'wasm/dijkstra_baseline.js',
+                wasmPath: 'wasm/dijkstra_baseline.wasm',
+                factoryName: 'createDijkstraBaselineModule'
+            };
+            const llmSpec = {
+                id: 'dijkstra_llm',
+                scriptPath: 'wasm/dijkstra_llm.js',
+                wasmPath: 'wasm/dijkstra_llm.wasm',
+                factoryName: 'createDijkstraLlmModule'
+            };
+
+            const abortSignal = runCtx && runCtx.abortController ? runCtx.abortController.signal : null;
+
+            const writeInput = (mod) => {
+                ensureEmscriptenDir(mod, '/inputs');
+                writeEmscriptenTextFile(mod, inputFsPath, inputText);
+            };
+
+            const unloadModule = (spec) => {
+                try {
+                    invalidateEmscriptenModule(spec && spec.id ? spec.id : '');
+                } catch (_) {}
+            };
+
+            const loadFreshModule = async (spec) => {
+                const mod = await getFreshEmscriptenModule(spec);
+                writeInput(mod);
+                return mod;
+            };
+
+            try {
+                // Phase 1: setup + warmup (progress bar fills once)
+                if (safeWarmup > 0) {
+                    let setupDone = 0;
+
+                    // Baseline warmups
+                    let mod = await loadFreshModule(baselineSpec);
+                    try {
+                        for (let i = 0; i < safeWarmup; i++) {
+                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                            progressSetDeterminate('Warming up: Dijkstra baseline', setupDone, setupTotal, { stage: 'setup' });
+                            try {
+                                await runEmscriptenMain(mod, [inputFsPath]);
+                            } catch (error) {
+                                const msg = error && error.message ? error.message : String(error);
+                                throw new Error(`Warmup ${i + 1}/${safeWarmup} - Dijkstra baseline: ${msg}`);
+                            }
+                            setupDone++;
+                            progressSetDeterminate('Warming up: Dijkstra baseline', setupDone, setupTotal, { stage: 'setup' });
+                            await delay(0, abortSignal);
+                        }
+                    } finally {
+                        mod = null;
+                        unloadModule(baselineSpec);
+                    }
+
+                    // LLM warmups
+                    mod = await loadFreshModule(llmSpec);
+                    try {
+                        for (let i = 0; i < safeWarmup; i++) {
+                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                            progressSetDeterminate('Warming up: Dijkstra llm', setupDone, setupTotal, { stage: 'setup' });
+                            try {
+                                await runEmscriptenMain(mod, [inputFsPath]);
+                            } catch (error) {
+                                const msg = error && error.message ? error.message : String(error);
+                                throw new Error(`Warmup ${i + 1}/${safeWarmup} - Dijkstra llm: ${msg}`);
+                            }
+                            setupDone++;
+                            progressSetDeterminate('Warming up: Dijkstra llm', setupDone, setupTotal, { stage: 'setup' });
+                            await delay(0, abortSignal);
+                        }
+                    } finally {
+                        mod = null;
+                        unloadModule(llmSpec);
+                    }
+                } else {
+                    // Still complete the setup phase so the bar fills once.
+                    progressSetDeterminate('Setting up Testing Environment', setupTotal, setupTotal, { stage: 'setup' });
+                }
+
+                // Phase 2: measured iterations (bar resets and fills again)
+                progressSetDeterminate('Running tests...', 0, testsTotal, { stage: 'tests', reset: true });
+
+                let ticksDone = 0;
+
+                const baselineTimes = [];
+                const llmTimes = [];
+                let baselineResult = '';
+                let llmResult = '';
+
+                // Baseline chunk
+                let mod = await loadFreshModule(baselineSpec);
+                try {
+                    for (let iter = 0; iter < safeIterations; iter++) {
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                        progressSetDeterminate('Dijkstra baseline', ticksDone, testsTotal, { stage: 'tests' });
+                        const t0 = runTimerNowMs();
+                        let stdout = '';
+                        try {
+                            const res = await runEmscriptenMain(mod, [inputFsPath]);
+                            stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
+                        } catch (error) {
+                            const msg = error && error.message ? error.message : String(error);
+                            throw new Error(`Iteration ${iter + 1}/${safeIterations} - Dijkstra baseline: ${msg}`);
+                        }
+                        const t1 = runTimerNowMs();
+                        baselineTimes.push(Math.max(0, t1 - t0));
+                        baselineResult = parseFirstLine(stdout) || stdout.trim();
+                        ticksDone++;
+                        progressSetDeterminate('Dijkstra baseline', ticksDone, testsTotal, { stage: 'tests' });
+                        await delay(0, abortSignal);
+                    }
+                } finally {
+                    mod = null;
+                    unloadModule(baselineSpec);
+                }
+
+                // LLM chunk
+                mod = await loadFreshModule(llmSpec);
+                try {
+                    for (let iter = 0; iter < safeIterations; iter++) {
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                        progressSetDeterminate('Dijkstra llm', ticksDone, testsTotal, { stage: 'tests' });
+                        const t0 = runTimerNowMs();
+                        let stdout = '';
+                        try {
+                            const res = await runEmscriptenMain(mod, [inputFsPath]);
+                            stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
+                        } catch (error) {
+                            const msg = error && error.message ? error.message : String(error);
+                            throw new Error(`Iteration ${iter + 1}/${safeIterations} - Dijkstra llm: ${msg}`);
+                        }
+                        const t1 = runTimerNowMs();
+                        llmTimes.push(Math.max(0, t1 - t0));
+                        llmResult = parseFirstLine(stdout) || stdout.trim();
+                        ticksDone++;
+                        progressSetDeterminate('Dijkstra llm', ticksDone, testsTotal, { stage: 'tests' });
+                        await delay(0, abortSignal);
+                    }
+                } finally {
+                    mod = null;
+                    unloadModule(llmSpec);
+                }
+
+                progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
+
+                const sBaseline = calcStatsMs(baselineTimes);
+                const sLlm = calcStatsMs(llmTimes);
+
+                const lines = [];
+                const addSection = (title, result, stats) => {
+                    lines.push(`[${title}]`);
+                    lines.push(result || '(No output)');
+                    lines.push(`Warmup: ${safeWarmup}`);
+                    lines.push(`Iterations: ${safeIterations}`);
+                    if (stats) {
+                        lines.push(formatStatsMsSummary('Runtime (ms): ', stats));
+                    }
+                    lines.push('');
+                };
+
+                addSection('Dijkstra Baseline', baselineResult, sBaseline);
+                addSection('Dijkstra LLM', llmResult, sLlm);
+
+                return { status: 'success', output: lines.join('\n') };
+            } finally {
+                unloadModule(baselineSpec);
+                unloadModule(llmSpec);
+            }
+        }
+
         async function runVf3Locally(runCtx, iterations, warmup) {
             const safeWarmup = Math.max(0, Math.floor(Number(warmup) || 0));
             const safeIterations = Math.max(1, Math.floor(Number(iterations) || 0));
@@ -1033,8 +1238,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
             progressReset('vf3', safeIterations, runCtx.requestId, {
                 setupTotal,
-                testsPerIter: ticksPerIter,
-                initialPhase: 'Setting up Local WebAssembly Runner'
+                testsPerIter: ticksPerIter
             });
 
             const patternName = sanitizeFsFilename(patternFile.name || 'pattern');
@@ -1073,70 +1277,93 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 writeEmscriptenTextFile(mod, targetFsPath, targetText);
             };
 
-            // IMPORTANT: vf3lib's baseline leaks in-process memory in ways that can destabilize long local runs.
-            // To mimic "fresh process per invocation" behavior from GitHub Actions, we recreate the baseline
-            // module each iteration (and on every warmup loop).
-            const getFreshBaselineMod = async () => {
-                const mod = await getFreshEmscriptenModule(baselineSpec);
+            // IMPORTANT: these compiled WASM programs are invoked via `callMain()`. If the underlying C++
+            // code has leaks/UB, long in-process runs can eventually trap. For stability and clarity, run
+            // each solver in its own chunk (baseline -> Gemini -> ChatGPT) and periodically recreate the
+            // baseline module during its chunk.
+            const baselineRecycleEveryIterations = 50;
+            const abortSignal = runCtx && runCtx.abortController ? runCtx.abortController.signal : null;
+
+            const unloadModule = (spec) => {
+                try {
+                    invalidateEmscriptenModule(spec && spec.id ? spec.id : '');
+                } catch (_) {}
+            };
+
+            const loadFreshModule = async (spec, label, done, total, stage) => {
+                if (label) {
+                    const current = Number.isFinite(Number(done)) ? Number(done) : 0;
+                    const denom = Number.isFinite(Number(total)) ? Number(total) : 1;
+                    progressSetDeterminate(label, current, Math.max(1, denom), { stage });
+                }
+                const mod = await getFreshEmscriptenModule(spec);
                 writeInputs(mod);
                 return mod;
             };
 
-            let geminiMod = null;
-            let chatgptMod = null;
-
             try {
-                [geminiMod, chatgptMod] = await Promise.all([
-                    getEmscriptenModule(geminiSpec),
-                    getEmscriptenModule(chatgptSpec)
-                ]);
-                if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-
-                // Write inputs into the reused modules' in-memory filesystem.
-                for (const mod of [geminiMod, chatgptMod]) {
-                    writeInputs(mod);
-                }
-
-                const warmupSteps = [
-                    { label: 'VF3 baseline first', solver: 'baseline', args: ['-r', '0', '-F', patternFsPath, targetFsPath] },
-                    { label: 'VF3 baseline all', solver: 'baseline', args: ['-r', '0', patternFsPath, targetFsPath] },
-                    { label: 'VF3 Gemini first', solver: 'gemini', args: ['--first-only', patternFsPath, targetFsPath] },
-                    { label: 'VF3 Gemini all', solver: 'gemini', args: [patternFsPath, targetFsPath] },
-                    { label: 'VF3 ChatGPT first', solver: 'chatgpt', args: ['--first-only', patternFsPath, targetFsPath] },
-                    { label: 'VF3 ChatGPT all', solver: 'chatgpt', args: [patternFsPath, targetFsPath] }
-                ];
-
-                // Phase 1: setup + warmup (progress bar fills once)
-                if (safeWarmup > 0) {
-                    let setupDone = 0;
-                    for (let i = 0; i < safeWarmup; i++) {
-                        let baselineMod = null;
-                        try {
-                            for (const step of warmupSteps) {
-                                if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                                progressSetDeterminate(`Warming up: ${step.label}`, setupDone, setupTotal, { stage: 'setup' });
-                                const mod = (step.solver === 'baseline')
-                                    ? (baselineMod || (baselineMod = await getFreshBaselineMod()))
-                                    : (step.solver === 'gemini' ? geminiMod : chatgptMod);
+                const warmupSolver = async (title, spec, labelFirst, argsFirst, labelAll, argsAll, setupDoneRef) => {
+                    let mod = await loadFreshModule(spec, `Loading ${title} WASM...`, setupDoneRef.value, setupTotal, 'setup');
+                    try {
+                        for (let i = 0; i < safeWarmup; i++) {
+                            const steps = [
+                                { label: labelFirst, args: argsFirst },
+                                { label: labelAll, args: argsAll }
+                            ];
+                            for (const step of steps) {
+                                if (runCtx && runCtx.aborted) return;
+                                progressSetDeterminate(`Warming up: ${step.label}`, setupDoneRef.value, setupTotal, { stage: 'setup' });
                                 try {
                                     await runEmscriptenMain(mod, step.args);
                                 } catch (error) {
                                     const msg = error && error.message ? error.message : String(error);
                                     throw new Error(`Warmup ${i + 1}/${safeWarmup} - ${step.label}: ${msg}`);
                                 }
-                                setupDone++;
-                                progressSetDeterminate(`Warming up: ${step.label}`, setupDone, setupTotal, { stage: 'setup' });
-                                await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
+                                setupDoneRef.value++;
+                                progressSetDeterminate(`Warming up: ${step.label}`, setupDoneRef.value, setupTotal, { stage: 'setup' });
+                                await delay(0, abortSignal);
                             }
-                        } finally {
-                            // Drop baseline module instance each warmup cycle.
-                            try { invalidateEmscriptenModule(baselineSpec.id); } catch (_) {}
-                            baselineMod = null;
                         }
+                    } finally {
+                        mod = null;
+                        unloadModule(spec);
                     }
+                };
+
+                // Phase 1: setup + warmup (progress bar fills once)
+                if (safeWarmup > 0) {
+                    const setupDoneRef = { value: 0 };
+                    await warmupSolver(
+                        'VF3 baseline',
+                        baselineSpec,
+                        'VF3 baseline first',
+                        ['-r', '0', '-F', patternFsPath, targetFsPath],
+                        'VF3 baseline all',
+                        ['-r', '0', patternFsPath, targetFsPath],
+                        setupDoneRef
+                    );
+                    await warmupSolver(
+                        'VF3 Gemini',
+                        geminiSpec,
+                        'VF3 Gemini first',
+                        ['--first-only', patternFsPath, targetFsPath],
+                        'VF3 Gemini all',
+                        [patternFsPath, targetFsPath],
+                        setupDoneRef
+                    );
+                    await warmupSolver(
+                        'VF3 ChatGPT',
+                        chatgptSpec,
+                        'VF3 ChatGPT first',
+                        ['--first-only', patternFsPath, targetFsPath],
+                        'VF3 ChatGPT all',
+                        [patternFsPath, targetFsPath],
+                        setupDoneRef
+                    );
+                    if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                 } else {
                     // Still complete the setup phase so the bar fills once.
-                    progressSetDeterminate('Setting up Local WebAssembly Runner', setupTotal, setupTotal, { stage: 'setup', reset: true });
+                    progressSetDeterminate('Setting up Testing Environment', setupTotal, setupTotal, { stage: 'setup', reset: true });
                 }
 
                 // Phase 2: measured iterations (bar resets and fills again)
@@ -1152,65 +1379,126 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 let gemResult = '';
                 let chatResult = '';
 
-                const measuredSteps = [
-                    { label: 'VF3 baseline first', solver: 'baseline', args: ['-r', '0', '-F', patternFsPath, targetFsPath], times: baseFirst },
-                    { label: 'VF3 baseline all', solver: 'baseline', args: ['-r', '0', patternFsPath, targetFsPath], times: baseAll, capture: 'base' },
-                    { label: 'VF3 Gemini first', solver: 'gemini', args: ['--first-only', patternFsPath, targetFsPath], times: gemFirst },
-                    { label: 'VF3 Gemini all', solver: 'gemini', args: [patternFsPath, targetFsPath], times: gemAll, capture: 'gem' },
-                    { label: 'VF3 ChatGPT first', solver: 'chatgpt', args: ['--first-only', patternFsPath, targetFsPath], times: chatFirst },
-                    { label: 'VF3 ChatGPT all', solver: 'chatgpt', args: [patternFsPath, targetFsPath], times: chatAll, capture: 'chat' }
-                ];
-
                 let ticksDone = 0;
-                for (let iter = 0; iter < safeIterations; iter++) {
-                    let baselineMod = null;
-                    try {
-                        for (const step of measuredSteps) {
-                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                            progressSetDeterminate(step.label, ticksDone, testsTotal, { stage: 'tests' });
-                            const t0 = runTimerNowMs();
-                            let stdout = '';
-                            const mod = (step.solver === 'baseline')
-                                ? (baselineMod || (baselineMod = await getFreshBaselineMod()))
-                                : (step.solver === 'gemini' ? geminiMod : chatgptMod);
 
+                const runMeasuredSolver = async (opts) => {
+                    const title = String(opts && opts.title ? opts.title : 'Solver');
+                    const spec = opts && opts.spec ? opts.spec : null;
+                    const labelFirst = String(opts && opts.labelFirst ? opts.labelFirst : 'first');
+                    const argsFirst = Array.isArray(opts && opts.argsFirst ? opts.argsFirst : null) ? opts.argsFirst : [];
+                    const labelAll = String(opts && opts.labelAll ? opts.labelAll : 'all');
+                    const argsAll = Array.isArray(opts && opts.argsAll ? opts.argsAll : null) ? opts.argsAll : [];
+                    const timesFirst = Array.isArray(opts && opts.timesFirst ? opts.timesFirst : null) ? opts.timesFirst : null;
+                    const timesAll = Array.isArray(opts && opts.timesAll ? opts.timesAll : null) ? opts.timesAll : null;
+                    const captureAll = typeof (opts && opts.captureAll) === 'function' ? opts.captureAll : null;
+                    const recycleEvery = Math.max(0, Math.floor(Number(opts && opts.recycleEveryIterations ? opts.recycleEveryIterations : 0)));
+
+                    if (!spec || !spec.id) throw new Error(`Invalid wasm spec for ${title}`);
+                    if (!timesFirst || !timesAll) throw new Error(`Invalid timing arrays for ${title}`);
+
+                    let mod = await loadFreshModule(spec, `Loading ${title} WASM...`, ticksDone, testsTotal, 'tests');
+                    try {
+                        for (let iter = 0; iter < safeIterations; iter++) {
+                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+
+                            if (recycleEvery > 0 && iter > 0 && (iter % recycleEvery) === 0) {
+                                mod = null;
+                                unloadModule(spec);
+                                await delay(0, abortSignal);
+                                if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                                mod = await loadFreshModule(spec, `Refreshing ${title} WASM (${iter}/${safeIterations})...`, ticksDone, testsTotal, 'tests');
+                            }
+
+                            progressSetDeterminate(labelFirst, ticksDone, testsTotal, { stage: 'tests' });
+                            const t0 = runTimerNowMs();
                             try {
-                                const res = await runEmscriptenMain(mod, step.args);
+                                await runEmscriptenMain(mod, argsFirst);
+                            } catch (error) {
+                                const msg = error && error.message ? error.message : String(error);
+                                throw new Error(`Iteration ${iter + 1}/${safeIterations} - ${labelFirst}: ${msg}`);
+                            }
+                            const t1 = runTimerNowMs();
+                            timesFirst.push(Math.max(0, t1 - t0));
+                            ticksDone++;
+                            progressSetDeterminate(labelFirst, ticksDone, testsTotal, { stage: 'tests' });
+                            await delay(0, abortSignal);
+
+                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+
+                            progressSetDeterminate(labelAll, ticksDone, testsTotal, { stage: 'tests' });
+                            const t2 = runTimerNowMs();
+                            let stdout = '';
+                            try {
+                                const res = await runEmscriptenMain(mod, argsAll);
                                 stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
                             } catch (error) {
                                 const msg = error && error.message ? error.message : String(error);
-                                throw new Error(`Iteration ${iter + 1}/${safeIterations} - ${step.label}: ${msg}`);
+                                throw new Error(`Iteration ${iter + 1}/${safeIterations} - ${labelAll}: ${msg}`);
                             }
-
-                            const t1 = runTimerNowMs();
-                            step.times.push(Math.max(0, t1 - t0));
-
-                            if (step.capture === 'base') {
-                                const line = parseFirstLine(stdout);
-                                baseResult = parseFirstToken(line) || line;
-                            } else if (step.capture === 'gem') {
-                                gemResult = parseFirstLine(stdout);
-                            } else if (step.capture === 'chat') {
-                                chatResult = parseFirstLine(stdout);
+                            const t3 = runTimerNowMs();
+                            timesAll.push(Math.max(0, t3 - t2));
+                            if (captureAll) {
+                                try { captureAll(stdout); } catch (_) {}
                             }
-
-                            // Dispose baseline immediately after the baseline "all" measurement so it never accumulates
-                            // across iterations.
-                            if (step.capture === 'base') {
-                                try { invalidateEmscriptenModule(baselineSpec.id); } catch (_) {}
-                                baselineMod = null;
-                            }
-
                             ticksDone++;
-                            progressSetDeterminate(step.label, ticksDone, testsTotal, { stage: 'tests' });
-                            await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
+                            progressSetDeterminate(labelAll, ticksDone, testsTotal, { stage: 'tests' });
+                            await delay(0, abortSignal);
                         }
                     } finally {
-                        // Ensure baseline is always dropped between iterations, even on failures.
-                        try { invalidateEmscriptenModule(baselineSpec.id); } catch (_) {}
-                        baselineMod = null;
+                        mod = null;
+                        unloadModule(spec);
                     }
-                }
+                    return null;
+                };
+
+                const baselineRun = await runMeasuredSolver({
+                    title: 'VF3 baseline',
+                    spec: baselineSpec,
+                    labelFirst: 'VF3 baseline first',
+                    argsFirst: ['-r', '0', '-F', patternFsPath, targetFsPath],
+                    labelAll: 'VF3 baseline all',
+                    argsAll: ['-r', '0', patternFsPath, targetFsPath],
+                    timesFirst: baseFirst,
+                    timesAll: baseAll,
+                    recycleEveryIterations: baselineRecycleEveryIterations,
+                    captureAll: (stdout) => {
+                        const line = parseFirstLine(stdout);
+                        baseResult = parseFirstToken(line) || line;
+                    }
+                });
+                if (baselineRun && baselineRun.status === 'aborted') return baselineRun;
+
+                const geminiRun = await runMeasuredSolver({
+                    title: 'VF3 Gemini',
+                    spec: geminiSpec,
+                    labelFirst: 'VF3 Gemini first',
+                    argsFirst: ['--first-only', patternFsPath, targetFsPath],
+                    labelAll: 'VF3 Gemini all',
+                    argsAll: [patternFsPath, targetFsPath],
+                    timesFirst: gemFirst,
+                    timesAll: gemAll,
+                    recycleEveryIterations: 0,
+                    captureAll: (stdout) => {
+                        gemResult = parseFirstLine(stdout);
+                    }
+                });
+                if (geminiRun && geminiRun.status === 'aborted') return geminiRun;
+
+                const chatgptRun = await runMeasuredSolver({
+                    title: 'VF3 ChatGPT',
+                    spec: chatgptSpec,
+                    labelFirst: 'VF3 ChatGPT first',
+                    argsFirst: ['--first-only', patternFsPath, targetFsPath],
+                    labelAll: 'VF3 ChatGPT all',
+                    argsAll: [patternFsPath, targetFsPath],
+                    timesFirst: chatFirst,
+                    timesAll: chatAll,
+                    recycleEveryIterations: 0,
+                    captureAll: (stdout) => {
+                        chatResult = parseFirstLine(stdout);
+                    }
+                });
+                if (chatgptRun && chatgptRun.status === 'aborted') return chatgptRun;
 
                 progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
 
@@ -1307,9 +1595,22 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         }
 
         async function runAlgorithmLocally(runCtx, algoId, iterations, warmup) {
-            if (String(algoId || '') === 'vf3') {
+            const algoKey = String(algoId || '');
+            if (algoKey === 'vf3') {
                 try {
                     return await runVf3Locally(runCtx, iterations, warmup);
+                } catch (error) {
+                    const msg = error && error.message ? error.message : String(error);
+                    if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
+                        throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow to generate them.');
+                    }
+                    throw error;
+                }
+            }
+
+            if (algoKey === 'dijkstra') {
+                try {
+                    return await runDijkstraLocally(runCtx, iterations, warmup);
                 } catch (error) {
                     const msg = error && error.message ? error.message : String(error);
                     if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
@@ -1336,12 +1637,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
             progressReset(algoId, safeIterations, runCtx.requestId, {
                 setupTotal,
-                testsPerIter,
-                initialPhase: 'Setting up Local WebAssembly Runner'
+                testsPerIter
             });
 
             setupDone = 1;
-            progressSetDeterminate('Setting up Local WebAssembly Runner', setupDone, setupTotal, { stage: 'setup', reset: true });
+            progressSetDeterminate('Setting up Testing Environment', setupDone, setupTotal, { stage: 'setup', reset: true });
 
             // Warmup phase (fills the bar the first time)
             let warmupUnitsDone = 0;

@@ -159,6 +159,26 @@ jobs:
             -s EXPORT_NAME=createVf3ChatgptModule \
             -o "wasm/vf3_chatgpt.js"
 
+          echo "Building Dijkstra baseline..."
+          em++ -std=c++17 \
+            "${common_flags[@]}" \
+            -fexceptions \
+            -s DISABLE_EXCEPTION_CATCHING=0 \
+            -I "baselines/Dijkastra Shortest Path" \
+            "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" \
+            "baselines/Dijkastra Shortest Path/dijkstra.cpp" \
+            -s EXPORT_NAME=createDijkstraBaselineModule \
+            -o "wasm/dijkstra_baseline.js"
+
+          echo "Building Dijkstra LLM..."
+          em++ -std=c++17 \
+            "${common_flags[@]}" \
+            -fexceptions \
+            -s DISABLE_EXCEPTION_CATCHING=0 \
+            "src/[CHATGPT] Shortest Path.cpp" \
+            -s EXPORT_NAME=createDijkstraLlmModule \
+            -o "wasm/dijkstra_llm.js"
+
       - name: Commit updated WASM artifacts
         run: |
           set -euo pipefail

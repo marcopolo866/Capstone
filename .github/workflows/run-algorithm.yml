@@ -1003,9 +1003,13 @@ jobs:
                 glasgow_all_rss_kb="$glasgow_all_rss_median"
               fi
               if [ -n "${glasgow_all_out:-}" ]; then
+                glasgow_result_line="$(echo "$glasgow_all_out" | tr -d '\r' | awk '/^[[:space:]]*solution_count[[:space:]]*=/ {line=$0} END {print line}')"
+                if [ -z "${glasgow_result_line:-}" ]; then
+                  glasgow_result_line="$(echo "$glasgow_all_out" | tr -d '\r' | head -n1)"
+                fi
                 {
                   echo "[Glasgow Subgraph Solver]"
-                  echo "$glasgow_all_out"
+                  echo "${glasgow_result_line:-(No output)}"
                   echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${glasgow_first_ms_median:-}" ] && [ -n "${glasgow_all_ms_median:-}" ]; then

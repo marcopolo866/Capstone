@@ -1,4 +1,5 @@
 //Made by Gregor Alič (gregora on Github)
+#include <array>
 #include <vector>
 #include <limits>
 #include <string>
@@ -10,11 +11,8 @@ std::string dijkstra(std::vector<int> &edges, int vsize, int startv, int endv){
   std::vector <int> queue; // {vertexid, last id, distance}
 
   //initiate solved array
-  int solved[vsize + 1][2]; // {min-distance, last vertex id}
-  for(int fill = 0; fill < vsize + 1; fill++){
-    solved[fill][0] = -1;
-    solved[fill][1] = -1;
-  }
+  std::vector<std::array<int, 2>> solved(static_cast<std::size_t>(vsize) + 1,
+                                        std::array<int, 2>{-1, -1}); // {min-distance, last vertex id}
 
   solved[startv][0] = 0;
   solved[startv][1] = 0;
