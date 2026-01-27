@@ -1312,7 +1312,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                             ];
                             for (const step of steps) {
                                 if (runCtx && runCtx.aborted) return;
-                                progressSetDeterminate(`Warming up: ${step.label}`, setupDoneRef.value, setupTotal, { stage: 'setup' });
+                                progressSetDeterminate(`Warming up: ${title}`, setupDoneRef.value, setupTotal, { stage: 'setup' });
                                 try {
                                     await runEmscriptenMain(mod, step.args);
                                 } catch (error) {
@@ -1320,7 +1320,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                                     throw new Error(`Warmup ${i + 1}/${safeWarmup} - ${step.label}: ${msg}`);
                                 }
                                 setupDoneRef.value++;
-                                progressSetDeterminate(`Warming up: ${step.label}`, setupDoneRef.value, setupTotal, { stage: 'setup' });
+                                progressSetDeterminate(`Warming up: ${title}`, setupDoneRef.value, setupTotal, { stage: 'setup' });
                                 await delay(0, abortSignal);
                             }
                         }
@@ -1397,6 +1397,45 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     if (!timesFirst || !timesAll) throw new Error(`Invalid timing arrays for ${title}`);
 
                     let mod = await loadFreshModule(spec, `Loading ${title} WASM...`, ticksDone, testsTotal, 'tests');
+
+                    const isTrapError = (error) => {
+                        const msg = error && error.message ? String(error.message) : String(error);
+                        const lower = msg.toLowerCase();
+                        return lower.includes('function signature mismatch') ||
+                            lower.includes('memory access out of bounds') ||
+                            lower.includes('out of bounds memory access') ||
+                            lower.includes('unreachable');
+                    };
+
+                    const runStepMeasured = async (iter, stepLabel, args, times, captureStdout = null) => {
+                        for (let attempt = 0; attempt < 2; attempt++) {
+                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                            const t0 = runTimerNowMs();
+                            try {
+                                const res = await runEmscriptenMain(mod, args);
+                                const t1 = runTimerNowMs();
+                                times.push(Math.max(0, t1 - t0));
+                                if (captureStdout) {
+                                    const stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
+                                    try { captureStdout(stdout); } catch (_) {}
+                                }
+                                return null;
+                            } catch (error) {
+                                const msg = error && error.message ? error.message : String(error);
+                                const canRecover = isTrapError(error) && attempt === 0;
+                                if (!canRecover) {
+                                    throw new Error(`Iteration ${iter + 1}/${safeIterations} - ${stepLabel}: ${msg}`);
+                                }
+
+                                mod = null;
+                                unloadModule(spec);
+                                await delay(0, abortSignal);
+                                if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                                mod = await loadFreshModule(spec, `Recovering ${title} WASM...`, ticksDone, testsTotal, 'tests');
+                            }
+                        }
+                        return null;
+                    };
                     try {
                         for (let iter = 0; iter < safeIterations; iter++) {
                             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
@@ -1409,39 +1448,20 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                                 mod = await loadFreshModule(spec, `Refreshing ${title} WASM (${iter}/${safeIterations})...`, ticksDone, testsTotal, 'tests');
                             }
 
-                            progressSetDeterminate(labelFirst, ticksDone, testsTotal, { stage: 'tests' });
-                            const t0 = runTimerNowMs();
-                            try {
-                                await runEmscriptenMain(mod, argsFirst);
-                            } catch (error) {
-                                const msg = error && error.message ? error.message : String(error);
-                                throw new Error(`Iteration ${iter + 1}/${safeIterations} - ${labelFirst}: ${msg}`);
-                            }
-                            const t1 = runTimerNowMs();
-                            timesFirst.push(Math.max(0, t1 - t0));
+                            progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
+                            const firstRes = await runStepMeasured(iter, labelFirst, argsFirst, timesFirst);
+                            if (firstRes && firstRes.status === 'aborted') return firstRes;
                             ticksDone++;
-                            progressSetDeterminate(labelFirst, ticksDone, testsTotal, { stage: 'tests' });
+                            progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
                             await delay(0, abortSignal);
 
                             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
 
-                            progressSetDeterminate(labelAll, ticksDone, testsTotal, { stage: 'tests' });
-                            const t2 = runTimerNowMs();
-                            let stdout = '';
-                            try {
-                                const res = await runEmscriptenMain(mod, argsAll);
-                                stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
-                            } catch (error) {
-                                const msg = error && error.message ? error.message : String(error);
-                                throw new Error(`Iteration ${iter + 1}/${safeIterations} - ${labelAll}: ${msg}`);
-                            }
-                            const t3 = runTimerNowMs();
-                            timesAll.push(Math.max(0, t3 - t2));
-                            if (captureAll) {
-                                try { captureAll(stdout); } catch (_) {}
-                            }
+                            progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
+                            const allRes = await runStepMeasured(iter, labelAll, argsAll, timesAll, captureAll);
+                            if (allRes && allRes.status === 'aborted') return allRes;
                             ticksDone++;
-                            progressSetDeterminate(labelAll, ticksDone, testsTotal, { stage: 'tests' });
+                            progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
                             await delay(0, abortSignal);
                         }
                     } finally {
@@ -1477,7 +1497,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     argsAll: [patternFsPath, targetFsPath],
                     timesFirst: gemFirst,
                     timesAll: gemAll,
-                    recycleEveryIterations: 0,
+                    recycleEveryIterations: safeIterations >= 250 ? 200 : 0,
                     captureAll: (stdout) => {
                         gemResult = parseFirstLine(stdout);
                     }
@@ -1493,7 +1513,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     argsAll: [patternFsPath, targetFsPath],
                     timesFirst: chatFirst,
                     timesAll: chatAll,
-                    recycleEveryIterations: 0,
+                    recycleEveryIterations: safeIterations >= 250 ? 200 : 0,
                     captureAll: (stdout) => {
                         chatResult = parseFirstLine(stdout);
                     }

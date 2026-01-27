@@ -1001,34 +1001,34 @@ jobs:
               progress_update_check_run "in_progress" || true
               WARMUP=0
 
-              progress_set_phase "Glasgow first"
+              progress_set_phase "Glasgow baseline"
               if ! bench_capture_rss_n glasgow_first_out glasgow_first_ms_runs glasgow_first_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Subgraph Solver] first-solution run failed." >> outputs/result.txt
               fi
-              progress_set_phase "Glasgow all"
+              progress_set_phase "Glasgow baseline"
               if ! bench_capture_rss_n glasgow_all_out glasgow_all_ms_runs glasgow_all_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Subgraph Solver] all-solutions run failed." >> outputs/result.txt
               fi
 
-              progress_set_phase "Glasgow Gemini first"
+              progress_set_phase "Glasgow Gemini"
               if ! bench_capture_rss_n glasgow_gemini_first_out glasgow_gemini_first_ms_runs glasgow_gemini_first_rss_runs "$ITERATIONS" ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Gemini] first-solution run failed." >> outputs/result.txt
               fi
-              progress_set_phase "Glasgow Gemini all"
+              progress_set_phase "Glasgow Gemini"
               if ! bench_capture_rss_n glasgow_gemini_all_out glasgow_gemini_all_ms_runs glasgow_gemini_all_rss_runs "$ITERATIONS" ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Gemini] all-solutions run failed." >> outputs/result.txt
               fi
 
-              progress_set_phase "Glasgow ChatGPT first"
+              progress_set_phase "Glasgow ChatGPT"
               if ! bench_capture_rss_n glasgow_chatgpt_first_out glasgow_chatgpt_first_ms_runs glasgow_chatgpt_first_rss_runs "$ITERATIONS" ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow ChatGPT] first-solution run failed." >> outputs/result.txt
               fi
-              progress_set_phase "Glasgow ChatGPT all"
+              progress_set_phase "Glasgow ChatGPT"
               if ! bench_capture_rss_n glasgow_chatgpt_all_out glasgow_chatgpt_all_ms_runs glasgow_chatgpt_all_rss_runs "$ITERATIONS" ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow ChatGPT] all-solutions run failed." >> outputs/result.txt
@@ -1205,12 +1205,12 @@ jobs:
               progress_update_check_run "in_progress" || true
               WARMUP=0
 
-              progress_set_phase "VF3 baseline first"
+              progress_set_phase "VF3 baseline"
               if ! bench_capture_rss_n vf3_base_first_out vf3_base_first_ms_runs vf3_base_first_rss_runs "$ITERATIONS" ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 baseline] first-solution run failed." >> outputs/result.txt
               fi
-              progress_set_phase "VF3 baseline all"
+              progress_set_phase "VF3 baseline"
               if ! bench_capture_rss_n vf3_base_all_out vf3_base_all_ms_runs vf3_base_all_rss_runs "$ITERATIONS" ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 baseline] all-solutions run failed." >> outputs/result.txt
@@ -1257,12 +1257,12 @@ jobs:
                 } >> outputs/result.txt
               fi
 
-              progress_set_phase "VF3 Gemini first"
+              progress_set_phase "VF3 Gemini"
               if ! bench_capture_rss_n vf3_first_out vf3_first_ms_runs vf3_first_rss_runs "$ITERATIONS" ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 Gemini] first-solution run failed." >> outputs/result.txt
               fi
-              progress_set_phase "VF3 Gemini all"
+              progress_set_phase "VF3 Gemini"
               if ! bench_capture_rss_n vf3_all_out vf3_all_ms_runs vf3_all_rss_runs "$ITERATIONS" ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 Gemini] all-solutions run failed." >> outputs/result.txt
@@ -1305,12 +1305,12 @@ jobs:
                 } >> outputs/result.txt
               fi
 
-              progress_set_phase "VF3 ChatGPT first"
+              progress_set_phase "VF3 ChatGPT"
               if ! bench_capture_rss_n chatvf3_first_out chatvf3_first_ms_runs chatvf3_first_rss_runs "$ITERATIONS" ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 ChatGPT] first-solution run failed." >> outputs/result.txt
               fi
-              progress_set_phase "VF3 ChatGPT all"
+              progress_set_phase "VF3 ChatGPT"
               if ! bench_capture_rss_n chatvf3_all_out chatvf3_all_ms_runs chatvf3_all_rss_runs "$ITERATIONS" ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[VF3 ChatGPT] all-solutions run failed." >> outputs/result.txt
