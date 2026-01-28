@@ -118,6 +118,16 @@
 No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     </div>
                 </div>
+                <div class="charts" id="charts" hidden>
+                    <div class="chart-panel">
+                        <div class="chart-title">Runtime (ms)</div>
+                        <div class="chart" id="runtime-chart"></div>
+                    </div>
+                    <div class="chart-panel">
+                        <div class="chart-title">Memory (kB)</div>
+                        <div class="chart" id="memory-chart"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -1855,6 +1865,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     finalLines.push('', `Total end-to-end time: ${formatDurationMs(elapsedMs)}`);
                     outputDiv.textContent = finalLines.join('\n');
                     statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
+                    clearCharts();
                     return;
                 }
 
@@ -1909,6 +1920,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 if (progressState.total > 0) {
                     progressSetDeterminate('Completed', progressState.total, progressState.total);
                 }
+                renderCharts(result);
             } catch (error) {
                 if (runCtx && runCtx.aborted) {
                     return;
@@ -1922,6 +1934,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     ref: branchRef
                 });
                 statusBadge.innerHTML = '<span class="status-badge status-error">Failed</span>';
+                clearCharts();
 
                 if (!dispatched) {
                     progressClear();
@@ -2292,6 +2305,99 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             document.getElementById('output').textContent = 'Output cleared.';
             document.getElementById('status-badge').innerHTML = '';
             progressClear();
+            clearCharts();
+        }
+
+        function clearCharts() {
+            const charts = document.getElementById('charts');
+            const runtime = document.getElementById('runtime-chart');
+            const memory = document.getElementById('memory-chart');
+            if (runtime) runtime.innerHTML = '';
+            if (memory) memory.innerHTML = '';
+            if (charts) charts.hidden = true;
+        }
+
+        function normalizeVersionMetrics(result) {
+            const timings = result && result.timings_ms ? result.timings_ms : {};
+            const memory = result && result.memory_kb ? result.memory_kb : {};
+
+            const pickValue = (keys, source) => {
+                for (const key of keys) {
+                    const raw = source && Object.prototype.hasOwnProperty.call(source, key) ? source[key] : null;
+                    if (raw === 0 || Number.isFinite(Number(raw))) return Number(raw);
+                }
+                return null;
+            };
+
+            const runtime = {
+                benchmark: pickValue(['baseline_all', 'baseline', 'first', 'baseline_first', 'all'], timings),
+                chatgpt: pickValue(['chatgpt_all', 'llm', 'chatgpt_first'], timings),
+                gemini: pickValue(['gemini_all', 'gemini_first'], timings)
+            };
+
+            const mem = {
+                benchmark: pickValue(['baseline_all', 'baseline', 'first', 'baseline_first', 'all'], memory),
+                chatgpt: pickValue(['chatgpt_all', 'llm', 'chatgpt_first'], memory),
+                gemini: pickValue(['gemini_all', 'gemini_first'], memory)
+            };
+
+            return { runtime, memory: mem };
+        }
+
+        function renderBarChart(containerId, data, unitLabel) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+
+            const values = data.map(item => (Number.isFinite(Number(item.value)) ? Number(item.value) : null));
+            const maxValue = Math.max(0, ...values.filter(v => v !== null));
+
+            const bars = data.map(item => {
+                const hasValue = Number.isFinite(Number(item.value));
+                const value = hasValue ? Number(item.value) : 0;
+                const height = maxValue > 0 ? Math.max(0, (value / maxValue) * 100) : 0;
+                const label = hasValue ? `${value.toFixed(2)} ${unitLabel}` : 'N/A';
+                const barClass = hasValue ? 'bar-fill' : 'bar-fill bar-na';
+                return `
+                    <div class="bar-group">
+                        <div class="bar">
+                            <div class="${barClass}" style="height: ${height}%"></div>
+                        </div>
+                        <div class="bar-value">${label}</div>
+                        <div class="bar-label">${item.label}</div>
+                    </div>
+                `;
+            }).join('');
+
+            container.innerHTML = `<div class="bar-grid">${bars}</div>`;
+        }
+
+        function renderCharts(result) {
+            const charts = document.getElementById('charts');
+            if (!charts) return;
+
+            const metrics = normalizeVersionMetrics(result || {});
+            const hasRuntime = Object.values(metrics.runtime).some(v => Number.isFinite(Number(v)));
+            const hasMemory = Object.values(metrics.memory).some(v => Number.isFinite(Number(v)));
+
+            if (!hasRuntime && !hasMemory) {
+                clearCharts();
+                return;
+            }
+
+            const runtimeData = [
+                { label: 'Benchmark', value: metrics.runtime.benchmark },
+                { label: 'ChatGPT', value: metrics.runtime.chatgpt },
+                { label: 'Gemini', value: metrics.runtime.gemini }
+            ];
+            const memoryData = [
+                { label: 'Benchmark', value: metrics.memory.benchmark },
+                { label: 'ChatGPT', value: metrics.memory.chatgpt },
+                { label: 'Gemini', value: metrics.memory.gemini }
+            ];
+
+            renderBarChart('runtime-chart', runtimeData, 'ms');
+            renderBarChart('memory-chart', memoryData, 'kB');
+            charts.hidden = false;
         }
         
         function buildRequestHeaders(options = {}) {
