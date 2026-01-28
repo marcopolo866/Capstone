@@ -164,9 +164,8 @@ jobs:
             "${common_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
-            -I "baselines/Dijkastra Shortest Path" \
-            "baselines/Dijkastra Shortest Path/dijkstra_main.cpp" \
-            "baselines/Dijkastra Shortest Path/dijkstra.cpp" \
+            -I "baselines/nyaan-library" \
+            "baselines/dijkstra_main.cpp" \
             -s EXPORT_NAME=createDijkstraBaselineModule \
             -o "wasm/dijkstra_baseline.js"
 

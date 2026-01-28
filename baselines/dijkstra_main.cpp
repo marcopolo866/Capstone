@@ -2,14 +2,20 @@
 #include <cctype>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <type_traits>
 #include <vector>
 
-#include "dijkstra.h"
+using namespace std;
+
+#include "shortest-path/dijkstra-skew-heap.hpp"
 
 namespace {
 
@@ -330,6 +336,72 @@ InputData parseInputFile(const std::string& path) {
     return parseCsvFormat(dataLines, comments);
 }
 
+std::string runDijkstra(const InputData& data) {
+    if (data.vertexCount <= 0) {
+        throw std::runtime_error("Vertex count must be positive");
+    }
+
+    int maxId = data.vertexCount;
+    if (data.vertexCount < 0) {
+        maxId = 0;
+    }
+    for (std::size_t i = 0; i + 2 < data.edges.size(); i += 3) {
+        maxId = std::max(maxId, data.edges[i]);
+        maxId = std::max(maxId, data.edges[i + 1]);
+    }
+    if (maxId < 0) {
+        throw std::runtime_error("Graph contains negative vertex ids");
+    }
+
+    const std::size_t edgeCount = data.edges.size() / 3;
+    StaticGraph<long long> graph(maxId + 1, static_cast<int>(edgeCount));
+    for (std::size_t i = 0; i + 2 < data.edges.size(); i += 3) {
+        int from = data.edges[i];
+        int to = data.edges[i + 1];
+        long long weight = static_cast<long long>(data.edges[i + 2]);
+        if (from < 0 || to < 0) {
+            throw std::runtime_error("Graph contains negative vertex ids");
+        }
+        if (from >= static_cast<int>(graph.size()) ||
+            to >= static_cast<int>(graph.size())) {
+            throw std::runtime_error("Graph contains vertex ids outside declared size");
+        }
+        graph.add_edge(from, to, weight);
+    }
+
+    if (data.startVertex < 0 || data.startVertex >= static_cast<int>(graph.size()) ||
+        data.targetVertex < 0 || data.targetVertex >= static_cast<int>(graph.size())) {
+        throw std::runtime_error("Start/target vertex out of range");
+    }
+
+    auto distPrev = dijkstra_restore<long long>(graph, data.startVertex);
+    long long dist = distPrev[data.targetVertex].first;
+    if (dist < 0) {
+        return "INF; (no path)";
+    }
+
+    std::vector<int> path;
+    int cur = data.targetVertex;
+    while (cur != -1) {
+        path.push_back(cur);
+        if (cur == data.startVertex) {
+            break;
+        }
+        cur = distPrev[cur].second;
+    }
+    if (path.empty() || path.back() != data.startVertex) {
+        return "INF; (no path)";
+    }
+    std::reverse(path.begin(), path.end());
+
+    std::ostringstream output;
+    output << dist << ';';
+    for (int vertex : path) {
+        output << ' ' << vertex;
+    }
+    return output.str();
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -340,7 +412,7 @@ int main(int argc, char* argv[]) {
 
     try {
         InputData data = parseInputFile(argv[1]);
-        std::string output = dijkstra(data.edges, data.vertexCount, data.startVertex, data.targetVertex);
+        std::string output = runDijkstra(data);
 
         if (!data.labels.empty()) {
             std::size_t semiPos = output.find(';');

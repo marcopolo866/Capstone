@@ -4,3 +4,6 @@
 [submodule "baselines/glasgow-subgraph-solver"]
 	path = baselines/glasgow-subgraph-solver
 	url = https://github.com/ciaranm/glasgow-subgraph-solver.git
+[submodule "baselines/nyaan-library"]
+	path = baselines/nyaan-library
+	url = https://github.com/NyaanNyaan/library.git
