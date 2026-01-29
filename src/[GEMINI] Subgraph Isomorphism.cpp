@@ -186,21 +186,19 @@ bool check_feasibility(const Graph& pat, const Graph& tar, int u, int v, const S
     bool v_self = tar.has_edge(v, v);
     if (u_self != v_self) return false;
 
-    // 3. Adjacency Consistency with already mapped nodes
-    // Check outgoing edges from u
-    for (int u_neighbor : pat.adj[u]) {
-        if (s.core_1[u_neighbor] != -1) {
-            int v_mapped = s.core_1[u_neighbor];
-            if (!tar.has_edge(v, v_mapped)) return false;
-        }
-    }
-    
-    // Check incoming edges to u
-    for (int u_neighbor : pat.radj[u]) {
-        if (s.core_1[u_neighbor] != -1) {
-            int v_mapped = s.core_1[u_neighbor];
-            if (!tar.has_edge(v_mapped, v)) return false;
-        }
+    // 3. Adjacency Consistency (induced) with already mapped nodes
+    for (int u_mapped = 0; u_mapped < pat.n; ++u_mapped) {
+        int v_mapped = s.core_1[u_mapped];
+        if (v_mapped == -1) continue;
+        if (u_mapped == u) continue;
+
+        bool pat_out = pat.has_edge(u, u_mapped);
+        bool tar_out = tar.has_edge(v, v_mapped);
+        if (pat_out != tar_out) return false;
+
+        bool pat_in = pat.has_edge(u_mapped, u);
+        bool tar_in = tar.has_edge(v_mapped, v);
+        if (pat_in != tar_in) return false;
     }
     
     // 4. Lookahead / Degree filtering (Shortcut)

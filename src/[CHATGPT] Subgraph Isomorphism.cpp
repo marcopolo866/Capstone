@@ -467,14 +467,27 @@ int main(int argc, char **argv) {
     long long solutions = 0;
 
     auto consistent = [&](int u, int v) -> bool {
-        // check edges between u and already-mapped pattern vertices
-        for (int w : mapped) {
-            int tw = mapP[w];
-            if (use_directed) {
-                if (pb.has_out(u, w) && !tgt_has_dir(v, tw)) return false;
-                if (pb.has_out(w, u) && !tgt_has_dir(tw, v)) return false;
-            } else {
-                if (pb.has_und(u, w) && !tgt_has_und(v, tw)) return false;
+        if (use_directed) {
+            if (pb.has_out(u, u) != tgt_has_dir(v, v)) return false;
+            // induced check between u and already-mapped pattern vertices
+            for (int w : mapped) {
+                int tw = mapP[w];
+                bool pat_uv = pb.has_out(u, w);
+                bool tar_uv = tgt_has_dir(v, tw);
+                if (pat_uv != tar_uv) return false;
+
+                bool pat_vu = pb.has_out(w, u);
+                bool tar_vu = tgt_has_dir(tw, v);
+                if (pat_vu != tar_vu) return false;
+            }
+        } else {
+            if (pb.has_und(u, u) != tgt_has_und(v, v)) return false;
+            // induced check between u and already-mapped pattern vertices
+            for (int w : mapped) {
+                int tw = mapP[w];
+                bool pat_uw = pb.has_und(u, w);
+                bool tar_uw = tgt_has_und(v, tw);
+                if (pat_uw != tar_uw) return false;
             }
         }
         return true;
