@@ -488,7 +488,7 @@ jobs:
               method="POST",
           )
           try:
-              with urllib.request.urlopen(req) as resp:
+              with urllib.request.urlopen(req, timeout=10) as resp:
                   data = json.load(resp)
               print(data.get("id", ""))
           except Exception:
@@ -604,7 +604,7 @@ jobs:
               method="PATCH",
           )
           try:
-              with urllib.request.urlopen(req):
+              with urllib.request.urlopen(req, timeout=10):
                   pass
           except Exception:
               pass
@@ -731,13 +731,14 @@ jobs:
               return 0
             fi
 
-            local out dur
-            for ((i=1; i<=WARMUP_REQUESTED; i++)); do
-              if ! run_capture out dur "$@"; then
-                echo "[Warmup] ${label} failed." >> outputs/result.txt
-                return 1
-              fi
-              progress_setup_tick
+          local out dur
+          for ((i=1; i<=WARMUP_REQUESTED; i++)); do
+            echo "[Warmup] ${label} (${i}/${WARMUP_REQUESTED})"
+            if ! run_capture out dur "$@"; then
+              echo "[Warmup] ${label} failed." >> outputs/result.txt
+              return 1
+            fi
+            progress_setup_tick
             done
             return 0
           }
