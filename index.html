@@ -6,6 +6,7 @@
     <title>Algorithm Runner Interface</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -121,11 +122,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 <div class="charts" id="charts" hidden>
                     <div class="chart-panel">
                         <div class="chart-title">Runtime (ms)</div>
-                        <div class="chart" id="runtime-chart"></div>
+                        <div class="chart"><canvas id="runtime-chart"></canvas></div>
                     </div>
                     <div class="chart-panel">
                         <div class="chart-title">Memory (kB)</div>
-                        <div class="chart" id="memory-chart"></div>
+                        <div class="chart"><canvas id="memory-chart"></canvas></div>
                     </div>
                 </div>
             </div>
@@ -2312,8 +2313,16 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const charts = document.getElementById('charts');
             const runtime = document.getElementById('runtime-chart');
             const memory = document.getElementById('memory-chart');
-            if (runtime) runtime.innerHTML = '';
-            if (memory) memory.innerHTML = '';
+            if (runtimeChartInstance) {
+                runtimeChartInstance.destroy();
+                runtimeChartInstance = null;
+            }
+            if (memoryChartInstance) {
+                memoryChartInstance.destroy();
+                memoryChartInstance = null;
+            }
+            if (runtime) runtime.height = runtime.height;
+            if (memory) memory.height = memory.height;
             if (charts) charts.hidden = true;
         }
 
@@ -2344,31 +2353,56 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             return { runtime, memory: mem };
         }
 
-        function renderBarChart(containerId, data, unitLabel) {
-            const container = document.getElementById(containerId);
-            if (!container) return;
+        let runtimeChartInstance = null;
+        let memoryChartInstance = null;
 
+        function renderBarChart(canvasId, data, unitLabel, title) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas || !window.Chart) return null;
+
+            const labels = data.map(item => item.label);
             const values = data.map(item => (Number.isFinite(Number(item.value)) ? Number(item.value) : null));
-            const maxValue = Math.max(0, ...values.filter(v => v !== null));
 
-            const bars = data.map(item => {
-                const hasValue = Number.isFinite(Number(item.value));
-                const value = hasValue ? Number(item.value) : 0;
-                const height = maxValue > 0 ? Math.max(0, (value / maxValue) * 100) : 0;
-                const label = hasValue ? `${value.toFixed(2)} ${unitLabel}` : 'N/A';
-                const barClass = hasValue ? 'bar-fill' : 'bar-fill bar-na';
-                return `
-                    <div class="bar-group">
-                        <div class="bar">
-                            <div class="${barClass}" style="height: ${height}%"></div>
-                        </div>
-                        <div class="bar-value">${label}</div>
-                        <div class="bar-label">${item.label}</div>
-                    </div>
-                `;
-            }).join('');
-
-            container.innerHTML = `<div class="bar-grid">${bars}</div>`;
+            return new Chart(canvas, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: title,
+                            data: values,
+                            backgroundColor: ['#1f77b4', '#e45756', '#54a24b'],
+                            borderColor: ['#1b6aa1', '#c84544', '#3f8f3b'],
+                            borderWidth: 1,
+                            borderRadius: 6
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: context => {
+                                    const v = context.raw;
+                                    if (v === null || v === undefined || Number.isNaN(v)) return 'N/A';
+                                    return `${v.toFixed(2)} ${unitLabel}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: value => `${value} ${unitLabel}`
+                            }
+                        }
+                    }
+                }
+            });
         }
 
         function renderCharts(result) {
@@ -2395,8 +2429,10 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 { label: 'Gemini', value: metrics.memory.gemini }
             ];
 
-            renderBarChart('runtime-chart', runtimeData, 'ms');
-            renderBarChart('memory-chart', memoryData, 'kB');
+            if (runtimeChartInstance) runtimeChartInstance.destroy();
+            if (memoryChartInstance) memoryChartInstance.destroy();
+            runtimeChartInstance = renderBarChart('runtime-chart', runtimeData, 'ms', 'Runtime');
+            memoryChartInstance = renderBarChart('memory-chart', memoryData, 'kB', 'Memory');
             charts.hidden = false;
         }
         
