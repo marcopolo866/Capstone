@@ -22,10 +22,29 @@ on:
         required: false
         type: string
         default: '1'
+      input_mode:
+        description: 'Input mode (premade or generate)'
+        required: false
+        type: choice
+        options:
+          - premade
+          - generate
+        default: premade
+      n:
+        description: 'Generated graph node count (N)'
+        required: false
+        type: string
+        default: ''
+      k:
+        description: 'Generated pattern node count (k)'
+        required: false
+        type: string
+        default: ''
       input_files:
         description: 'Comma-separated input file paths'
-        required: true
+        required: false
         type: string
+        default: ''
       request_id:
         description: 'Client request identifier'
         required: false
@@ -41,6 +60,9 @@ jobs:
       ALGORITHM_INPUT: ${{ github.event.inputs.algorithm || github.event.client_payload.algorithm }}
       ITERATIONS_INPUT: ${{ github.event.inputs.iterations || github.event.client_payload.iterations }}
       WARMUP_INPUT: ${{ github.event.inputs.warmup || github.event.client_payload.warmup }}
+      INPUT_MODE_INPUT: ${{ github.event.inputs.input_mode || github.event.client_payload.input_mode }}
+      GENERATOR_N_INPUT: ${{ github.event.inputs.n || github.event.client_payload.n }}
+      GENERATOR_K_INPUT: ${{ github.event.inputs.k || github.event.client_payload.k }}
       INPUT_FILES_INPUT: ${{ github.event.inputs.input_files || github.event.client_payload.input_files }}
       REQUEST_ID_INPUT: ${{ github.event.inputs.request_id || github.event.client_payload.request_id }}
 
@@ -196,6 +218,9 @@ jobs:
           ALGORITHM="${ALGORITHM_INPUT:-}"
           ITERATIONS_RAW="${ITERATIONS_INPUT:-1}"
           WARMUP_RAW="${WARMUP_INPUT:-1}"
+          INPUT_MODE="${INPUT_MODE_INPUT:-premade}"
+          GENERATOR_N="${GENERATOR_N_INPUT:-}"
+          GENERATOR_K="${GENERATOR_K_INPUT:-}"
           INPUT_FILES="${INPUT_FILES_INPUT:-}"
           REQUEST_ID="${REQUEST_ID_INPUT:-}"
 
@@ -210,6 +235,27 @@ jobs:
             echo "EXIT_CODE=1" >> "$GITHUB_OUTPUT"
             echo "REQUEST_ID=${REQUEST_ID}" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+
+          if [ "$INPUT_MODE" = "generate" ]; then
+            mkdir -p outputs/generated
+            GEN_OUTPUT="$(python utilities/generate_graphs.py \
+              --algorithm "$ALGORITHM" \
+              --n "$GENERATOR_N" \
+              --k "$GENERATOR_K" \
+              --out-dir "outputs/generated" 2>&1)"
+            gen_status=$?
+            GENERATED_FILES="$(echo "$GEN_OUTPUT" | tail -n 1 | tr -d '\r')"
+            if [ $gen_status -ne 0 ] || [ -z "$GENERATED_FILES" ]; then
+              echo "Graph generation failed." >> outputs/result.txt
+              if [ -n "$GEN_OUTPUT" ]; then
+                echo "$GEN_OUTPUT" >> outputs/result.txt
+              fi
+              echo "EXIT_CODE=1" >> "$GITHUB_OUTPUT"
+              echo "REQUEST_ID=${REQUEST_ID}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            INPUT_FILES="$GENERATED_FILES"
           fi
 
           # Parse input files
@@ -1539,6 +1585,15 @@ jobs:
               json.dumps(data, indent=2) + "\n", encoding="utf-8"
           )
           PY
+
+      - name: Upload generated graphs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-graphs-${{ steps.run.outputs.REQUEST_ID || github.run_id }}
+          path: outputs/generated
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Upload results artifact
         if: always()

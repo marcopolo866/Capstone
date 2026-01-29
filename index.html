@@ -58,6 +58,29 @@
             <div class="panel">
                 <h2>Select Input Files</h2>
                 <div id="status-message"></div>
+                <div class="input-group">
+                    <label>Input Source</label>
+                    <select id="input-mode" onchange="onInputModeChange()">
+                        <option value="premade" selected>Premade graphs</option>
+                        <option value="generate">Generate graphs</option>
+                    </select>
+                    <div class="inline-note" id="generator-disabled-note" hidden>
+                        Generator mode is only available for GitHub Actions runs.
+                    </div>
+                </div>
+                <div class="generator-form" id="generator-form" hidden>
+                    <div class="input-group">
+                        <label>N (target graph node count)</label>
+                        <input type="number" id="gen-n" min="2" placeholder="e.g., 200" oninput="onGeneratorInputChange()">
+                    </div>
+                    <div class="input-group" id="gen-k-group">
+                        <label>k (pattern/subgraph node count, k &lt; N)</label>
+                        <input type="number" id="gen-k" min="1" placeholder="e.g., 40" oninput="onGeneratorInputChange()">
+                    </div>
+                    <div class="inline-warning" id="generator-warning" hidden>
+                        k must be smaller than N.
+                    </div>
+                </div>
                 <div id="files-content">
                     <p class="loading">Connect to repository to browse data files</p>
                 </div>
@@ -83,11 +106,11 @@
                     </div>
                     <div class="run-mode" id="run-mode">
                         <label class="run-mode-option">
-                            <input type="radio" name="run-mode" value="standard" checked>
+                            <input type="radio" name="run-mode" value="standard" checked onchange="onRunModeChange()">
                             Standard Run (GitHub Actions)
                         </label>
                         <label class="run-mode-option">
-                            <input type="radio" name="run-mode" value="local">
+                            <input type="radio" name="run-mode" value="local" onchange="onRunModeChange()">
                             Run Locally (WebAssembly)
                         </label>
                     </div>
@@ -140,7 +163,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             token: '',
             ref: 'main',
             selectedAlgorithm: null,
-            selectedFiles: []
+            selectedFiles: [],
+            inputMode: 'premade',
+            generator: {
+                n: '',
+                k: ''
+            }
         };
 
         let dataFileMeta = {};
@@ -491,9 +519,66 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             
             updateRunButton();
             updateRunInfo();
+            updateGeneratorFieldsForAlgorithm();
             
             if (config.owner && config.repo) {
                 loadDataFiles();
+            }
+        }
+
+        function getInputMode() {
+            return config.inputMode || 'premade';
+        }
+
+        function onInputModeChange() {
+            const modeEl = document.getElementById('input-mode');
+            const mode = modeEl ? modeEl.value : 'premade';
+            config.inputMode = mode;
+            if (mode === 'generate') {
+                config.selectedFiles = [];
+            }
+            updateInputModeVisibility();
+            updateGeneratorFieldsForAlgorithm();
+            updateRunInfo();
+            updateRunButton();
+        }
+
+        function onRunModeChange() {
+            updateInputModeVisibility();
+            updateRunButton();
+        }
+
+        function updateInputModeVisibility() {
+            const mode = getInputMode();
+            const form = document.getElementById('generator-form');
+            const fileList = document.getElementById('files-content');
+            const warning = document.getElementById('generator-warning');
+            const note = document.getElementById('generator-disabled-note');
+            const runMode = getSelectedRunMode();
+
+            if (form) form.hidden = mode !== 'generate';
+            if (fileList) fileList.hidden = mode === 'generate';
+            if (warning && mode !== 'generate') warning.hidden = true;
+            if (note) note.hidden = !(mode === 'generate' && runMode === 'local');
+        }
+
+        function onGeneratorInputChange() {
+            const nEl = document.getElementById('gen-n');
+            const kEl = document.getElementById('gen-k');
+            config.generator.n = nEl ? nEl.value : '';
+            config.generator.k = kEl ? kEl.value : '';
+            updateRunInfo();
+            updateRunButton();
+        }
+
+        function updateGeneratorFieldsForAlgorithm() {
+            const kGroup = document.getElementById('gen-k-group');
+            const warning = document.getElementById('generator-warning');
+            if (!kGroup) return;
+            const needsK = isGraphPairAlgorithm(config.selectedAlgorithm);
+            kGroup.hidden = !needsK;
+            if (!needsK && warning) {
+                warning.hidden = true;
             }
         }
         
@@ -696,6 +781,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         }
 
         function toggleFileSelection(evt, path, name) {
+            if (getInputMode() === 'generate') {
+                return;
+            }
             const algo = algorithmConfigs[config.selectedAlgorithm];
             if (!algo) {
                 showStatus('Please select an algorithm first', 'error');
@@ -730,12 +818,52 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         function updateRunButton() {
             const btn = document.getElementById('run-btn');
             const algo = algorithmConfigs[config.selectedAlgorithm];
-            
-            if (algo && config.selectedFiles.length === algo.requiredFiles && config.token) {
-                btn.disabled = false;
+            if (!btn) return;
+
+            const mode = getInputMode();
+            const runMode = getSelectedRunMode();
+            let enabled = false;
+
+            if (!algo || !config.token) {
+                enabled = false;
+            } else if (mode === 'generate') {
+                const validation = validateGeneratorInputs();
+                const generatorAllowed = runMode !== 'local';
+                enabled = validation.valid && generatorAllowed;
             } else {
-                btn.disabled = true;
+                enabled = config.selectedFiles.length === algo.requiredFiles;
             }
+
+            btn.disabled = !enabled;
+        }
+
+        function validateGeneratorInputs() {
+            const warning = document.getElementById('generator-warning');
+            const nEl = document.getElementById('gen-n');
+            const kEl = document.getElementById('gen-k');
+            if (nEl) config.generator.n = nEl.value;
+            if (kEl) config.generator.k = kEl.value;
+            const nValue = parseInt(String(config.generator.n || '').trim(), 10);
+            const kValue = parseInt(String(config.generator.k || '').trim(), 10);
+            const needsK = isGraphPairAlgorithm(config.selectedAlgorithm);
+
+            let valid = Number.isFinite(nValue) && nValue >= 2;
+            let showKWarning = false;
+
+            if (needsK) {
+                if (!Number.isFinite(kValue) || kValue < 1) {
+                    valid = false;
+                } else if (Number.isFinite(nValue) && kValue >= nValue) {
+                    valid = false;
+                    showKWarning = true;
+                }
+            }
+
+            if (warning) {
+                warning.hidden = !showKWarning;
+            }
+
+            return { valid, n: nValue, k: kValue };
         }
         
         function updateRunInfo() {
@@ -757,8 +885,24 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 html += algo.instructions.map(item => `<li>${escapeHtml(item)}</li>`).join('');
                 html += '</ul></div>';
             }
-            
-            if (config.selectedFiles.length > 0) {
+
+            const mode = getInputMode();
+            if (mode === 'generate') {
+                const n = String(config.generator.n || '').trim();
+                const k = String(config.generator.k || '').trim();
+                let formatHint = '';
+                if (config.selectedAlgorithm === 'dijkstra') formatHint = 'CSV (labeled)';
+                if (config.selectedAlgorithm === 'glasgow') formatHint = '.lad';
+                if (config.selectedAlgorithm === 'vf3') formatHint = '.grf';
+                html += `<div class="selected-files"><strong>Generated:</strong> N=${escapeHtml(n || '?')}`;
+                if (isGraphPairAlgorithm(config.selectedAlgorithm)) {
+                    html += `, k=${escapeHtml(k || '?')}`;
+                }
+                if (formatHint) {
+                    html += `, format=${formatHint}`;
+                }
+                html += '</div>';
+            } else if (config.selectedFiles.length > 0) {
                 html += '<div class="selected-files"><strong>Selected:</strong> ';
                 html += config.selectedFiles.map((f, i) => {
                     const label = algo.fileLabels ? algo.fileLabels[i] : `File ${i+1}`;
@@ -1773,26 +1917,45 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 return;
             }
 
-            if (config.selectedFiles.length !== algo.requiredFiles) {
-                fail(`Selected ${config.selectedFiles.length} file(s); expected ${algo.requiredFiles}.`);
-                return;
-            }
-
             if (!config.token) {
                 fail('Personal Access Token is required to run workflows.');
                 return;
             }
 
+            const runMode = getSelectedRunMode();
+            const inputMode = getInputMode();
+
+            if (inputMode === 'generate') {
+                if (runMode === 'local') {
+                    fail('Generator mode is only available for GitHub Actions runs.');
+                    return;
+                }
+                const validation = validateGeneratorInputs();
+                if (!validation.valid) {
+                    fail('Generator inputs are invalid. Ensure N >= 2 and k < N.');
+                    return;
+                }
+            } else if (config.selectedFiles.length !== algo.requiredFiles) {
+                fail(`Selected ${config.selectedFiles.length} file(s); expected ${algo.requiredFiles}.`);
+                return;
+            }
+
             try {
-                await normalizeGraphInputOrder(config.selectedAlgorithm);
+                if (inputMode !== 'generate') {
+                    await normalizeGraphInputOrder(config.selectedAlgorithm);
+                }
             } catch (_) {}
             updateRunInfo();
 
-            const runMode = getSelectedRunMode();
-            const inputLines = config.selectedFiles.map((file, index) => {
-                const label = algo.fileLabels ? algo.fileLabels[index] : `File ${index + 1}`;
-                return `${label}: ${file.path}`;
-            });
+            const inputLines = inputMode === 'generate'
+                ? [
+                    `Generated: N=${config.generator.n || '?'}` +
+                    (isGraphPairAlgorithm(config.selectedAlgorithm) ? `, k=${config.generator.k || '?'}` : '')
+                ]
+                : config.selectedFiles.map((file, index) => {
+                    const label = algo.fileLabels ? algo.fileLabels[index] : `File ${index + 1}`;
+                    return `${label}: ${file.path}`;
+                });
 
             const summaryLines = [
                 `Algorithm: ${algo.name}`,
@@ -1885,7 +2048,10 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         algorithm: config.selectedAlgorithm,
                         iterations: String(iterations),
                         warmup: String(warmup),
-                        input_files: config.selectedFiles.map(f => f.path).join(','),
+                        input_files: inputMode === 'generate' ? '' : config.selectedFiles.map(f => f.path).join(','),
+                        input_mode: inputMode,
+                        n: String(config.generator.n || ''),
+                        k: String(config.generator.k || ''),
                         request_id: requestId
                     }
                 };
@@ -2013,6 +2179,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         iterations: workflowData.inputs.iterations,
                         warmup: workflowData.inputs.warmup,
                         input_files: workflowData.inputs.input_files,
+                        input_mode: workflowData.inputs.input_mode,
+                        n: workflowData.inputs.n,
+                        k: workflowData.inputs.k,
                         request_id: workflowData.inputs.request_id || ''
                     }
                 };
@@ -2512,6 +2681,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             div.textContent = text;
             return div.innerHTML;
         }
+
+        window.addEventListener('load', () => {
+            updateInputModeVisibility();
+            updateGeneratorFieldsForAlgorithm();
+            updateRunButton();
+        });
     </script>
 </body>
 </html>
