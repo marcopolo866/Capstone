@@ -77,6 +77,11 @@
                         <label>k (pattern/subgraph node count, k &lt; N)</label>
                         <input type="number" id="gen-k" min="1" placeholder="e.g., 40" oninput="onGeneratorInputChange()">
                     </div>
+                    <div class="input-group">
+                        <label>Density (fraction of possible edges, 0-1)</label>
+                        <input type="number" id="gen-density" min="0.01" max="1" step="0.01" value="0.05" oninput="onGeneratorInputChange()">
+                    </div>
+                    <div class="inline-note" id="generator-estimate" hidden></div>
                     <div class="inline-warning" id="generator-warning" hidden>
                         k must be smaller than N.
                     </div>
@@ -167,7 +172,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             inputMode: 'premade',
             generator: {
                 n: '',
-                k: ''
+                k: '',
+                density: '0.05'
             }
         };
 
@@ -560,13 +566,17 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (fileList) fileList.hidden = mode === 'generate';
             if (warning && mode !== 'generate') warning.hidden = true;
             if (note) note.hidden = !(mode === 'generate' && runMode === 'local');
+            updateGeneratorEstimate();
         }
 
         function onGeneratorInputChange() {
             const nEl = document.getElementById('gen-n');
             const kEl = document.getElementById('gen-k');
+            const dEl = document.getElementById('gen-density');
             config.generator.n = nEl ? nEl.value : '';
             config.generator.k = kEl ? kEl.value : '';
+            config.generator.density = dEl ? dEl.value : config.generator.density;
+            updateGeneratorEstimate();
             updateRunInfo();
             updateRunButton();
         }
@@ -580,6 +590,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (!needsK && warning) {
                 warning.hidden = true;
             }
+            updateGeneratorEstimate();
         }
         
         async function connect() {
@@ -841,10 +852,13 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const warning = document.getElementById('generator-warning');
             const nEl = document.getElementById('gen-n');
             const kEl = document.getElementById('gen-k');
+            const dEl = document.getElementById('gen-density');
             if (nEl) config.generator.n = nEl.value;
             if (kEl) config.generator.k = kEl.value;
+            if (dEl) config.generator.density = dEl.value;
             const nValue = parseInt(String(config.generator.n || '').trim(), 10);
             const kValue = parseInt(String(config.generator.k || '').trim(), 10);
+            const densityValue = parseFloat(String(config.generator.density || '').trim());
             const needsK = isGraphPairAlgorithm(config.selectedAlgorithm);
 
             let valid = Number.isFinite(nValue) && nValue >= 2;
@@ -858,12 +872,15 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     showKWarning = true;
                 }
             }
+            if (!Number.isFinite(densityValue) || densityValue <= 0 || densityValue > 1) {
+                valid = false;
+            }
 
             if (warning) {
                 warning.hidden = !showKWarning;
             }
 
-            return { valid, n: nValue, k: kValue };
+            return { valid, n: nValue, k: kValue, density: densityValue };
         }
         
         function updateRunInfo() {
@@ -890,6 +907,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (mode === 'generate') {
                 const n = String(config.generator.n || '').trim();
                 const k = String(config.generator.k || '').trim();
+                const density = String(config.generator.density || '').trim();
                 let formatHint = '';
                 if (config.selectedAlgorithm === 'dijkstra') formatHint = 'CSV (labeled)';
                 if (config.selectedAlgorithm === 'glasgow') formatHint = '.lad';
@@ -897,6 +915,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 html += `<div class="selected-files"><strong>Generated:</strong> N=${escapeHtml(n || '?')}`;
                 if (isGraphPairAlgorithm(config.selectedAlgorithm)) {
                     html += `, k=${escapeHtml(k || '?')}`;
+                }
+                if (density) {
+                    html += `, density=${escapeHtml(density)}`;
                 }
                 if (formatHint) {
                     html += `, format=${formatHint}`;
@@ -913,6 +934,95 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             
             html += '</div>';
             infoDiv.innerHTML = html;
+        }
+
+        function estimateTimePerTest(algoId, nRaw, kRaw, densityRaw) {
+            const n = parseInt(String(nRaw || '').trim(), 10);
+            const k = parseInt(String(kRaw || '').trim(), 10);
+            const density = parseFloat(String(densityRaw || '').trim());
+            if (!Number.isFinite(n) || n <= 1) return '';
+            if (!Number.isFinite(density) || density <= 0 || density > 1) return '';
+
+            const m = Math.max(n - 1, Math.round(density * n * (n - 1)));
+            let ms = 0;
+            if (algoId === 'dijkstra') {
+                const ops = (n + m) * Math.log2(n + 1);
+                ms = ops * 0.000002;
+            } else {
+                if (!Number.isFinite(k) || k < 1 || k >= n) return '';
+                const densityFactor = 1 + density * 8;
+                const expFactor = Math.pow(1.35, k);
+                ms = 0.02 * n * densityFactor * expFactor;
+            }
+
+            if (!Number.isFinite(ms) || ms <= 0) return '';
+            if (ms >= 1000) {
+                return `~${(ms / 1000).toFixed(2)} s (very rough)`;
+            }
+            return `~${ms.toFixed(1)} ms (very rough)`;
+        }
+
+        function updateGeneratorEstimate() {
+            const estimateEl = document.getElementById('generator-estimate');
+            if (!estimateEl) return;
+            if (getInputMode() !== 'generate') {
+                estimateEl.hidden = true;
+                estimateEl.textContent = '';
+                return;
+            }
+            const nRaw = String(config.generator.n || '').trim();
+            const kRaw = String(config.generator.k || '').trim();
+            const densityRaw = String(config.generator.density || '').trim();
+            const needsK = isGraphPairAlgorithm(config.selectedAlgorithm);
+
+            const hasAnyInput = nRaw !== '' || (needsK && kRaw !== '');
+            if (!hasAnyInput) {
+                estimateEl.hidden = true;
+                estimateEl.textContent = '';
+                return;
+            }
+
+            const reasons = [];
+            const nVal = parseInt(nRaw, 10);
+            const kVal = parseInt(kRaw, 10);
+            const dVal = parseFloat(densityRaw);
+
+            if (!nRaw) {
+                reasons.push('N is required');
+            } else if (!Number.isFinite(nVal) || nVal < 2) {
+                reasons.push('N must be >= 2');
+            }
+
+            if (!densityRaw) {
+                reasons.push('Density is required');
+            } else if (!Number.isFinite(dVal) || dVal <= 0 || dVal > 1) {
+                reasons.push('Density must be between 0 and 1');
+            }
+
+            if (needsK) {
+                if (!kRaw) {
+                    reasons.push('k is required');
+                } else if (!Number.isFinite(kVal) || kVal < 1) {
+                    reasons.push('k must be >= 1');
+                } else if (Number.isFinite(nVal) && kVal >= nVal) {
+                    reasons.push('k must be smaller than N');
+                }
+            }
+
+            if (reasons.length > 0) {
+                estimateEl.textContent = `Estimated time per test: N/A (${reasons[0]})`;
+                estimateEl.hidden = false;
+                return;
+            }
+
+            const est = estimateTimePerTest(config.selectedAlgorithm, nRaw, kRaw, densityRaw);
+            if (!est) {
+                estimateEl.hidden = true;
+                estimateEl.textContent = '';
+                return;
+            }
+            estimateEl.textContent = `Estimated time per test: ${est}`;
+            estimateEl.hidden = false;
         }
 
         function getSelectedRunMode() {
@@ -1925,17 +2035,17 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const runMode = getSelectedRunMode();
             const inputMode = getInputMode();
 
-            if (inputMode === 'generate') {
-                if (runMode === 'local') {
-                    fail('Generator mode is only available for GitHub Actions runs.');
-                    return;
-                }
-                const validation = validateGeneratorInputs();
-                if (!validation.valid) {
-                    fail('Generator inputs are invalid. Ensure N >= 2 and k < N.');
-                    return;
-                }
-            } else if (config.selectedFiles.length !== algo.requiredFiles) {
+                if (inputMode === 'generate') {
+                    if (runMode === 'local') {
+                        fail('Generator mode is only available for GitHub Actions runs.');
+                        return;
+                    }
+                    const validation = validateGeneratorInputs();
+                    if (!validation.valid) {
+                        fail('Generator inputs are invalid. Ensure N >= 2, density is 0-1, and k < N.');
+                        return;
+                    }
+                } else if (config.selectedFiles.length !== algo.requiredFiles) {
                 fail(`Selected ${config.selectedFiles.length} file(s); expected ${algo.requiredFiles}.`);
                 return;
             }
@@ -1950,7 +2060,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const inputLines = inputMode === 'generate'
                 ? [
                     `Generated: N=${config.generator.n || '?'}` +
-                    (isGraphPairAlgorithm(config.selectedAlgorithm) ? `, k=${config.generator.k || '?'}` : '')
+                    (isGraphPairAlgorithm(config.selectedAlgorithm) ? `, k=${config.generator.k || '?'}` : '') +
+                    `, density=${config.generator.density || '?'}`
                 ]
                 : config.selectedFiles.map((file, index) => {
                     const label = algo.fileLabels ? algo.fileLabels[index] : `File ${index + 1}`;
@@ -2052,6 +2163,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         input_mode: inputMode,
                         n: String(config.generator.n || ''),
                         k: String(config.generator.k || ''),
+                        density: String(config.generator.density || ''),
                         request_id: requestId
                     }
                 };
@@ -2182,6 +2294,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         input_mode: workflowData.inputs.input_mode,
                         n: workflowData.inputs.n,
                         k: workflowData.inputs.k,
+                        density: workflowData.inputs.density,
                         request_id: workflowData.inputs.request_id || ''
                     }
                 };
@@ -2685,6 +2798,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         window.addEventListener('load', () => {
             updateInputModeVisibility();
             updateGeneratorFieldsForAlgorithm();
+            updateGeneratorEstimate();
             updateRunButton();
         });
     </script>

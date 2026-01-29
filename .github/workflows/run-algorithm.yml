@@ -40,6 +40,11 @@ on:
         required: false
         type: string
         default: ''
+      density:
+        description: 'Generated graph density (0-1)'
+        required: false
+        type: string
+        default: '0.05'
       input_files:
         description: 'Comma-separated input file paths'
         required: false
@@ -63,6 +68,7 @@ jobs:
       INPUT_MODE_INPUT: ${{ github.event.inputs.input_mode || github.event.client_payload.input_mode }}
       GENERATOR_N_INPUT: ${{ github.event.inputs.n || github.event.client_payload.n }}
       GENERATOR_K_INPUT: ${{ github.event.inputs.k || github.event.client_payload.k }}
+      GENERATOR_DENSITY_INPUT: ${{ github.event.inputs.density || github.event.client_payload.density }}
       INPUT_FILES_INPUT: ${{ github.event.inputs.input_files || github.event.client_payload.input_files }}
       REQUEST_ID_INPUT: ${{ github.event.inputs.request_id || github.event.client_payload.request_id }}
 
@@ -221,6 +227,7 @@ jobs:
           INPUT_MODE="${INPUT_MODE_INPUT:-premade}"
           GENERATOR_N="${GENERATOR_N_INPUT:-}"
           GENERATOR_K="${GENERATOR_K_INPUT:-}"
+          GENERATOR_DENSITY="${GENERATOR_DENSITY_INPUT:-0.05}"
           INPUT_FILES="${INPUT_FILES_INPUT:-}"
           REQUEST_ID="${REQUEST_ID_INPUT:-}"
 
@@ -243,6 +250,7 @@ jobs:
               --algorithm "$ALGORITHM" \
               --n "$GENERATOR_N" \
               --k "$GENERATOR_K" \
+              --density "$GENERATOR_DENSITY" \
               --out-dir "outputs/generated" 2>&1)"
             gen_status=$?
             GENERATED_FILES="$(echo "$GEN_OUTPUT" | tail -n 1 | tr -d '\r')"
@@ -354,6 +362,15 @@ jobs:
           PROGRESS_LAST_UPDATE_EPOCH=0
           PROGRESS_LAST_REPORTED_SETUP=-1
           PROGRESS_LAST_REPORTED_TICKS=-1
+
+          RUN_TIMEOUT_SEC=""
+          if [ "$INPUT_MODE" = "generate" ]; then
+            RUN_TIMEOUT_SEC="60"
+          fi
+          USE_TIMEOUT=0
+          if [[ "${RUN_TIMEOUT_SEC:-}" =~ ^[0-9]+$ ]] && [ "$RUN_TIMEOUT_SEC" -gt 0 ]; then
+            USE_TIMEOUT=1
+          fi
 
           # Progress semantics: count "per program per iteration".
           # For Glasgow and VF3, both "first" and "all" runs are counted together as 1 unit.
@@ -674,6 +691,14 @@ jobs:
           progress_create_check_run
           trap 'rc=$?; if [ -z "${EXIT_CODE:-}" ]; then EXIT_CODE=$rc; fi; progress_finish || true' EXIT
 
+          run_with_timeout() {
+            if [ "${USE_TIMEOUT:-0}" -eq 1 ] && command -v timeout >/dev/null 2>&1; then
+              timeout "$RUN_TIMEOUT_SEC" "$@"
+            else
+              "$@"
+            fi
+          }
+
           run_capture() {
             local _out_var=$1
             local _dur_var=$2
@@ -683,9 +708,12 @@ jobs:
             local start_ns end_ns duration_ms
             start_ns=$(date +%s%N)
             set +e
-            "$@" >"$tmp" 2>&1
+            run_with_timeout "$@" >"$tmp" 2>&1
             local status=$?
             set -e
+            if [ $status -eq 124 ]; then
+              echo "Timed out after ${RUN_TIMEOUT_SEC}s" >"$tmp"
+            fi
             end_ns=$(date +%s%N)
             duration_ms=$(python - <<'PY' "$start_ns" "$end_ns"
           import sys
@@ -767,12 +795,19 @@ jobs:
             start_ns=$(date +%s%N)
             set +e
             if [ -x /usr/bin/time ]; then
-              /usr/bin/time -f "%M" -o "$rss_tmp" "$@" >"$tmp" 2>&1
+              if [ "${USE_TIMEOUT:-0}" -eq 1 ] && command -v timeout >/dev/null 2>&1; then
+                timeout "$RUN_TIMEOUT_SEC" /usr/bin/time -f "%M" -o "$rss_tmp" "$@" >"$tmp" 2>&1
+              else
+                /usr/bin/time -f "%M" -o "$rss_tmp" "$@" >"$tmp" 2>&1
+              fi
             else
-              "$@" >"$tmp" 2>&1
+              run_with_timeout "$@" >"$tmp" 2>&1
             fi
             local status=$?
             set -e
+            if [ $status -eq 124 ]; then
+              echo "Timed out after ${RUN_TIMEOUT_SEC}s" >"$tmp"
+            fi
             end_ns=$(date +%s%N)
             duration_ms=$(python - <<'PY' "$start_ns" "$end_ns"
           import sys

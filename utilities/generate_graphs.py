@@ -16,11 +16,12 @@ def parse_int(value: str, name: str, minimum: int | None = None) -> int:
     return parsed
 
 
-def generate_directed_edges(n: int, rng: random.Random, extra_factor: int = 2) -> list[tuple[int, int, int]]:
+def generate_directed_edges(n: int, rng: random.Random, density: float) -> list[tuple[int, int, int]]:
     edges: dict[tuple[int, int], int] = {}
     for i in range(n - 1):
         edges[(i, i + 1)] = rng.randint(1, 20)
-    target_edges = max(n - 1, n * extra_factor)
+    max_edges = n * (n - 1)
+    target_edges = max(n - 1, min(max_edges, int(round(density * max_edges))))
     attempts = 0
     while len(edges) < target_edges and attempts < target_edges * 10:
         u = rng.randrange(n)
@@ -47,11 +48,12 @@ def write_dijkstra_csv(path: Path, edges: list[tuple[int, int, int]], labels: li
             writer.writerow([labels[u], labels[v], w])
 
 
-def generate_adjacency(n: int, rng: random.Random, extra_factor: int = 2) -> list[list[int]]:
+def generate_adjacency(n: int, rng: random.Random, density: float) -> list[list[int]]:
     adj = [set() for _ in range(n)]
     for i in range(n - 1):
         adj[i].add(i + 1)
-    target_edges = max(n - 1, n * extra_factor)
+    max_edges = n * (n - 1)
+    target_edges = max(n - 1, min(max_edges, int(round(density * max_edges))))
     attempts = 0
     while sum(len(s) for s in adj) < target_edges and attempts < target_edges * 10:
         u = rng.randrange(n)
@@ -106,6 +108,7 @@ def main() -> None:
     parser.add_argument("--n", required=True)
     parser.add_argument("--k", default="")
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--density", default="0.05")
     parser.add_argument("--seed", default="")
     args = parser.parse_args()
 
@@ -122,6 +125,13 @@ def main() -> None:
         if k >= n:
             raise ValueError("k must be smaller than N")
 
+    try:
+        density = float(args.density)
+    except (TypeError, ValueError):
+        raise ValueError("density must be a number between 0 and 1")
+    if density <= 0 or density > 1:
+        raise ValueError("density must be in the range (0, 1]")
+
     seed = int(args.seed) if str(args.seed).strip() else int(time.time() * 1000) & 0xFFFFFFFF
     rng = random.Random(seed)
     out_dir = Path(args.out_dir)
@@ -130,12 +140,12 @@ def main() -> None:
 
     if algorithm == "dijkstra":
         labels = [f"v{i}" for i in range(n)]
-        edges = generate_directed_edges(n, rng)
+        edges = generate_directed_edges(n, rng, density)
         path = out_dir / "dijkstra_generated.csv"
         write_dijkstra_csv(path, edges, labels)
         generated.append(path)
     else:
-        target_adj = generate_adjacency(n, rng)
+        target_adj = generate_adjacency(n, rng, density)
         nodes = rng.sample(range(n), k)
         ensure_pattern_edges(target_adj, nodes, rng)
         node_set = set(nodes)
@@ -164,6 +174,7 @@ def main() -> None:
         "algorithm": algorithm,
         "n": n,
         "k": k,
+        "density": density,
         "seed": seed,
         "files": [p.as_posix() for p in generated],
     }
