@@ -363,15 +363,6 @@ jobs:
           PROGRESS_LAST_REPORTED_SETUP=-1
           PROGRESS_LAST_REPORTED_TICKS=-1
 
-          RUN_TIMEOUT_SEC=""
-          if [ "$INPUT_MODE" = "generate" ]; then
-            RUN_TIMEOUT_SEC="60"
-          fi
-          USE_TIMEOUT=0
-          if [[ "${RUN_TIMEOUT_SEC:-}" =~ ^[0-9]+$ ]] && [ "$RUN_TIMEOUT_SEC" -gt 0 ]; then
-            USE_TIMEOUT=1
-          fi
-
           # Progress semantics: count "per program per iteration".
           # For Glasgow and VF3, both "first" and "all" runs are counted together as 1 unit.
           UNITS_PER_ITER=0
@@ -692,11 +683,7 @@ jobs:
           trap 'rc=$?; if [ -z "${EXIT_CODE:-}" ]; then EXIT_CODE=$rc; fi; progress_finish || true' EXIT
 
           run_with_timeout() {
-            if [ "${USE_TIMEOUT:-0}" -eq 1 ] && command -v timeout >/dev/null 2>&1; then
-              timeout "$RUN_TIMEOUT_SEC" "$@"
-            else
-              "$@"
-            fi
+            "$@"
           }
 
           run_capture() {
@@ -711,9 +698,6 @@ jobs:
             run_with_timeout "$@" >"$tmp" 2>&1
             local status=$?
             set -e
-            if [ $status -eq 124 ]; then
-              echo "Timed out after ${RUN_TIMEOUT_SEC}s" >"$tmp"
-            fi
             end_ns=$(date +%s%N)
             duration_ms=$(python - <<'PY' "$start_ns" "$end_ns"
           import sys
@@ -795,19 +779,12 @@ jobs:
             start_ns=$(date +%s%N)
             set +e
             if [ -x /usr/bin/time ]; then
-              if [ "${USE_TIMEOUT:-0}" -eq 1 ] && command -v timeout >/dev/null 2>&1; then
-                timeout "$RUN_TIMEOUT_SEC" /usr/bin/time -f "%M" -o "$rss_tmp" "$@" >"$tmp" 2>&1
-              else
-                /usr/bin/time -f "%M" -o "$rss_tmp" "$@" >"$tmp" 2>&1
-              fi
+              /usr/bin/time -f "%M" -o "$rss_tmp" "$@" >"$tmp" 2>&1
             else
               run_with_timeout "$@" >"$tmp" 2>&1
             fi
             local status=$?
             set -e
-            if [ $status -eq 124 ]; then
-              echo "Timed out after ${RUN_TIMEOUT_SEC}s" >"$tmp"
-            fi
             end_ns=$(date +%s%N)
             duration_ms=$(python - <<'PY' "$start_ns" "$end_ns"
           import sys
