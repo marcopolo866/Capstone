@@ -342,6 +342,7 @@ int main(int argc, char **argv) {
     cin.tie(nullptr);
 
     bool first_only = false;
+    bool induced = true;
     vector<string> positional;
     positional.reserve(static_cast<size_t>(max(0, argc - 1)));
     for (int i = 1; i < argc; ++i) {
@@ -350,11 +351,19 @@ int main(int argc, char **argv) {
             first_only = true;
             continue;
         }
+        if (arg == "--non-induced" || arg == "--noninduced") {
+            induced = false;
+            continue;
+        }
+        if (arg == "--induced") {
+            induced = true;
+            continue;
+        }
         positional.push_back(std::move(arg));
     }
 
     if (positional.size() != 2) {
-        cerr << "Usage: " << argv[0] << " [--first-only|-F] <pattern_graph.(lad|grf)> <target_graph.(lad|grf)>\n";
+        cerr << "Usage: " << argv[0] << " [--first-only|-F] [--induced|--non-induced] <pattern_graph.(lad|grf)> <target_graph.(lad|grf)>\n";
         return 1;
     }
 
@@ -468,26 +477,44 @@ int main(int argc, char **argv) {
 
     auto consistent = [&](int u, int v) -> bool {
         if (use_directed) {
-            if (pb.has_out(u, u) != tgt_has_dir(v, v)) return false;
-            // induced check between u and already-mapped pattern vertices
+            if (induced) {
+                if (pb.has_out(u, u) != tgt_has_dir(v, v)) return false;
+            } else {
+                if (pb.has_out(u, u) && !tgt_has_dir(v, v)) return false;
+            }
             for (int w : mapped) {
                 int tw = mapP[w];
                 bool pat_uv = pb.has_out(u, w);
                 bool tar_uv = tgt_has_dir(v, tw);
-                if (pat_uv != tar_uv) return false;
+                if (induced) {
+                    if (pat_uv != tar_uv) return false;
+                } else {
+                    if (pat_uv && !tar_uv) return false;
+                }
 
                 bool pat_vu = pb.has_out(w, u);
                 bool tar_vu = tgt_has_dir(tw, v);
-                if (pat_vu != tar_vu) return false;
+                if (induced) {
+                    if (pat_vu != tar_vu) return false;
+                } else {
+                    if (pat_vu && !tar_vu) return false;
+                }
             }
         } else {
-            if (pb.has_und(u, u) != tgt_has_und(v, v)) return false;
-            // induced check between u and already-mapped pattern vertices
+            if (induced) {
+                if (pb.has_und(u, u) != tgt_has_und(v, v)) return false;
+            } else {
+                if (pb.has_und(u, u) && !tgt_has_und(v, v)) return false;
+            }
             for (int w : mapped) {
                 int tw = mapP[w];
                 bool pat_uw = pb.has_und(u, w);
                 bool tar_uw = tgt_has_und(v, tw);
-                if (pat_uw != tar_uw) return false;
+                if (induced) {
+                    if (pat_uw != tar_uw) return false;
+                } else {
+                    if (pat_uw && !tar_uw) return false;
+                }
             }
         }
         return true;

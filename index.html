@@ -988,10 +988,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         function formatDurationMs(ms) {
             const value = Number(ms);
             if (!Number.isFinite(value) || value <= 0) return '';
-            if (value >= 1000) {
-                return `~${(value / 1000).toFixed(2)} s`;
-            }
-            return `~${value.toFixed(1)} ms`;
+            const totalSeconds = value / 1000;
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds - hours * 3600) / 60);
+            const seconds = totalSeconds - hours * 3600 - minutes * 60;
+            return `~${hours}h ${minutes}m ${seconds.toFixed(3)}s`;
         }
 
         function getTestsPerIteration(algoId) {
@@ -1196,41 +1197,41 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const warmup = readWarmupInput();
             const testsPerIter = getTestsPerIteration(config.selectedAlgorithm);
 
-            let perIterMs = null;
-            let sourceLabel = '';
-            if (config.token) {
-                estimateEl.textContent = 'Estimated time per run: fetching history...';
-                estimateEl.hidden = false;
-                try {
-                    const history = await estimateFromHistory(config.selectedAlgorithm, nVal, kVal, densityVal);
-                    if (history && Number.isFinite(history.perIterMs)) {
-                        perIterMs = history.perIterMs;
-                        sourceLabel = `history (${history.samples})`;
-                    }
-                } catch (_) {}
+            const heuristicPerRun = estimateHeuristicPerRunMs(config.selectedAlgorithm, nRaw, kRaw, densityRaw);
+            if (!Number.isFinite(heuristicPerRun) || heuristicPerRun <= 0) {
+                estimateEl.textContent = '';
+                estimateEl.hidden = true;
+                return;
             }
+
+            const heuristicPerIter = heuristicPerRun * testsPerIter;
+            const roughPerRun = formatDurationMs(heuristicPerRun);
+            const roughTotal = formatDurationMs(heuristicPerIter * Math.max(1, (iterations + warmup)));
+            const roughRunLine = `Estimated time per run: ${roughPerRun} (rough)`;
+            const roughTotalLine = `Estimated end-to-end time: ${roughTotal} (rough)`;
+            estimateEl.innerHTML = `${escapeHtml(roughRunLine)}<br>${escapeHtml(roughTotalLine)}`;
+            estimateEl.hidden = false;
+
+            if (!config.token) return;
+
+            let perIterMs = null;
+            try {
+                const history = await estimateFromHistory(config.selectedAlgorithm, nVal, kVal, densityVal);
+                if (history && Number.isFinite(history.perIterMs)) {
+                    perIterMs = history.perIterMs;
+                }
+            } catch (_) {}
 
             if (requestId !== generatorEstimateRequestId) return;
-
-            if (!Number.isFinite(perIterMs) || perIterMs <= 0) {
-                const heuristicPerRun = estimateHeuristicPerRunMs(config.selectedAlgorithm, nRaw, kRaw, densityRaw);
-                if (!Number.isFinite(heuristicPerRun) || heuristicPerRun <= 0) {
-                    estimateEl.textContent = '';
-                    estimateEl.hidden = true;
-                    return;
-                }
-                const heuristicPerIter = heuristicPerRun * testsPerIter;
-                perIterMs = heuristicPerIter;
-                sourceLabel = 'heuristic';
-            }
+            if (!Number.isFinite(perIterMs) || perIterMs <= 0) return;
 
             const perRunMs = perIterMs / Math.max(1, testsPerIter);
             const totalMs = perIterMs * Math.max(1, (iterations + warmup));
             const perRunText = formatDurationMs(perRunMs);
             const totalText = formatDurationMs(totalMs);
 
-            const perRunLine = `Estimated time per run: ${perRunText}${sourceLabel ? ` (${sourceLabel})` : ''}`;
-            const totalLine = `Estimated end-to-end time: ${totalText}${sourceLabel ? ` (${sourceLabel})` : ''}`;
+            const perRunLine = `Estimated time per run: ${perRunText} (fine)`;
+            const totalLine = `Estimated end-to-end time: ${totalText} (fine)`;
             estimateEl.innerHTML = `${escapeHtml(perRunLine)}<br>${escapeHtml(totalLine)}`;
             estimateEl.hidden = false;
         }
@@ -2204,6 +2205,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 runBtn.disabled = false;
                 return;
             }
+
+            clearCharts();
 
             const nowMs = () => (window.performance && typeof window.performance.now === 'function')
                 ? window.performance.now()

@@ -80,19 +80,40 @@ Graph parse_lad(const string& filename) {
     int n;
     f >> n;
     Graph g(n);
+
+    vector<vector<int>> adj(n);
     
     // .lad format: lines of "degree neighbor neighbor ..."
-    // Assuming 0-indexed nodes based on prompt files.
+    // Treat LAD as undirected adjacency lists.
     for (int i = 0; i < n; ++i) {
         int deg;
         f >> deg;
         for (int k = 0; k < deg; ++k) {
             int neighbor;
             f >> neighbor;
-            g.add_edge(i, neighbor);
+            if (neighbor >= 0 && neighbor < n) {
+                adj[i].push_back(neighbor);
+            }
         }
     }
-    g.sort_edges();
+
+    for (int u = 0; u < n; ++u) {
+        for (int v : adj[u]) {
+            if (v >= 0 && v < n) {
+                adj[v].push_back(u);
+            }
+        }
+    }
+
+    g.adj.assign(n, {});
+    g.radj.assign(n, {});
+    for (int i = 0; i < n; ++i) {
+        auto& vec = adj[i];
+        sort(vec.begin(), vec.end());
+        vec.erase(unique(vec.begin(), vec.end()), vec.end());
+        g.adj[i] = vec;
+        g.radj[i] = vec;
+    }
     return g;
 }
 
@@ -174,6 +195,7 @@ struct State {
 
 long long match_count = 0;
 bool first_only_mode = false;
+bool induced_mode = true;
 
 // --- Feasibility Check ---
 
@@ -184,7 +206,11 @@ bool check_feasibility(const Graph& pat, const Graph& tar, int u, int v, const S
     // 2. Loop Check (Self-loops)
     bool u_self = pat.has_edge(u, u);
     bool v_self = tar.has_edge(v, v);
-    if (u_self != v_self) return false;
+    if (induced_mode) {
+        if (u_self != v_self) return false;
+    } else {
+        if (u_self && !v_self) return false;
+    }
 
     // 3. Adjacency Consistency (induced) with already mapped nodes
     for (int u_mapped = 0; u_mapped < pat.n; ++u_mapped) {
@@ -194,11 +220,19 @@ bool check_feasibility(const Graph& pat, const Graph& tar, int u, int v, const S
 
         bool pat_out = pat.has_edge(u, u_mapped);
         bool tar_out = tar.has_edge(v, v_mapped);
-        if (pat_out != tar_out) return false;
+        if (induced_mode) {
+            if (pat_out != tar_out) return false;
+        } else {
+            if (pat_out && !tar_out) return false;
+        }
 
         bool pat_in = pat.has_edge(u_mapped, u);
         bool tar_in = tar.has_edge(v_mapped, v);
-        if (pat_in != tar_in) return false;
+        if (induced_mode) {
+            if (pat_in != tar_in) return false;
+        } else {
+            if (pat_in && !tar_in) return false;
+        }
     }
     
     // 4. Lookahead / Degree filtering (Shortcut)
@@ -304,6 +338,7 @@ int main(int argc, char** argv) {
     cin.tie(NULL);
 
     bool first_only = false;
+    bool induced = true;
     vector<string> positional;
     positional.reserve(static_cast<size_t>(max(0, argc - 1)));
     for (int i = 1; i < argc; ++i) {
@@ -312,16 +347,25 @@ int main(int argc, char** argv) {
             first_only = true;
             continue;
         }
+        if (arg == "--non-induced" || arg == "--noninduced") {
+            induced = false;
+            continue;
+        }
+        if (arg == "--induced") {
+            induced = true;
+            continue;
+        }
         positional.push_back(std::move(arg));
     }
     if (positional.size() != 2) {
-        cerr << "Usage: " << argv[0] << " [--first-only|-F] <pattern_file> <target_file>" << endl;
+        cerr << "Usage: " << argv[0] << " [--first-only|-F] [--induced|--non-induced] <pattern_file> <target_file>" << endl;
         return 1;
     }
 
     const string pat_file = positional[0];
     const string tar_file = positional[1];
     first_only_mode = first_only;
+    induced_mode = induced;
     match_count = 0;
 
     Graph pat = load_graph(pat_file);

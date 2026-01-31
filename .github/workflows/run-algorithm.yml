@@ -731,14 +731,13 @@ jobs:
               return 0
             fi
 
-          local out dur
-          for ((i=1; i<=WARMUP_REQUESTED; i++)); do
-            echo "[Warmup] ${label} (${i}/${WARMUP_REQUESTED})"
-            if ! run_capture out dur "$@"; then
-              echo "[Warmup] ${label} failed." >> outputs/result.txt
-              return 1
-            fi
-            progress_setup_tick
+            local out dur
+            for ((i=1; i<=WARMUP_REQUESTED; i++)); do
+              if ! run_capture out dur "$@"; then
+                echo "[Warmup] ${label} failed." >> outputs/result.txt
+                return 1
+              fi
+              progress_setup_tick
             done
             return 0
           }
@@ -1041,22 +1040,22 @@ jobs:
               PROGRESS_STAGE="setup"
               progress_set_phase "Setting up Testing Environment"
               if [ "${WARMUP_REQUESTED:-0}" -gt 0 ]; then
-                if ! warmup_only "Glasgow first" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
+                if ! warmup_only "Glasgow first" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
                 fi
-                if ! warmup_only "Glasgow all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
+                if ! warmup_only "Glasgow all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
                 fi
-                if ! warmup_only "Glasgow Gemini first" ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                if ! warmup_only "Glasgow Gemini first" ./src/vf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
                 fi
-                if ! warmup_only "Glasgow Gemini all" ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+                if ! warmup_only "Glasgow Gemini all" ./src/vf3 --induced "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
                 fi
-                if ! warmup_only "Glasgow ChatGPT first" ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                if ! warmup_only "Glasgow ChatGPT first" ./src/chatvf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
                 fi
-                if ! warmup_only "Glasgow ChatGPT all" ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
+                if ! warmup_only "Glasgow ChatGPT all" ./src/chatvf3 --induced "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
                 fi
               else
@@ -1073,34 +1072,34 @@ jobs:
               WARMUP=0
 
               progress_set_phase "Glasgow baseline"
-              if ! bench_capture_rss_n glasgow_first_out glasgow_first_ms_runs glasgow_first_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n glasgow_first_out glasgow_first_ms_runs glasgow_first_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Subgraph Solver] first-solution run failed." >> outputs/result.txt
               fi
               progress_set_phase "Glasgow baseline"
-              if ! bench_capture_rss_n glasgow_all_out glasgow_all_ms_runs glasgow_all_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n glasgow_all_out glasgow_all_ms_runs glasgow_all_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Subgraph Solver] all-solutions run failed." >> outputs/result.txt
               fi
 
               progress_set_phase "Glasgow Gemini"
-              if ! bench_capture_rss_n glasgow_gemini_first_out glasgow_gemini_first_ms_runs glasgow_gemini_first_rss_runs "$ITERATIONS" ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n glasgow_gemini_first_out glasgow_gemini_first_ms_runs glasgow_gemini_first_rss_runs "$ITERATIONS" ./src/vf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Gemini] first-solution run failed." >> outputs/result.txt
               fi
               progress_set_phase "Glasgow Gemini"
-              if ! bench_capture_rss_n glasgow_gemini_all_out glasgow_gemini_all_ms_runs glasgow_gemini_all_rss_runs "$ITERATIONS" ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n glasgow_gemini_all_out glasgow_gemini_all_ms_runs glasgow_gemini_all_rss_runs "$ITERATIONS" ./src/vf3 --induced "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow Gemini] all-solutions run failed." >> outputs/result.txt
               fi
 
               progress_set_phase "Glasgow ChatGPT"
-              if ! bench_capture_rss_n glasgow_chatgpt_first_out glasgow_chatgpt_first_ms_runs glasgow_chatgpt_first_rss_runs "$ITERATIONS" ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n glasgow_chatgpt_first_out glasgow_chatgpt_first_ms_runs glasgow_chatgpt_first_rss_runs "$ITERATIONS" ./src/chatvf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow ChatGPT] first-solution run failed." >> outputs/result.txt
               fi
               progress_set_phase "Glasgow ChatGPT"
-              if ! bench_capture_rss_n glasgow_chatgpt_all_out glasgow_chatgpt_all_ms_runs glasgow_chatgpt_all_rss_runs "$ITERATIONS" ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
+              if ! bench_capture_rss_n glasgow_chatgpt_all_out glasgow_chatgpt_all_ms_runs glasgow_chatgpt_all_rss_runs "$ITERATIONS" ./src/chatvf3 --induced "${FILES[0]}" "${FILES[1]}"; then
                 EXIT_CODE=1
                 echo "[Glasgow ChatGPT] all-solutions run failed." >> outputs/result.txt
               fi
