@@ -929,6 +929,37 @@ jobs:
               "$indent" "all" "$6" "$7" "$8" "$9" "${10}"
           }
 
+          t_test_line() {
+            local label="$1"
+            local mean1="$2"
+            local stdev1="$3"
+            local n1="$4"
+            local mean2="$5"
+            local stdev2="$6"
+            local n2="$7"
+            python - <<'PY' "$label" "$mean1" "$stdev1" "$n1" "$mean2" "$stdev2" "$n2"
+          import math
+          import sys
+
+          label, mean1, stdev1, n1, mean2, stdev2, n2 = sys.argv[1:]
+          mean1 = float(mean1)
+          stdev1 = float(stdev1)
+          n1 = float(n1)
+          mean2 = float(mean2)
+          stdev2 = float(stdev2)
+          n2 = float(n2)
+
+          denom = math.sqrt((stdev1 ** 2) / n1 + (stdev2 ** 2) / n2) if n1 > 0 and n2 > 0 else 0.0
+          if denom == 0.0:
+              t_val = float("nan")
+          else:
+              t_val = (mean1 - mean2) / denom
+          symbol = "t = (x̄1 - x̄2)/sqrt(s1^2/n1 + s2^2/n2)"
+          substituted = f"({mean1:.3f} - {mean2:.3f})/sqrt({stdev1:.3f}^2/{int(n1)} + {stdev2:.3f}^2/{int(n2)})"
+          print(f"T-test running ({label}): {symbol} = {substituted} = {t_val:.6f}")
+          PY
+          }
+
           EXIT_CODE=0
 
           case "$ALGORITHM" in
@@ -1009,6 +1040,11 @@ jobs:
                   fi
                   if [ -n "${dijkstra_llm_rss_median:-}" ]; then
                     echo "Max RSS (kB): median=$dijkstra_llm_rss_median mean=$dijkstra_llm_rss_mean stdev=$dijkstra_llm_rss_stdev min=$dijkstra_llm_rss_min max=$dijkstra_llm_rss_max"
+                  fi
+                  if [ -n "${dijkstra_baseline_ms_mean:-}" ] && [ -n "${dijkstra_llm_ms_mean:-}" ]; then
+                    t_test_line "runtime ms baseline vs LLM" \
+                      "$dijkstra_baseline_ms_mean" "$dijkstra_baseline_ms_stdev" "$dijkstra_baseline_ms_n" \
+                      "$dijkstra_llm_ms_mean" "$dijkstra_llm_ms_stdev" "$dijkstra_llm_ms_n"
                   fi
                   echo
                 } >> outputs/result.txt
@@ -1177,6 +1213,16 @@ jobs:
                       "$glasgow_gemini_first_rss_median" "$glasgow_gemini_first_rss_mean" "$glasgow_gemini_first_rss_stdev" "$glasgow_gemini_first_rss_min" "$glasgow_gemini_first_rss_max" \
                       "$glasgow_gemini_all_rss_median" "$glasgow_gemini_all_rss_mean" "$glasgow_gemini_all_rss_stdev" "$glasgow_gemini_all_rss_min" "$glasgow_gemini_all_rss_max"
                   fi
+                  if [ -n "${glasgow_first_ms_mean:-}" ] && [ -n "${glasgow_gemini_first_ms_mean:-}" ]; then
+                    t_test_line "runtime ms first baseline vs Gemini" \
+                      "$glasgow_first_ms_mean" "$glasgow_first_ms_stdev" "$glasgow_first_ms_n" \
+                      "$glasgow_gemini_first_ms_mean" "$glasgow_gemini_first_ms_stdev" "$glasgow_gemini_first_ms_n"
+                  fi
+                  if [ -n "${glasgow_all_ms_mean:-}" ] && [ -n "${glasgow_gemini_all_ms_mean:-}" ]; then
+                    t_test_line "runtime ms all baseline vs Gemini" \
+                      "$glasgow_all_ms_mean" "$glasgow_all_ms_stdev" "$glasgow_all_ms_n" \
+                      "$glasgow_gemini_all_ms_mean" "$glasgow_gemini_all_ms_stdev" "$glasgow_gemini_all_ms_n"
+                  fi
                   echo
                 } >> outputs/result.txt
               fi
@@ -1213,6 +1259,16 @@ jobs:
                     print_stats_kb_first_all "Max RSS (kB): " \
                       "$glasgow_chatgpt_first_rss_median" "$glasgow_chatgpt_first_rss_mean" "$glasgow_chatgpt_first_rss_stdev" "$glasgow_chatgpt_first_rss_min" "$glasgow_chatgpt_first_rss_max" \
                       "$glasgow_chatgpt_all_rss_median" "$glasgow_chatgpt_all_rss_mean" "$glasgow_chatgpt_all_rss_stdev" "$glasgow_chatgpt_all_rss_min" "$glasgow_chatgpt_all_rss_max"
+                  fi
+                  if [ -n "${glasgow_first_ms_mean:-}" ] && [ -n "${glasgow_chatgpt_first_ms_mean:-}" ]; then
+                    t_test_line "runtime ms first baseline vs ChatGPT" \
+                      "$glasgow_first_ms_mean" "$glasgow_first_ms_stdev" "$glasgow_first_ms_n" \
+                      "$glasgow_chatgpt_first_ms_mean" "$glasgow_chatgpt_first_ms_stdev" "$glasgow_chatgpt_first_ms_n"
+                  fi
+                  if [ -n "${glasgow_all_ms_mean:-}" ] && [ -n "${glasgow_chatgpt_all_ms_mean:-}" ]; then
+                    t_test_line "runtime ms all baseline vs ChatGPT" \
+                      "$glasgow_all_ms_mean" "$glasgow_all_ms_stdev" "$glasgow_all_ms_n" \
+                      "$glasgow_chatgpt_all_ms_mean" "$glasgow_chatgpt_all_ms_stdev" "$glasgow_chatgpt_all_ms_n"
                   fi
                   echo
                 } >> outputs/result.txt
@@ -1371,6 +1427,16 @@ jobs:
                       "$vf3_first_rss_median" "$vf3_first_rss_mean" "$vf3_first_rss_stdev" "$vf3_first_rss_min" "$vf3_first_rss_max" \
                       "$vf3_all_rss_median" "$vf3_all_rss_mean" "$vf3_all_rss_stdev" "$vf3_all_rss_min" "$vf3_all_rss_max"
                   fi
+                  if [ -n "${vf3_base_first_ms_mean:-}" ] && [ -n "${vf3_first_ms_mean:-}" ]; then
+                    t_test_line "runtime ms first baseline vs Gemini" \
+                      "$vf3_base_first_ms_mean" "$vf3_base_first_ms_stdev" "$vf3_base_first_ms_n" \
+                      "$vf3_first_ms_mean" "$vf3_first_ms_stdev" "$vf3_first_ms_n"
+                  fi
+                  if [ -n "${vf3_base_all_ms_mean:-}" ] && [ -n "${vf3_all_ms_mean:-}" ]; then
+                    t_test_line "runtime ms all baseline vs Gemini" \
+                      "$vf3_base_all_ms_mean" "$vf3_base_all_ms_stdev" "$vf3_base_all_ms_n" \
+                      "$vf3_all_ms_mean" "$vf3_all_ms_stdev" "$vf3_all_ms_n"
+                  fi
                   echo
                 } >> outputs/result.txt
               fi
@@ -1418,6 +1484,16 @@ jobs:
                     print_stats_kb_first_all "Max RSS (kB): " \
                       "$chatvf3_first_rss_median" "$chatvf3_first_rss_mean" "$chatvf3_first_rss_stdev" "$chatvf3_first_rss_min" "$chatvf3_first_rss_max" \
                       "$chatvf3_all_rss_median" "$chatvf3_all_rss_mean" "$chatvf3_all_rss_stdev" "$chatvf3_all_rss_min" "$chatvf3_all_rss_max"
+                  fi
+                  if [ -n "${vf3_base_first_ms_mean:-}" ] && [ -n "${chatvf3_first_ms_mean:-}" ]; then
+                    t_test_line "runtime ms first baseline vs ChatGPT" \
+                      "$vf3_base_first_ms_mean" "$vf3_base_first_ms_stdev" "$vf3_base_first_ms_n" \
+                      "$chatvf3_first_ms_mean" "$chatvf3_first_ms_stdev" "$chatvf3_first_ms_n"
+                  fi
+                  if [ -n "${vf3_base_all_ms_mean:-}" ] && [ -n "${chatvf3_all_ms_mean:-}" ]; then
+                    t_test_line "runtime ms all baseline vs ChatGPT" \
+                      "$vf3_base_all_ms_mean" "$vf3_base_all_ms_stdev" "$vf3_base_all_ms_n" \
+                      "$chatvf3_all_ms_mean" "$chatvf3_all_ms_stdev" "$chatvf3_all_ms_n"
                   fi
                   echo
                 } >> outputs/result.txt
