@@ -2824,7 +2824,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
         function normalizeVersionMetrics(result) {
             const timings = result && result.timings_ms ? result.timings_ms : {};
+            const timingsStdev = result && result.timings_ms_stdev ? result.timings_ms_stdev : {};
             const memory = result && result.memory_kb ? result.memory_kb : {};
+            const memoryStdev = result && result.memory_kb_stdev ? result.memory_kb_stdev : {};
 
             const pickValue = (keys, source) => {
                 for (const key of keys) {
@@ -2834,16 +2836,30 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 return null;
             };
 
+            const pickPair = (keys, valueSource, stdevSource) => {
+                for (const key of keys) {
+                    const raw = valueSource && Object.prototype.hasOwnProperty.call(valueSource, key) ? valueSource[key] : null;
+                    if (raw === 0 || Number.isFinite(Number(raw))) {
+                        const stdevRaw = stdevSource && Object.prototype.hasOwnProperty.call(stdevSource, key)
+                            ? stdevSource[key]
+                            : null;
+                        const stdev = Number.isFinite(Number(stdevRaw)) ? Number(stdevRaw) : null;
+                        return { value: Number(raw), stdev };
+                    }
+                }
+                return { value: null, stdev: null };
+            };
+
             const runtime = {
-                benchmark: pickValue(['baseline_all', 'baseline', 'first', 'baseline_first', 'all'], timings),
-                chatgpt: pickValue(['chatgpt_all', 'llm', 'chatgpt_first'], timings),
-                gemini: pickValue(['gemini_all', 'gemini_first'], timings)
+                benchmark: pickPair(['baseline_all', 'baseline', 'first', 'baseline_first', 'all'], timings, timingsStdev),
+                chatgpt: pickPair(['chatgpt_all', 'llm', 'chatgpt_first'], timings, timingsStdev),
+                gemini: pickPair(['gemini_all', 'gemini_first'], timings, timingsStdev)
             };
 
             const mem = {
-                benchmark: pickValue(['baseline_all', 'baseline', 'first', 'baseline_first', 'all'], memory),
-                chatgpt: pickValue(['chatgpt_all', 'llm', 'chatgpt_first'], memory),
-                gemini: pickValue(['gemini_all', 'gemini_first'], memory)
+                benchmark: pickPair(['baseline_all', 'baseline', 'first', 'baseline_first', 'all'], memory, memoryStdev),
+                chatgpt: pickPair(['chatgpt_all', 'llm', 'chatgpt_first'], memory, memoryStdev),
+                gemini: pickPair(['gemini_all', 'gemini_first'], memory, memoryStdev)
             };
 
             return { runtime, memory: mem };
@@ -2852,21 +2868,63 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         let runtimeChartInstance = null;
         let memoryChartInstance = null;
 
+        const errorBarsPlugin = {
+            id: 'errorBars',
+            afterDatasetsDraw(chart, args, pluginOptions) {
+                const { ctx, scales } = chart;
+                const yScale = scales && scales.y ? scales.y : null;
+                if (!yScale) return;
+                chart.data.datasets.forEach((dataset, datasetIndex) => {
+                    const meta = chart.getDatasetMeta(datasetIndex);
+                    if (!meta || meta.type !== 'bar') return;
+                    const errors = dataset.errorBars || [];
+                    meta.data.forEach((bar, index) => {
+                        const err = errors[index];
+                        const value = dataset.data[index];
+                        if (!Number.isFinite(err) || !Number.isFinite(value)) return;
+                        const yTop = yScale.getPixelForValue(value + err);
+                        const yBottom = yScale.getPixelForValue(Math.max(0, value - err));
+                        const x = bar.x;
+                        const capWidth = Number.isFinite(pluginOptions?.capWidth) ? pluginOptions.capWidth : 8;
+                        const lineWidth = Number.isFinite(pluginOptions?.lineWidth) ? pluginOptions.lineWidth : 1;
+                        const color = Array.isArray(dataset.borderColor)
+                            ? dataset.borderColor[index]
+                            : (dataset.borderColor || '#333');
+                        ctx.save();
+                        ctx.strokeStyle = color || '#333';
+                        ctx.lineWidth = lineWidth;
+                        ctx.beginPath();
+                        ctx.moveTo(x, yTop);
+                        ctx.lineTo(x, yBottom);
+                        ctx.moveTo(x - capWidth / 2, yTop);
+                        ctx.lineTo(x + capWidth / 2, yTop);
+                        ctx.moveTo(x - capWidth / 2, yBottom);
+                        ctx.lineTo(x + capWidth / 2, yBottom);
+                        ctx.stroke();
+                        ctx.restore();
+                    });
+                });
+            }
+        };
+
         function renderBarChart(canvasId, data, unitLabel, title) {
             const canvas = document.getElementById(canvasId);
             if (!canvas || !window.Chart) return null;
 
             const labels = data.map(item => item.label);
             const values = data.map(item => (Number.isFinite(Number(item.value)) ? Number(item.value) : null));
+            const errors = data.map(item => (Number.isFinite(Number(item.stdev)) ? Number(item.stdev) : null));
 
             return new Chart(canvas, {
                 type: 'bar',
+                plugins: [errorBarsPlugin],
                 data: {
                     labels,
                     datasets: [
                         {
                             label: title,
                             data: values,
+                            errorBars: errors,
                             backgroundColor: ['#1f77b4', '#e45756', '#54a24b'],
                             borderColor: ['#1b6aa1', '#c84544', '#3f8f3b'],
                             borderWidth: 1,
@@ -2884,9 +2942,20 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                                 label: context => {
                                     const v = context.raw;
                                     if (v === null || v === undefined || Number.isNaN(v)) return 'N/A';
+                                    const err = context.dataset && context.dataset.errorBars
+                                        ? context.dataset.errorBars[context.dataIndex]
+                                        : null;
+                                    if (Number.isFinite(err)) {
+                                        return `${v.toFixed(2)} ± ${err.toFixed(2)} ${unitLabel}`;
+                                    }
                                     return `${v.toFixed(2)} ${unitLabel}`;
                                 }
                             }
+                        }
+                        ,
+                        errorBars: {
+                            capWidth: 10,
+                            lineWidth: 1
                         }
                     },
                     scales: {
@@ -2906,8 +2975,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (!charts) return;
 
             const metrics = normalizeVersionMetrics(result || {});
-            const hasRuntime = Object.values(metrics.runtime).some(v => Number.isFinite(Number(v)));
-            const hasMemory = Object.values(metrics.memory).some(v => Number.isFinite(Number(v)));
+            const hasRuntime = Object.values(metrics.runtime).some(v => Number.isFinite(Number(v.value)));
+            const hasMemory = Object.values(metrics.memory).some(v => Number.isFinite(Number(v.value)));
 
             if (!hasRuntime && !hasMemory) {
                 clearCharts();
@@ -2915,14 +2984,14 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             }
 
             const runtimeData = [
-                { label: 'Benchmark', value: metrics.runtime.benchmark },
-                { label: 'ChatGPT', value: metrics.runtime.chatgpt },
-                { label: 'Gemini', value: metrics.runtime.gemini }
+                { label: 'Benchmark', value: metrics.runtime.benchmark.value, stdev: metrics.runtime.benchmark.stdev },
+                { label: 'ChatGPT', value: metrics.runtime.chatgpt.value, stdev: metrics.runtime.chatgpt.stdev },
+                { label: 'Gemini', value: metrics.runtime.gemini.value, stdev: metrics.runtime.gemini.stdev }
             ];
             const memoryData = [
-                { label: 'Benchmark', value: metrics.memory.benchmark },
-                { label: 'ChatGPT', value: metrics.memory.chatgpt },
-                { label: 'Gemini', value: metrics.memory.gemini }
+                { label: 'Benchmark', value: metrics.memory.benchmark.value, stdev: metrics.memory.benchmark.stdev },
+                { label: 'ChatGPT', value: metrics.memory.chatgpt.value, stdev: metrics.memory.chatgpt.stdev },
+                { label: 'Gemini', value: metrics.memory.gemini.value, stdev: metrics.memory.gemini.stdev }
             ];
 
             if (runtimeChartInstance) runtimeChartInstance.destroy();
