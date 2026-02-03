@@ -361,6 +361,7 @@ jobs:
           : > outputs/result.txt
           RUN_STARTED_NS="$(date +%s%N)"
           GEN_COUNTER=0
+          SOLVER_TIME_MS_TOTAL=""
 
           generate_graphs_for_run() {
             local variant="$1"
@@ -392,7 +393,11 @@ jobs:
           finish_run() {
             local end_ns duration_ms
             end_ns="$(date +%s%N)"
-            duration_ms="$(python -c "import sys; start=int(sys.argv[1]); end=int(sys.argv[2]); print(f'{(end-start)/1_000_000:.3f}')" "$RUN_STARTED_NS" "$end_ns")"
+            if [ -n "${SOLVER_TIME_MS_TOTAL:-}" ]; then
+              duration_ms="$SOLVER_TIME_MS_TOTAL"
+            else
+              duration_ms="$(python -c "import sys; start=int(sys.argv[1]); end=int(sys.argv[2]); print(f'{(end-start)/1_000_000:.3f}')" "$RUN_STARTED_NS" "$end_ns")"
+            fi
             echo "RUN_DURATION_MS=$duration_ms" >> "$GITHUB_OUTPUT"
           }
 
@@ -1040,6 +1045,23 @@ jobs:
           PY
           }
 
+          sum_ms_runs() {
+            python - <<'PY' "$@"
+          import sys
+
+          total = 0.0
+          for x in sys.argv[1:]:
+              try:
+                  total += float(x)
+              except ValueError:
+                  pass
+          if sys.argv[1:]:
+              print(f"{total:.3f}")
+          else:
+              print("")
+          PY
+          }
+
           print_stats_ms_first_all() {
             local prefix="$1"
             shift
@@ -1372,6 +1394,9 @@ jobs:
                   fi
                   echo
                 } >> outputs/result.txt
+              fi
+              if [ -n "${dijkstra_baseline_ms_runs:-}" ] || [ -n "${dijkstra_llm_ms_runs:-}" ]; then
+                SOLVER_TIME_MS_TOTAL="$(sum_ms_runs $dijkstra_baseline_ms_runs $dijkstra_llm_ms_runs)"
               fi
               ;;
             glasgow)
@@ -1788,6 +1813,9 @@ jobs:
                   echo
                 } >> outputs/result.txt
               fi
+              if [ -n "${glasgow_first_ms_runs:-}" ] || [ -n "${glasgow_all_ms_runs:-}" ] || [ -n "${glasgow_gemini_first_ms_runs:-}" ] || [ -n "${glasgow_gemini_all_ms_runs:-}" ] || [ -n "${glasgow_chatgpt_first_ms_runs:-}" ] || [ -n "${glasgow_chatgpt_all_ms_runs:-}" ]; then
+                SOLVER_TIME_MS_TOTAL="$(sum_ms_runs $glasgow_first_ms_runs $glasgow_all_ms_runs $glasgow_gemini_first_ms_runs $glasgow_gemini_all_ms_runs $glasgow_chatgpt_first_ms_runs $glasgow_chatgpt_all_ms_runs)"
+              fi
               ;;
             vf3)
               vf3_base_first_out=""
@@ -2203,6 +2231,9 @@ jobs:
                   fi
                   echo
                 } >> outputs/result.txt
+              fi
+              if [ -n "${vf3_base_first_ms_runs:-}" ] || [ -n "${vf3_base_all_ms_runs:-}" ] || [ -n "${vf3_first_ms_runs:-}" ] || [ -n "${vf3_all_ms_runs:-}" ] || [ -n "${chatvf3_first_ms_runs:-}" ] || [ -n "${chatvf3_all_ms_runs:-}" ]; then
+                SOLVER_TIME_MS_TOTAL="$(sum_ms_runs $vf3_base_first_ms_runs $vf3_base_all_ms_runs $vf3_first_ms_runs $vf3_all_ms_runs $chatvf3_first_ms_runs $chatvf3_all_ms_runs)"
               fi
               ;;
             *)
