@@ -111,7 +111,7 @@ def write_vf(path: Path, adj: list[list[int]], labels: list[int]) -> None:
         for i, neighbors in enumerate(adj):
             fh.write(f"{len(neighbors)}\n")
             for v in neighbors:
-                fh.write(f"{i} {v} 1\n")
+                fh.write(f"{i} {v}\n")
 
 
 def main() -> None:
