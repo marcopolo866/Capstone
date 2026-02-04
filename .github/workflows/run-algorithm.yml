@@ -953,6 +953,44 @@ jobs:
             return $status
           }
 
+          run_capture_rss_tmp() {
+            local _out_var=$1
+            local _dur_var=$2
+            local _rss_var=$3
+            local _tmp_var=$4
+            shift 4
+            local tmp rss_tmp
+            tmp=$(mktemp)
+            rss_tmp=$(mktemp)
+            local start_ns end_ns duration_ms rss_kb
+            start_ns=$(date +%s%N)
+            set +e
+            if [ -x /usr/bin/time ]; then
+              /usr/bin/time -f "%M" -o "$rss_tmp" "$@" >"$tmp" 2>&1
+            else
+              run_with_timeout "$@" >"$tmp" 2>&1
+            fi
+            local status=$?
+            set -e
+            end_ns=$(date +%s%N)
+            duration_ms=$(python - <<'PY' "$start_ns" "$end_ns"
+          import sys
+          start=int(sys.argv[1]); end=int(sys.argv[2])
+          print(f"{(end - start)/1_000_000:.3f}")
+          PY
+            )
+            rss_kb=""
+            if [ -s "$rss_tmp" ]; then
+              rss_kb="$(head -n1 "$rss_tmp" | tr -d '\r' | awk '{print $1}')"
+            fi
+            printf -v "$_out_var" "%s" "$(cat "$tmp")"
+            printf -v "$_dur_var" "%s" "$duration_ms"
+            printf -v "$_rss_var" "%s" "$rss_kb"
+            printf -v "$_tmp_var" "%s" "$tmp"
+            rm -f "$rss_tmp"
+            return $status
+          }
+
           bench_capture_rss_n() {
             local _out_var=$1
             local _times_var=$2
@@ -1924,11 +1962,40 @@ jobs:
 
                 baseline_ok=1
                 progress_set_phase "VF3 baseline"
-                if ! run_capture_rss out dur rss ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[VF3 baseline] first-solution run failed." >> outputs/result.txt
+                vf3_err_tmp=""
+                if ! run_capture_rss_tmp out dur rss vf3_err_tmp ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
                   baseline_ok=0
-                else
+                  if [ "$INPUT_MODE" = "generate" ]; then
+                    echo "[VF3 baseline] first-solution run failed; regenerating graph and retrying." >> outputs/result.txt
+                    if generate_graphs_for_run "vf3_iter_retry" "${i}_retry"; then
+                      vf3_err_tmp_retry=""
+                      if run_capture_rss_tmp out dur rss vf3_err_tmp_retry ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
+                        baseline_ok=1
+                      else
+                        echo "[VF3 baseline] first-solution run failed (retry)." >> outputs/result.txt
+                        if [ -n "${vf3_err_tmp_retry:-}" ] && [ -s "$vf3_err_tmp_retry" ]; then
+                          echo "[VF3 baseline] stderr (retry):" >> outputs/result.txt
+                          head -n 5 "$vf3_err_tmp_retry" >> outputs/result.txt
+                        fi
+                      fi
+                    else
+                      echo "[VF3 baseline] graph regeneration failed (retry)." >> outputs/result.txt
+                    fi
+                  else
+                    echo "[VF3 baseline] first-solution run failed." >> outputs/result.txt
+                  fi
+                  if [ -n "${vf3_err_tmp:-}" ] && [ -s "$vf3_err_tmp" ]; then
+                    echo "[VF3 baseline] stderr:" >> outputs/result.txt
+                    head -n 5 "$vf3_err_tmp" >> outputs/result.txt
+                  fi
+                fi
+                if [ -n "${vf3_err_tmp:-}" ] && [ -f "$vf3_err_tmp" ]; then
+                  rm -f "$vf3_err_tmp"
+                fi
+                if [ "$baseline_ok" -ne 1 ]; then
+                  EXIT_CODE=1
+                fi
+                if [ "$baseline_ok" -eq 1 ]; then
                   base_first_times+=("$dur")
                   base_first_rsses+=("$rss")
                   progress_tick
