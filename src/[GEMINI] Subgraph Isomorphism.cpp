@@ -73,6 +73,10 @@ bool is_grf(const string& filename) {
     return filename.length() >= 4 && filename.substr(filename.length() - 4) == ".grf";
 }
 
+bool is_vf(const string& filename) {
+    return filename.length() >= 3 && filename.substr(filename.length() - 3) == ".vf";
+}
+
 Graph parse_lad(const string& filename) {
     ifstream f(filename);
     if (!f) { cerr << "Error opening " << filename << endl; exit(1); }
@@ -114,6 +118,58 @@ Graph parse_lad(const string& filename) {
         g.adj[i] = vec;
         g.radj[i] = vec;
     }
+    return g;
+}
+
+Graph parse_vf(const string& filename) {
+    ifstream f(filename);
+    if (!f) { cerr << "Error opening " << filename << endl; exit(1); }
+
+    string line;
+    int n = 0;
+    while (getline(f, line)) {
+        if (is_blank_or_comment_line(line)) continue;
+        stringstream ss(line);
+        if (ss >> n) break;
+    }
+
+    Graph g(n);
+
+    // Read node labels: "id label"
+    int read_nodes = 0;
+    while (read_nodes < n && getline(f, line)) {
+        if (is_blank_or_comment_line(line)) continue;
+        stringstream ss(line);
+        int id, lbl;
+        if (!(ss >> id >> lbl)) continue;
+        if (id >= 0 && id < n) {
+            g.label[id] = lbl;
+            read_nodes++;
+        }
+    }
+
+    // Read edges: for each node, line with edge count, then that many "src dst attr" lines
+    for (int i = 0; i < n; ++i) {
+        int edge_count = 0;
+        while (getline(f, line)) {
+            if (is_blank_or_comment_line(line)) continue;
+            stringstream ss(line);
+            if (ss >> edge_count) break;
+        }
+
+        for (int k = 0; k < edge_count; ++k) {
+            if (!getline(f, line)) break;
+            if (is_blank_or_comment_line(line)) { k--; continue; }
+            stringstream ss(line);
+            int u, v;
+            if (!(ss >> u >> v)) continue;
+            if (u >= 0 && u < n && v >= 0 && v < n) {
+                g.add_edge(u, v);
+            }
+        }
+    }
+
+    g.sort_edges();
     return g;
 }
 
@@ -174,6 +230,7 @@ Graph parse_grf(const string& filename) {
 }
 
 Graph load_graph(const string& filename) {
+    if (is_vf(filename)) return parse_vf(filename);
     if (is_grf(filename)) return parse_grf(filename);
     return parse_lad(filename);
 }

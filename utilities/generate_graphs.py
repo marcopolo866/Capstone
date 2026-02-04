@@ -102,6 +102,18 @@ def write_grf(path: Path, adj: list[list[int]], labels: list[int]) -> None:
                 fh.write(f"{i} {v}\n")
 
 
+def write_vf(path: Path, adj: list[list[int]], labels: list[int]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        fh.write(f"{len(adj)}\n")
+        for i, label in enumerate(labels):
+            fh.write(f"{i} {label}\n")
+        for i, neighbors in enumerate(adj):
+            fh.write(f"{len(neighbors)}\n")
+            for v in neighbors:
+                fh.write(f"{i} {v} 1\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--algorithm", required=True)
@@ -163,10 +175,10 @@ def main() -> None:
         else:
             labels = [i % 4 for i in range(n)]
             pattern_labels = [labels[node] for node in nodes]
-            target_path = out_dir / "vf3_target.grf"
-            pattern_path = out_dir / "vf3_pattern.grf"
-            write_grf(target_path, target_adj, labels)
-            write_grf(pattern_path, pattern_adj, pattern_labels)
+            target_path = out_dir / "vf3_target.vf"
+            pattern_path = out_dir / "vf3_pattern.vf"
+            write_vf(target_path, target_adj, labels)
+            write_vf(pattern_path, pattern_adj, pattern_labels)
 
         generated.extend([pattern_path, target_path])
 

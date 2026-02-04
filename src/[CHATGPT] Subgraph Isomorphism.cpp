@@ -293,9 +293,130 @@ static Graph read_grf(const string &path) {
     return g;
 }
 
+static Graph read_vf(const string &path) {
+    ifstream f(path);
+    if (!f) throw runtime_error("Failed to open file: " + path);
+
+    Graph g;
+    g.directed = true;
+
+    string line;
+    int n = -1;
+
+    while (getline(f, line)) {
+        size_t p = line.find_first_not_of(" \t\r\n");
+        if (p == string::npos) continue;
+        if (line[p] == '#') continue;
+        auto ints = extract_ints_from_line(line);
+        if (!ints.empty()) { n = (int)ints[0]; break; }
+    }
+    if (n < 0) throw runtime_error("Invalid VF (missing node count): " + path);
+
+    g.n = n;
+    g.id_of.assign(n, 0);
+    g.label.assign(n, 0);
+    g.out.assign(n, {});
+    g.in.assign(n, {});
+
+    vector<int> ids_in_order;
+    ids_in_order.reserve((size_t)n);
+    unordered_map<int, int> id_to_idx;
+    id_to_idx.reserve((size_t)n * 2);
+
+    for (int i = 0; i < n; ) {
+        if (!getline(f, line)) throw runtime_error("Invalid VF (EOF in labels): " + path);
+        size_t p = line.find_first_not_of(" \t\r\n");
+        if (p == string::npos) continue;
+        if (line[p] == '#') continue;
+        auto ints = extract_ints_from_line(line);
+        if ((int)ints.size() < 2) continue;
+        int id = (int)ints[0];
+        int lab = (int)ints[1];
+        ids_in_order.push_back(id);
+        id_to_idx[id] = i;
+        g.id_of[i] = id;
+        g.label[i] = lab;
+        ++i;
+    }
+
+    for (int ord = 0; ord < n; ++ord) {
+        int node_id = ids_in_order[ord];
+        int node_idx = id_to_idx[node_id];
+
+        int m = -1;
+        while (getline(f, line)) {
+            size_t p = line.find_first_not_of(" \t\r\n");
+            if (p == string::npos) continue;
+            if (line[p] == '#') continue;
+            auto ints = extract_ints_from_line(line);
+            if (!ints.empty()) { m = (int)ints[0]; break; }
+        }
+        if (m < 0) throw runtime_error("Invalid VF (missing edge count): " + path);
+
+        g.out[node_idx].reserve((size_t)max(0, m));
+        for (int e = 0; e < m; ++e) {
+            vector<long long> ints;
+            while (getline(f, line)) {
+                size_t p = line.find_first_not_of(" \t\r\n");
+                if (p == string::npos) continue;
+                if (line[p] == '#') continue;
+                ints = extract_ints_from_line(line);
+                if (!ints.empty()) break;
+            }
+            if (ints.empty()) throw runtime_error("Invalid VF (EOF in edges): " + path);
+
+            int dst_id = -1;
+            if (ints.size() == 1) {
+                dst_id = (int)ints[0];
+            } else {
+                int a = (int)ints[0];
+                int b = (int)ints[1];
+                if (a == node_id && id_to_idx.find(b) != id_to_idx.end()) dst_id = b;
+                else if (id_to_idx.find(b) != id_to_idx.end()) dst_id = b;
+                else if (id_to_idx.find(a) != id_to_idx.end()) dst_id = a;
+                else continue;
+            }
+
+            auto it = id_to_idx.find(dst_id);
+            if (it == id_to_idx.end()) continue;
+            g.out[node_idx].push_back(it->second);
+        }
+    }
+
+    for (int i = 0; i < n; ++i) sort_unique_vec(g.out[i]);
+    for (int i = 0; i < n; ++i) {
+        for (int nb : g.out[i]) g.in[nb].push_back(i);
+    }
+    for (int i = 0; i < n; ++i) sort_unique_vec(g.in[i]);
+
+    g.outdeg.resize(n);
+    g.indeg.resize(n);
+    g.undeg.resize(n);
+    for (int i = 0; i < n; ++i) {
+        g.outdeg[i] = (int)g.out[i].size();
+        g.indeg[i] = (int)g.in[i].size();
+        const auto &A = g.out[i];
+        const auto &B = g.in[i];
+        size_t pa = 0, pb = 0;
+        int cnt = 0;
+        while (pa < A.size() && pb < B.size()) {
+            int a = A[pa], b = B[pb];
+            if (a == b) { ++cnt; ++pa; ++pb; }
+            else if (a < b) { ++cnt; ++pa; }
+            else { ++cnt; ++pb; }
+        }
+        cnt += (int)(A.size() - pa);
+        cnt += (int)(B.size() - pb);
+        g.undeg[i] = cnt;
+    }
+
+    return g;
+}
+
 static Graph read_graph_auto(const string &path) {
     if (ends_with_ci(path, ".lad")) return read_lad(path);
     if (ends_with_ci(path, ".grf")) return read_grf(path);
+    if (ends_with_ci(path, ".vf")) return read_vf(path);
 
     // fallback heuristic: comment style => GRF
     ifstream f(path);
