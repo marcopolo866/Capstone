@@ -1045,6 +1045,10 @@ jobs:
           PY
           }
 
+          extract_solution_count() {
+            echo "$1" | tr -d '\r' | awk 'match($0, /-?[0-9]+/) {print substr($0, RSTART, RLENGTH); exit}'
+          }
+
           sum_ms_runs() {
             python - <<'PY' "$@"
           import sys
@@ -1429,7 +1433,7 @@ jobs:
                   out=""
                   dur=""
                   for ((i=1; i<=WARMUP_REQUESTED; i++)); do
-                    if ! generate_graphs_for_run "glasgow_baseline_warmup" "w${i}"; then
+                    if ! generate_graphs_for_run "glasgow_warmup" "w${i}"; then
                       EXIT_CODE=1
                       break
                     fi
@@ -1445,12 +1449,18 @@ jobs:
                       break
                     fi
                     progress_setup_tick
-                  done
-                  for ((i=1; i<=WARMUP_REQUESTED; i++)); do
-                    if ! generate_graphs_for_run "glasgow_gemini_warmup" "w${i}"; then
+                    if ! run_capture out dur ./src/chatvf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
+                      echo "[Warmup] Glasgow ChatGPT first failed." >> outputs/result.txt
                       EXIT_CODE=1
                       break
                     fi
+                    progress_setup_tick
+                    if ! run_capture out dur ./src/chatvf3 --induced "${FILES[0]}" "${FILES[1]}"; then
+                      echo "[Warmup] Glasgow ChatGPT all failed." >> outputs/result.txt
+                      EXIT_CODE=1
+                      break
+                    fi
+                    progress_setup_tick
                     if ! run_capture out dur ./src/vf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
                       echo "[Warmup] Glasgow Gemini first failed." >> outputs/result.txt
                       EXIT_CODE=1
@@ -1464,24 +1474,6 @@ jobs:
                     fi
                     progress_setup_tick
                   done
-                  for ((i=1; i<=WARMUP_REQUESTED; i++)); do
-                    if ! generate_graphs_for_run "glasgow_chatgpt_warmup" "w${i}"; then
-                      EXIT_CODE=1
-                      break
-                    fi
-                    if ! run_capture out dur ./src/chatvf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
-                      echo "[Warmup] Glasgow ChatGPT first failed." >> outputs/result.txt
-                      EXIT_CODE=1
-                      break
-                    fi
-                    progress_setup_tick
-                    if ! run_capture out dur ./src/chatvf3 --induced "${FILES[0]}" "${FILES[1]}"; then
-                      echo "[Warmup] Glasgow ChatGPT all failed." >> outputs/result.txt
-                      EXIT_CODE=1
-                      break
-                    fi
-                    progress_setup_tick
-                  done
                 else
                   if ! warmup_only "Glasgow first" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "${FILES[0]}" "${FILES[1]}"; then
                     EXIT_CODE=1
@@ -1489,16 +1481,16 @@ jobs:
                   if ! warmup_only "Glasgow all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
                     EXIT_CODE=1
                   fi
-                  if ! warmup_only "Glasgow Gemini first" ./src/vf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                  fi
-                  if ! warmup_only "Glasgow Gemini all" ./src/vf3 --induced "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                  fi
                   if ! warmup_only "Glasgow ChatGPT first" ./src/chatvf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
                     EXIT_CODE=1
                   fi
                   if ! warmup_only "Glasgow ChatGPT all" ./src/chatvf3 --induced "${FILES[0]}" "${FILES[1]}"; then
+                    EXIT_CODE=1
+                  fi
+                  if ! warmup_only "Glasgow Gemini first" ./src/vf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
+                    EXIT_CODE=1
+                  fi
+                  if ! warmup_only "Glasgow Gemini all" ./src/vf3 --induced "${FILES[0]}" "${FILES[1]}"; then
                     EXIT_CODE=1
                   fi
                 fi
@@ -1516,169 +1508,146 @@ jobs:
               WARMUP=0
 
               progress_set_phase "Glasgow baseline"
-              if [ "$INPUT_MODE" = "generate" ]; then
-                glasgow_first_out=""
-                glasgow_all_out=""
-                first_times=()
-                first_rsses=()
-                all_times=()
-                all_rsses=()
-                out=""
-                dur=""
-                rss=""
-                for ((i=1; i<=ITERATIONS; i++)); do
-                  if ! generate_graphs_for_run "glasgow_baseline" "$i"; then
+              glasgow_success=0
+              glasgow_fail=0
+              glasgow_chatgpt_match=0
+              glasgow_chatgpt_total=0
+              glasgow_chatgpt_mismatch=0
+              glasgow_gemini_match=0
+              glasgow_gemini_total=0
+              glasgow_gemini_mismatch=0
+
+              first_times=()
+              first_rsses=()
+              all_times=()
+              all_rsses=()
+              chat_first_times=()
+              chat_first_rsses=()
+              chat_all_times=()
+              chat_all_rsses=()
+              gem_first_times=()
+              gem_first_rsses=()
+              gem_all_times=()
+              gem_all_rsses=()
+              out=""
+              dur=""
+              rss=""
+
+              for ((i=1; i<=ITERATIONS; i++)); do
+                if [ "$INPUT_MODE" = "generate" ]; then
+                  if ! generate_graphs_for_run "glasgow_iter" "$i"; then
                     EXIT_CODE=1
                     break
                   fi
-                  if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                    echo "[Glasgow Subgraph Solver] first-solution run failed." >> outputs/result.txt
-                    break
-                  fi
-                  if [ $i -eq 1 ]; then
-                    glasgow_first_out="$out"
-                  fi
+                fi
+
+                baseline_ok=1
+                progress_set_phase "Glasgow baseline"
+                if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                  echo "[Glasgow Subgraph Solver] first-solution run failed." >> outputs/result.txt
+                  baseline_ok=0
+                else
                   first_times+=("$dur")
                   first_rsses+=("$rss")
                   progress_tick
+                fi
+                if [ "$baseline_ok" -eq 1 ]; then
                   if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
                     EXIT_CODE=1
                     echo "[Glasgow Subgraph Solver] all-solutions run failed." >> outputs/result.txt
-                    break
+                    baseline_ok=0
+                  else
+                    all_times+=("$dur")
+                    all_rsses+=("$rss")
+                    progress_tick
+                    baseline_count="$(extract_solution_count "$out")"
+                    if [ -z "${baseline_count:-}" ]; then
+                      echo "[Glasgow Subgraph Solver] could not parse solution count." >> outputs/result.txt
+                      baseline_ok=0
+                      EXIT_CODE=1
+                    fi
                   fi
-                  if [ $i -eq 1 ]; then
-                    glasgow_all_out="$out"
-                  fi
-                  all_times+=("$dur")
-                  all_rsses+=("$rss")
-                  progress_tick
-                done
-                glasgow_first_ms_runs="${first_times[*]}"
-                glasgow_first_rss_runs="${first_rsses[*]}"
-                glasgow_all_ms_runs="${all_times[*]}"
-                glasgow_all_rss_runs="${all_rsses[*]}"
-              else
-                if ! bench_capture_rss_n glasgow_first_out glasgow_first_ms_runs glasgow_first_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[Glasgow Subgraph Solver] first-solution run failed." >> outputs/result.txt
                 fi
-                progress_set_phase "Glasgow baseline"
-                if ! bench_capture_rss_n glasgow_all_out glasgow_all_ms_runs glasgow_all_rss_runs "$ITERATIONS" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[Glasgow Subgraph Solver] all-solutions run failed." >> outputs/result.txt
-                fi
-              fi
 
-              progress_set_phase "Glasgow Gemini"
-              if [ "$INPUT_MODE" = "generate" ]; then
-                glasgow_gemini_first_out=""
-                glasgow_gemini_all_out=""
-                first_times=()
-                first_rsses=()
-                all_times=()
-                all_rsses=()
-                out=""
-                dur=""
-                rss=""
-                for ((i=1; i<=ITERATIONS; i++)); do
-                  if ! generate_graphs_for_run "glasgow_gemini" "$i"; then
-                    EXIT_CODE=1
-                    break
-                  fi
-                  if ! run_capture_rss out dur rss ./src/vf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                    echo "[Glasgow Gemini] first-solution run failed." >> outputs/result.txt
-                    break
-                  fi
-                  if [ $i -eq 1 ]; then
-                    glasgow_gemini_first_out="$out"
-                  fi
-                  first_times+=("$dur")
-                  first_rsses+=("$rss")
-                  progress_tick
-                  if ! run_capture_rss out dur rss ./src/vf3 --induced "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                    echo "[Glasgow Gemini] all-solutions run failed." >> outputs/result.txt
-                    break
-                  fi
-                  if [ $i -eq 1 ]; then
-                    glasgow_gemini_all_out="$out"
-                  fi
-                  all_times+=("$dur")
-                  all_rsses+=("$rss")
-                  progress_tick
-                done
-                glasgow_gemini_first_ms_runs="${first_times[*]}"
-                glasgow_gemini_first_rss_runs="${first_rsses[*]}"
-                glasgow_gemini_all_ms_runs="${all_times[*]}"
-                glasgow_gemini_all_rss_runs="${all_rsses[*]}"
-              else
-                if ! bench_capture_rss_n glasgow_gemini_first_out glasgow_gemini_first_ms_runs glasgow_gemini_first_rss_runs "$ITERATIONS" ./src/vf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[Glasgow Gemini] first-solution run failed." >> outputs/result.txt
+                if [ "$baseline_ok" -ne 1 ]; then
+                  glasgow_fail=$((glasgow_fail + 1))
+                  continue
                 fi
-                progress_set_phase "Glasgow Gemini"
-                if ! bench_capture_rss_n glasgow_gemini_all_out glasgow_gemini_all_ms_runs glasgow_gemini_all_rss_runs "$ITERATIONS" ./src/vf3 --induced "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[Glasgow Gemini] all-solutions run failed." >> outputs/result.txt
-                fi
-              fi
 
-              progress_set_phase "Glasgow ChatGPT"
-              if [ "$INPUT_MODE" = "generate" ]; then
-                glasgow_chatgpt_first_out=""
-                glasgow_chatgpt_all_out=""
-                first_times=()
-                first_rsses=()
-                all_times=()
-                all_rsses=()
-                out=""
-                dur=""
-                rss=""
-                for ((i=1; i<=ITERATIONS; i++)); do
-                  if ! generate_graphs_for_run "glasgow_chatgpt" "$i"; then
-                    EXIT_CODE=1
-                    break
-                  fi
-                  if ! run_capture_rss out dur rss ./src/chatvf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                    echo "[Glasgow ChatGPT] first-solution run failed." >> outputs/result.txt
-                    break
-                  fi
-                  if [ $i -eq 1 ]; then
-                    glasgow_chatgpt_first_out="$out"
-                  fi
-                  first_times+=("$dur")
-                  first_rsses+=("$rss")
-                  progress_tick
-                  if ! run_capture_rss out dur rss ./src/chatvf3 --induced "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                    echo "[Glasgow ChatGPT] all-solutions run failed." >> outputs/result.txt
-                    break
-                  fi
-                  if [ $i -eq 1 ]; then
-                    glasgow_chatgpt_all_out="$out"
-                  fi
-                  all_times+=("$dur")
-                  all_rsses+=("$rss")
-                  progress_tick
-                done
-                glasgow_chatgpt_first_ms_runs="${first_times[*]}"
-                glasgow_chatgpt_first_rss_runs="${first_rsses[*]}"
-                glasgow_chatgpt_all_ms_runs="${all_times[*]}"
-                glasgow_chatgpt_all_rss_runs="${all_rsses[*]}"
-              else
-                if ! bench_capture_rss_n glasgow_chatgpt_first_out glasgow_chatgpt_first_ms_runs glasgow_chatgpt_first_rss_runs "$ITERATIONS" ./src/chatvf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
+                glasgow_success=$((glasgow_success + 1))
+
+                progress_set_phase "Glasgow ChatGPT"
+                glasgow_chatgpt_total=$((glasgow_chatgpt_total + 1))
+                chat_ok=1
+                chat_count=""
+                if ! run_capture_rss out dur rss ./src/chatvf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
                   echo "[Glasgow ChatGPT] first-solution run failed." >> outputs/result.txt
+                  chat_ok=0
+                else
+                  chat_first_times+=("$dur")
+                  chat_first_rsses+=("$rss")
+                  progress_tick
                 fi
-                progress_set_phase "Glasgow ChatGPT"
-                if ! bench_capture_rss_n glasgow_chatgpt_all_out glasgow_chatgpt_all_ms_runs glasgow_chatgpt_all_rss_runs "$ITERATIONS" ./src/chatvf3 --induced "${FILES[0]}" "${FILES[1]}"; then
+                if ! run_capture_rss out dur rss ./src/chatvf3 --induced "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
                   echo "[Glasgow ChatGPT] all-solutions run failed." >> outputs/result.txt
+                  chat_ok=0
+                else
+                  chat_all_times+=("$dur")
+                  chat_all_rsses+=("$rss")
+                  progress_tick
+                  chat_count="$(extract_solution_count "$out")"
                 fi
-              fi
+                if [ "$chat_ok" -eq 1 ] && [ -n "${chat_count:-}" ] && [ "$chat_count" = "$baseline_count" ]; then
+                  glasgow_chatgpt_match=$((glasgow_chatgpt_match + 1))
+                else
+                  glasgow_chatgpt_mismatch=$((glasgow_chatgpt_mismatch + 1))
+                fi
+
+                progress_set_phase "Glasgow Gemini"
+                glasgow_gemini_total=$((glasgow_gemini_total + 1))
+                gem_ok=1
+                gem_count=""
+                if ! run_capture_rss out dur rss ./src/vf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                  echo "[Glasgow Gemini] first-solution run failed." >> outputs/result.txt
+                  gem_ok=0
+                else
+                  gem_first_times+=("$dur")
+                  gem_first_rsses+=("$rss")
+                  progress_tick
+                fi
+                if ! run_capture_rss out dur rss ./src/vf3 --induced "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                  echo "[Glasgow Gemini] all-solutions run failed." >> outputs/result.txt
+                  gem_ok=0
+                else
+                  gem_all_times+=("$dur")
+                  gem_all_rsses+=("$rss")
+                  progress_tick
+                  gem_count="$(extract_solution_count "$out")"
+                fi
+                if [ "$gem_ok" -eq 1 ] && [ -n "${gem_count:-}" ] && [ "$gem_count" = "$baseline_count" ]; then
+                  glasgow_gemini_match=$((glasgow_gemini_match + 1))
+                else
+                  glasgow_gemini_mismatch=$((glasgow_gemini_mismatch + 1))
+                fi
+              done
+
+              glasgow_first_ms_runs="${first_times[*]}"
+              glasgow_first_rss_runs="${first_rsses[*]}"
+              glasgow_all_ms_runs="${all_times[*]}"
+              glasgow_all_rss_runs="${all_rsses[*]}"
+              glasgow_chatgpt_first_ms_runs="${chat_first_times[*]}"
+              glasgow_chatgpt_first_rss_runs="${chat_first_rsses[*]}"
+              glasgow_chatgpt_all_ms_runs="${chat_all_times[*]}"
+              glasgow_chatgpt_all_rss_runs="${chat_all_rsses[*]}"
+              glasgow_gemini_first_ms_runs="${gem_first_times[*]}"
+              glasgow_gemini_first_rss_runs="${gem_first_rsses[*]}"
+              glasgow_gemini_all_ms_runs="${gem_all_times[*]}"
+              glasgow_gemini_all_rss_runs="${gem_all_rsses[*]}"
 
               if [ -n "${glasgow_first_ms_runs:-}" ]; then
                 read glasgow_first_ms_median glasgow_first_ms_mean glasgow_first_ms_stdev glasgow_first_ms_min glasgow_first_ms_max glasgow_first_ms_n <<< "$(calc_stats_ms $glasgow_first_ms_runs)"
@@ -1696,14 +1665,14 @@ jobs:
                 read glasgow_all_rss_median glasgow_all_rss_mean glasgow_all_rss_stdev glasgow_all_rss_min glasgow_all_rss_max glasgow_all_rss_n <<< "$(calc_stats_kb $glasgow_all_rss_runs)"
                 glasgow_all_rss_kb="$glasgow_all_rss_median"
               fi
-              if [ -n "${glasgow_all_out:-}" ]; then
-                glasgow_result_line="$(echo "$glasgow_all_out" | tr -d '\r' | awk '/^[[:space:]]*solution_count[[:space:]]*=/ {line=$0} END {print line}')"
-                if [ -z "${glasgow_result_line:-}" ]; then
-                  glasgow_result_line="$(echo "$glasgow_all_out" | tr -d '\r' | head -n1)"
+              if [ "$ITERATIONS" -ge 1 ]; then
+                glasgow_failure_suffix=""
+                if [ "${glasgow_fail:-0}" -gt 0 ]; then
+                  glasgow_failure_suffix=", ${glasgow_fail} failed"
                 fi
                 {
                   echo "[Glasgow Subgraph Solver]"
-                  echo "${glasgow_result_line:-(No output)}"
+                  echo "${glasgow_success} iterations ran successfully${glasgow_failure_suffix}"
                   echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${glasgow_first_ms_median:-}" ] && [ -n "${glasgow_all_ms_median:-}" ]; then
@@ -1715,53 +1684,6 @@ jobs:
                     print_stats_kb_first_all "Max RSS (kB): " \
                       "$glasgow_first_rss_median" "$glasgow_first_rss_mean" "$glasgow_first_rss_stdev" "$glasgow_first_rss_min" "$glasgow_first_rss_max" \
                       "$glasgow_all_rss_median" "$glasgow_all_rss_mean" "$glasgow_all_rss_stdev" "$glasgow_all_rss_min" "$glasgow_all_rss_max"
-                  fi
-                  echo
-                } >> outputs/result.txt
-              fi
-
-              if [ -n "${glasgow_gemini_first_ms_runs:-}" ]; then
-                read glasgow_gemini_first_ms_median glasgow_gemini_first_ms_mean glasgow_gemini_first_ms_stdev glasgow_gemini_first_ms_min glasgow_gemini_first_ms_max glasgow_gemini_first_ms_n <<< "$(calc_stats_ms $glasgow_gemini_first_ms_runs)"
-                glasgow_gemini_first_ms="$glasgow_gemini_first_ms_median"
-              fi
-              if [ -n "${glasgow_gemini_all_ms_runs:-}" ]; then
-                read glasgow_gemini_all_ms_median glasgow_gemini_all_ms_mean glasgow_gemini_all_ms_stdev glasgow_gemini_all_ms_min glasgow_gemini_all_ms_max glasgow_gemini_all_ms_n <<< "$(calc_stats_ms $glasgow_gemini_all_ms_runs)"
-                glasgow_gemini_all_ms="$glasgow_gemini_all_ms_median"
-              fi
-              if [ -n "${glasgow_gemini_first_rss_runs:-}" ]; then
-                read glasgow_gemini_first_rss_median glasgow_gemini_first_rss_mean glasgow_gemini_first_rss_stdev glasgow_gemini_first_rss_min glasgow_gemini_first_rss_max glasgow_gemini_first_rss_n <<< "$(calc_stats_kb $glasgow_gemini_first_rss_runs)"
-                glasgow_gemini_first_rss_kb="$glasgow_gemini_first_rss_median"
-              fi
-              if [ -n "${glasgow_gemini_all_rss_runs:-}" ]; then
-                read glasgow_gemini_all_rss_median glasgow_gemini_all_rss_mean glasgow_gemini_all_rss_stdev glasgow_gemini_all_rss_min glasgow_gemini_all_rss_max glasgow_gemini_all_rss_n <<< "$(calc_stats_kb $glasgow_gemini_all_rss_runs)"
-                glasgow_gemini_all_rss_kb="$glasgow_gemini_all_rss_median"
-              fi
-              if [ -n "${glasgow_gemini_all_out:-}" ]; then
-                glasgow_gemini_result="$(echo "$glasgow_gemini_all_out" | tr -d '\r' | head -n1)"
-                {
-                  echo "[Glasgow Gemini]"
-                  echo "${glasgow_gemini_result:-(No output)}"
-                  echo "Warmup: $WARMUP_REQUESTED"
-                  echo "Iterations: $ITERATIONS"
-                  if [ -n "${glasgow_gemini_first_ms_median:-}" ] && [ -n "${glasgow_gemini_all_ms_median:-}" ]; then
-                    print_stats_ms_first_all "Runtime (ms): " \
-                      "$glasgow_gemini_first_ms_median" "$glasgow_gemini_first_ms_mean" "$glasgow_gemini_first_ms_stdev" "$glasgow_gemini_first_ms_min" "$glasgow_gemini_first_ms_max" \
-                      "$glasgow_gemini_all_ms_median" "$glasgow_gemini_all_ms_mean" "$glasgow_gemini_all_ms_stdev" "$glasgow_gemini_all_ms_min" "$glasgow_gemini_all_ms_max"
-                  fi
-                  if [ -n "${glasgow_gemini_first_rss_median:-}" ] && [ -n "${glasgow_gemini_all_rss_median:-}" ]; then
-                    print_stats_kb_first_all "Max RSS (kB): " \
-                      "$glasgow_gemini_first_rss_median" "$glasgow_gemini_first_rss_mean" "$glasgow_gemini_first_rss_stdev" "$glasgow_gemini_first_rss_min" "$glasgow_gemini_first_rss_max" \
-                      "$glasgow_gemini_all_rss_median" "$glasgow_gemini_all_rss_mean" "$glasgow_gemini_all_rss_stdev" "$glasgow_gemini_all_rss_min" "$glasgow_gemini_all_rss_max"
-                  fi
-                  if [ -n "${glasgow_first_ms_mean:-}" ] && [ -n "${glasgow_gemini_first_ms_mean:-}" ]; then
-                    t_test_line "runtime ms first baseline vs Gemini" \
-                      "$glasgow_first_ms_mean" "$glasgow_first_ms_stdev" "$glasgow_first_ms_n" \
-                      "$glasgow_gemini_first_ms_mean" "$glasgow_gemini_first_ms_stdev" "$glasgow_gemini_first_ms_n"
-                  fi
-                  if [ -n "${glasgow_all_ms_mean:-}" ] && [ -n "${glasgow_gemini_all_ms_mean:-}" ]; then
-                    t_test_line "runtime ms all baseline vs Gemini" \
-                      "$glasgow_all_ms_mean" "$glasgow_all_ms_stdev" "$glasgow_all_ms_n" \
-                      "$glasgow_gemini_all_ms_mean" "$glasgow_gemini_all_ms_stdev" "$glasgow_gemini_all_ms_n"
                   fi
                   echo
                 } >> outputs/result.txt
@@ -1783,11 +1705,10 @@ jobs:
                 read glasgow_chatgpt_all_rss_median glasgow_chatgpt_all_rss_mean glasgow_chatgpt_all_rss_stdev glasgow_chatgpt_all_rss_min glasgow_chatgpt_all_rss_max glasgow_chatgpt_all_rss_n <<< "$(calc_stats_kb $glasgow_chatgpt_all_rss_runs)"
                 glasgow_chatgpt_all_rss_kb="$glasgow_chatgpt_all_rss_median"
               fi
-              if [ -n "${glasgow_chatgpt_all_out:-}" ]; then
-                glasgow_chatgpt_result="$(echo "$glasgow_chatgpt_all_out" | tr -d '\r' | head -n1)"
+              if [ "$ITERATIONS" -ge 1 ]; then
                 {
                   echo "[Glasgow ChatGPT]"
-                  echo "${glasgow_chatgpt_result:-(No output)}"
+                  echo "Matches: ${glasgow_chatgpt_match}/${glasgow_chatgpt_total} (mismatches: ${glasgow_chatgpt_mismatch})"
                   echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${glasgow_chatgpt_first_ms_median:-}" ] && [ -n "${glasgow_chatgpt_all_ms_median:-}" ]; then
@@ -1809,6 +1730,52 @@ jobs:
                     t_test_line "runtime ms all baseline vs ChatGPT" \
                       "$glasgow_all_ms_mean" "$glasgow_all_ms_stdev" "$glasgow_all_ms_n" \
                       "$glasgow_chatgpt_all_ms_mean" "$glasgow_chatgpt_all_ms_stdev" "$glasgow_chatgpt_all_ms_n"
+                  fi
+                  echo
+                } >> outputs/result.txt
+              fi
+
+              if [ -n "${glasgow_gemini_first_ms_runs:-}" ]; then
+                read glasgow_gemini_first_ms_median glasgow_gemini_first_ms_mean glasgow_gemini_first_ms_stdev glasgow_gemini_first_ms_min glasgow_gemini_first_ms_max glasgow_gemini_first_ms_n <<< "$(calc_stats_ms $glasgow_gemini_first_ms_runs)"
+                glasgow_gemini_first_ms="$glasgow_gemini_first_ms_median"
+              fi
+              if [ -n "${glasgow_gemini_all_ms_runs:-}" ]; then
+                read glasgow_gemini_all_ms_median glasgow_gemini_all_ms_mean glasgow_gemini_all_ms_stdev glasgow_gemini_all_ms_min glasgow_gemini_all_ms_max glasgow_gemini_all_ms_n <<< "$(calc_stats_ms $glasgow_gemini_all_ms_runs)"
+                glasgow_gemini_all_ms="$glasgow_gemini_all_ms_median"
+              fi
+              if [ -n "${glasgow_gemini_first_rss_runs:-}" ]; then
+                read glasgow_gemini_first_rss_median glasgow_gemini_first_rss_mean glasgow_gemini_first_rss_stdev glasgow_gemini_first_rss_min glasgow_gemini_first_rss_max glasgow_gemini_first_rss_n <<< "$(calc_stats_kb $glasgow_gemini_first_rss_runs)"
+                glasgow_gemini_first_rss_kb="$glasgow_gemini_first_rss_median"
+              fi
+              if [ -n "${glasgow_gemini_all_rss_runs:-}" ]; then
+                read glasgow_gemini_all_rss_median glasgow_gemini_all_rss_mean glasgow_gemini_all_rss_stdev glasgow_gemini_all_rss_min glasgow_gemini_all_rss_max glasgow_gemini_all_rss_n <<< "$(calc_stats_kb $glasgow_gemini_all_rss_runs)"
+                glasgow_gemini_all_rss_kb="$glasgow_gemini_all_rss_median"
+              fi
+              if [ "$ITERATIONS" -ge 1 ]; then
+                {
+                  echo "[Glasgow Gemini]"
+                  echo "Matches: ${glasgow_gemini_match}/${glasgow_gemini_total} (mismatches: ${glasgow_gemini_mismatch})"
+                  echo "Warmup: $WARMUP_REQUESTED"
+                  echo "Iterations: $ITERATIONS"
+                  if [ -n "${glasgow_gemini_first_ms_median:-}" ] && [ -n "${glasgow_gemini_all_ms_median:-}" ]; then
+                    print_stats_ms_first_all "Runtime (ms): " \
+                      "$glasgow_gemini_first_ms_median" "$glasgow_gemini_first_ms_mean" "$glasgow_gemini_first_ms_stdev" "$glasgow_gemini_first_ms_min" "$glasgow_gemini_first_ms_max" \
+                      "$glasgow_gemini_all_ms_median" "$glasgow_gemini_all_ms_mean" "$glasgow_gemini_all_ms_stdev" "$glasgow_gemini_all_ms_min" "$glasgow_gemini_all_ms_max"
+                  fi
+                  if [ -n "${glasgow_gemini_first_rss_median:-}" ] && [ -n "${glasgow_gemini_all_rss_median:-}" ]; then
+                    print_stats_kb_first_all "Max RSS (kB): " \
+                      "$glasgow_gemini_first_rss_median" "$glasgow_gemini_first_rss_mean" "$glasgow_gemini_first_rss_stdev" "$glasgow_gemini_first_rss_min" "$glasgow_gemini_first_rss_max" \
+                      "$glasgow_gemini_all_rss_median" "$glasgow_gemini_all_rss_mean" "$glasgow_gemini_all_rss_stdev" "$glasgow_gemini_all_rss_min" "$glasgow_gemini_all_rss_max"
+                  fi
+                  if [ -n "${glasgow_first_ms_mean:-}" ] && [ -n "${glasgow_gemini_first_ms_mean:-}" ]; then
+                    t_test_line "runtime ms first baseline vs Gemini" \
+                      "$glasgow_first_ms_mean" "$glasgow_first_ms_stdev" "$glasgow_first_ms_n" \
+                      "$glasgow_gemini_first_ms_mean" "$glasgow_gemini_first_ms_stdev" "$glasgow_gemini_first_ms_n"
+                  fi
+                  if [ -n "${glasgow_all_ms_mean:-}" ] && [ -n "${glasgow_gemini_all_ms_mean:-}" ]; then
+                    t_test_line "runtime ms all baseline vs Gemini" \
+                      "$glasgow_all_ms_mean" "$glasgow_all_ms_stdev" "$glasgow_all_ms_n" \
+                      "$glasgow_gemini_all_ms_mean" "$glasgow_gemini_all_ms_stdev" "$glasgow_gemini_all_ms_n"
                   fi
                   echo
                 } >> outputs/result.txt
@@ -1847,7 +1814,7 @@ jobs:
                   out=""
                   dur=""
                   for ((i=1; i<=WARMUP_REQUESTED; i++)); do
-                    if ! generate_graphs_for_run "vf3_baseline_warmup" "w${i}"; then
+                    if ! generate_graphs_for_run "vf3_warmup" "w${i}"; then
                       EXIT_CODE=1
                       break
                     fi
@@ -1863,12 +1830,6 @@ jobs:
                       break
                     fi
                     progress_setup_tick
-                  done
-                  for ((i=1; i<=WARMUP_REQUESTED; i++)); do
-                    if ! generate_graphs_for_run "vf3_chatgpt_warmup" "w${i}"; then
-                      EXIT_CODE=1
-                      break
-                    fi
                     if ! run_capture out dur ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                       echo "[Warmup] VF3 ChatGPT first failed." >> outputs/result.txt
                       EXIT_CODE=1
@@ -1881,12 +1842,6 @@ jobs:
                       break
                     fi
                     progress_setup_tick
-                  done
-                  for ((i=1; i<=WARMUP_REQUESTED; i++)); do
-                    if ! generate_graphs_for_run "vf3_gemini_warmup" "w${i}"; then
-                      EXIT_CODE=1
-                      break
-                    fi
                     if ! run_capture out dur ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                       echo "[Warmup] VF3 Gemini first failed." >> outputs/result.txt
                       EXIT_CODE=1
@@ -1934,59 +1889,146 @@ jobs:
               WARMUP=0
 
               progress_set_phase "VF3 baseline"
-              if [ "$INPUT_MODE" = "generate" ]; then
-                vf3_base_first_out=""
-                vf3_base_all_out=""
-                first_times=()
-                first_rsses=()
-                all_times=()
-                all_rsses=()
-                out=""
-                dur=""
-                rss=""
-                for ((i=1; i<=ITERATIONS; i++)); do
-                  if ! generate_graphs_for_run "vf3_baseline" "$i"; then
+              vf3_success=0
+              vf3_fail=0
+              vf3_chatgpt_match=0
+              vf3_chatgpt_total=0
+              vf3_chatgpt_mismatch=0
+              vf3_gemini_match=0
+              vf3_gemini_total=0
+              vf3_gemini_mismatch=0
+
+              base_first_times=()
+              base_first_rsses=()
+              base_all_times=()
+              base_all_rsses=()
+              chat_first_times=()
+              chat_first_rsses=()
+              chat_all_times=()
+              chat_all_rsses=()
+              gem_first_times=()
+              gem_first_rsses=()
+              gem_all_times=()
+              gem_all_rsses=()
+              out=""
+              dur=""
+              rss=""
+
+              for ((i=1; i<=ITERATIONS; i++)); do
+                if [ "$INPUT_MODE" = "generate" ]; then
+                  if ! generate_graphs_for_run "vf3_iter" "$i"; then
                     EXIT_CODE=1
                     break
                   fi
-                  if ! run_capture_rss out dur rss ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                    echo "[VF3 baseline] first-solution run failed." >> outputs/result.txt
-                    break
-                  fi
-                  if [ $i -eq 1 ]; then
-                    vf3_base_first_out="$out"
-                  fi
-                  first_times+=("$dur")
-                  first_rsses+=("$rss")
+                fi
+
+                baseline_ok=1
+                progress_set_phase "VF3 baseline"
+                if ! run_capture_rss out dur rss ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                  echo "[VF3 baseline] first-solution run failed." >> outputs/result.txt
+                  baseline_ok=0
+                else
+                  base_first_times+=("$dur")
+                  base_first_rsses+=("$rss")
                   progress_tick
+                fi
+                if [ "$baseline_ok" -eq 1 ]; then
                   if ! run_capture_rss out dur rss ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
                     EXIT_CODE=1
                     echo "[VF3 baseline] all-solutions run failed." >> outputs/result.txt
-                    break
+                    baseline_ok=0
+                  else
+                    base_all_times+=("$dur")
+                    base_all_rsses+=("$rss")
+                    progress_tick
+                    baseline_count="$(extract_solution_count "$out")"
+                    if [ -z "${baseline_count:-}" ]; then
+                      echo "[VF3 baseline] could not parse solution count." >> outputs/result.txt
+                      baseline_ok=0
+                      EXIT_CODE=1
+                    fi
                   fi
-                  if [ $i -eq 1 ]; then
-                    vf3_base_all_out="$out"
-                  fi
-                  all_times+=("$dur")
-                  all_rsses+=("$rss")
+                fi
+
+                if [ "$baseline_ok" -ne 1 ]; then
+                  vf3_fail=$((vf3_fail + 1))
+                  continue
+                fi
+
+                vf3_success=$((vf3_success + 1))
+
+                progress_set_phase "VF3 ChatGPT"
+                vf3_chatgpt_total=$((vf3_chatgpt_total + 1))
+                chat_ok=1
+                chat_count=""
+                if ! run_capture_rss out dur rss ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                  echo "[VF3 ChatGPT] first-solution run failed." >> outputs/result.txt
+                  chat_ok=0
+                else
+                  chat_first_times+=("$dur")
+                  chat_first_rsses+=("$rss")
                   progress_tick
-                done
-                vf3_base_first_ms_runs="${first_times[*]}"
-                vf3_base_first_rss_runs="${first_rsses[*]}"
-                vf3_base_all_ms_runs="${all_times[*]}"
-                vf3_base_all_rss_runs="${all_rsses[*]}"
-              else
-                if ! bench_capture_rss_n vf3_base_first_out vf3_base_first_ms_runs vf3_base_first_rss_runs "$ITERATIONS" ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[VF3 baseline] first-solution run failed." >> outputs/result.txt
                 fi
-                progress_set_phase "VF3 baseline"
-                if ! bench_capture_rss_n vf3_base_all_out vf3_base_all_ms_runs vf3_base_all_rss_runs "$ITERATIONS" ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
+                if ! run_capture_rss out dur rss ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
-                  echo "[VF3 baseline] all-solutions run failed." >> outputs/result.txt
+                  echo "[VF3 ChatGPT] all-solutions run failed." >> outputs/result.txt
+                  chat_ok=0
+                else
+                  chat_all_times+=("$dur")
+                  chat_all_rsses+=("$rss")
+                  progress_tick
+                  chat_count="$(extract_solution_count "$out")"
                 fi
-              fi
+                if [ "$chat_ok" -eq 1 ] && [ -n "${chat_count:-}" ] && [ "$chat_count" = "$baseline_count" ]; then
+                  vf3_chatgpt_match=$((vf3_chatgpt_match + 1))
+                else
+                  vf3_chatgpt_mismatch=$((vf3_chatgpt_mismatch + 1))
+                fi
+
+                progress_set_phase "VF3 Gemini"
+                vf3_gemini_total=$((vf3_gemini_total + 1))
+                gem_ok=1
+                gem_count=""
+                if ! run_capture_rss out dur rss ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                  echo "[VF3 Gemini] first-solution run failed." >> outputs/result.txt
+                  gem_ok=0
+                else
+                  gem_first_times+=("$dur")
+                  gem_first_rsses+=("$rss")
+                  progress_tick
+                fi
+                if ! run_capture_rss out dur rss ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+                  EXIT_CODE=1
+                  echo "[VF3 Gemini] all-solutions run failed." >> outputs/result.txt
+                  gem_ok=0
+                else
+                  gem_all_times+=("$dur")
+                  gem_all_rsses+=("$rss")
+                  progress_tick
+                  gem_count="$(extract_solution_count "$out")"
+                fi
+                if [ "$gem_ok" -eq 1 ] && [ -n "${gem_count:-}" ] && [ "$gem_count" = "$baseline_count" ]; then
+                  vf3_gemini_match=$((vf3_gemini_match + 1))
+                else
+                  vf3_gemini_mismatch=$((vf3_gemini_mismatch + 1))
+                fi
+              done
+
+              vf3_base_first_ms_runs="${base_first_times[*]}"
+              vf3_base_first_rss_runs="${base_first_rsses[*]}"
+              vf3_base_all_ms_runs="${base_all_times[*]}"
+              vf3_base_all_rss_runs="${base_all_rsses[*]}"
+              chatvf3_first_ms_runs="${chat_first_times[*]}"
+              chatvf3_first_rss_runs="${chat_first_rsses[*]}"
+              chatvf3_all_ms_runs="${chat_all_times[*]}"
+              chatvf3_all_rss_runs="${chat_all_rsses[*]}"
+              vf3_first_ms_runs="${gem_first_times[*]}"
+              vf3_first_rss_runs="${gem_first_rsses[*]}"
+              vf3_all_ms_runs="${gem_all_times[*]}"
+              vf3_all_rss_runs="${gem_all_rsses[*]}"
 
               if [ -n "${vf3_base_first_ms_runs:-}" ]; then
                 read vf3_base_first_ms_median vf3_base_first_ms_mean vf3_base_first_ms_stdev vf3_base_first_ms_min vf3_base_first_ms_max vf3_base_first_ms_n <<< "$(calc_stats_ms $vf3_base_first_ms_runs)"
@@ -2004,15 +2046,14 @@ jobs:
                 read vf3_base_all_rss_median vf3_base_all_rss_mean vf3_base_all_rss_stdev vf3_base_all_rss_min vf3_base_all_rss_max vf3_base_all_rss_n <<< "$(calc_stats_kb $vf3_base_all_rss_runs)"
                 vf3_base_all_rss_kb="$vf3_base_all_rss_median"
               fi
-              if [ -n "${vf3_base_all_out:-}" ]; then
-                vf3_base_result_line=$(echo "$vf3_base_all_out" | head -n1)
-                vf3_base_result=$(echo "$vf3_base_result_line" | awk '{print $1}')
-                if [ -z "$vf3_base_result" ]; then
-                  vf3_base_result="$vf3_base_result_line"
+              if [ "$ITERATIONS" -ge 1 ]; then
+                vf3_failure_suffix=""
+                if [ "${vf3_fail:-0}" -gt 0 ]; then
+                  vf3_failure_suffix=", ${vf3_fail} failed"
                 fi
                 {
                   echo "[VF3 baseline]"
-                  echo "$vf3_base_result"
+                  echo "${vf3_success} iterations ran successfully${vf3_failure_suffix}"
                   echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${vf3_base_first_ms_median:-}" ] && [ -n "${vf3_base_all_ms_median:-}" ]; then
@@ -2024,163 +2065,6 @@ jobs:
                     print_stats_kb_first_all "Max RSS (kB): " \
                       "$vf3_base_first_rss_median" "$vf3_base_first_rss_mean" "$vf3_base_first_rss_stdev" "$vf3_base_first_rss_min" "$vf3_base_first_rss_max" \
                       "$vf3_base_all_rss_median" "$vf3_base_all_rss_mean" "$vf3_base_all_rss_stdev" "$vf3_base_all_rss_min" "$vf3_base_all_rss_max"
-                  fi
-                  echo
-                } >> outputs/result.txt
-              fi
-
-              progress_set_phase "VF3 ChatGPT"
-              if [ "$INPUT_MODE" = "generate" ]; then
-                chatvf3_first_out=""
-                chatvf3_all_out=""
-                first_times=()
-                first_rsses=()
-                all_times=()
-                all_rsses=()
-                out=""
-                dur=""
-                rss=""
-                for ((i=1; i<=ITERATIONS; i++)); do
-                  if ! generate_graphs_for_run "vf3_chatgpt" "$i"; then
-                    EXIT_CODE=1
-                    break
-                  fi
-                  if ! run_capture_rss out dur rss ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                    echo "[VF3 ChatGPT] first-solution run failed." >> outputs/result.txt
-                    break
-                  fi
-                  if [ $i -eq 1 ]; then
-                    chatvf3_first_out="$out"
-                  fi
-                  first_times+=("$dur")
-                  first_rsses+=("$rss")
-                  progress_tick
-                  if ! run_capture_rss out dur rss ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                    echo "[VF3 ChatGPT] all-solutions run failed." >> outputs/result.txt
-                    break
-                  fi
-                  if [ $i -eq 1 ]; then
-                    chatvf3_all_out="$out"
-                  fi
-                  all_times+=("$dur")
-                  all_rsses+=("$rss")
-                  progress_tick
-                done
-                chatvf3_first_ms_runs="${first_times[*]}"
-                chatvf3_first_rss_runs="${first_rsses[*]}"
-                chatvf3_all_ms_runs="${all_times[*]}"
-                chatvf3_all_rss_runs="${all_rsses[*]}"
-              else
-                if ! bench_capture_rss_n chatvf3_first_out chatvf3_first_ms_runs chatvf3_first_rss_runs "$ITERATIONS" ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[VF3 ChatGPT] first-solution run failed." >> outputs/result.txt
-                fi
-                progress_set_phase "VF3 ChatGPT"
-                if ! bench_capture_rss_n chatvf3_all_out chatvf3_all_ms_runs chatvf3_all_rss_runs "$ITERATIONS" ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[VF3 ChatGPT] all-solutions run failed." >> outputs/result.txt
-                fi
-              fi
-
-              progress_set_phase "VF3 Gemini"
-              if [ "$INPUT_MODE" = "generate" ]; then
-                vf3_first_out=""
-                vf3_all_out=""
-                first_times=()
-                first_rsses=()
-                all_times=()
-                all_rsses=()
-                out=""
-                dur=""
-                rss=""
-                for ((i=1; i<=ITERATIONS; i++)); do
-                  if ! generate_graphs_for_run "vf3_gemini" "$i"; then
-                    EXIT_CODE=1
-                    break
-                  fi
-                  if ! run_capture_rss out dur rss ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                    echo "[VF3 Gemini] first-solution run failed." >> outputs/result.txt
-                    break
-                  fi
-                  if [ $i -eq 1 ]; then
-                    vf3_first_out="$out"
-                  fi
-                  first_times+=("$dur")
-                  first_rsses+=("$rss")
-                  progress_tick
-                  if ! run_capture_rss out dur rss ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                    echo "[VF3 Gemini] all-solutions run failed." >> outputs/result.txt
-                    break
-                  fi
-                  if [ $i -eq 1 ]; then
-                    vf3_all_out="$out"
-                  fi
-                  all_times+=("$dur")
-                  all_rsses+=("$rss")
-                  progress_tick
-                done
-                vf3_first_ms_runs="${first_times[*]}"
-                vf3_first_rss_runs="${first_rsses[*]}"
-                vf3_all_ms_runs="${all_times[*]}"
-                vf3_all_rss_runs="${all_rsses[*]}"
-              else
-                if ! bench_capture_rss_n vf3_first_out vf3_first_ms_runs vf3_first_rss_runs "$ITERATIONS" ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[VF3 Gemini] first-solution run failed." >> outputs/result.txt
-                fi
-                progress_set_phase "VF3 Gemini"
-                if ! bench_capture_rss_n vf3_all_out vf3_all_ms_runs vf3_all_rss_runs "$ITERATIONS" ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[VF3 Gemini] all-solutions run failed." >> outputs/result.txt
-                fi
-              fi
-
-              if [ -n "${vf3_first_ms_runs:-}" ]; then
-                read vf3_first_ms_median vf3_first_ms_mean vf3_first_ms_stdev vf3_first_ms_min vf3_first_ms_max vf3_first_ms_n <<< "$(calc_stats_ms $vf3_first_ms_runs)"
-                vf3_first_ms="$vf3_first_ms_median"
-              fi
-              if [ -n "${vf3_all_ms_runs:-}" ]; then
-                read vf3_all_ms_median vf3_all_ms_mean vf3_all_ms_stdev vf3_all_ms_min vf3_all_ms_max vf3_all_ms_n <<< "$(calc_stats_ms $vf3_all_ms_runs)"
-                vf3_all_ms="$vf3_all_ms_median"
-              fi
-              if [ -n "${vf3_first_rss_runs:-}" ]; then
-                read vf3_first_rss_median vf3_first_rss_mean vf3_first_rss_stdev vf3_first_rss_min vf3_first_rss_max vf3_first_rss_n <<< "$(calc_stats_kb $vf3_first_rss_runs)"
-                vf3_first_rss_kb="$vf3_first_rss_median"
-              fi
-              if [ -n "${vf3_all_rss_runs:-}" ]; then
-                read vf3_all_rss_median vf3_all_rss_mean vf3_all_rss_stdev vf3_all_rss_min vf3_all_rss_max vf3_all_rss_n <<< "$(calc_stats_kb $vf3_all_rss_runs)"
-                vf3_all_rss_kb="$vf3_all_rss_median"
-              fi
-              if [ -n "${vf3_all_out:-}" ]; then
-                vf3_gemini_result="$(echo "$vf3_all_out" | head -n1)"
-                {
-                  echo "[VF3 Gemini]"
-                  echo "$vf3_gemini_result"
-                  echo "Warmup: $WARMUP_REQUESTED"
-                  echo "Iterations: $ITERATIONS"
-                  if [ -n "${vf3_first_ms_median:-}" ] && [ -n "${vf3_all_ms_median:-}" ]; then
-                    print_stats_ms_first_all "Runtime (ms): " \
-                      "$vf3_first_ms_median" "$vf3_first_ms_mean" "$vf3_first_ms_stdev" "$vf3_first_ms_min" "$vf3_first_ms_max" \
-                      "$vf3_all_ms_median" "$vf3_all_ms_mean" "$vf3_all_ms_stdev" "$vf3_all_ms_min" "$vf3_all_ms_max"
-                  fi
-                  if [ -n "${vf3_first_rss_median:-}" ] && [ -n "${vf3_all_rss_median:-}" ]; then
-                    print_stats_kb_first_all "Max RSS (kB): " \
-                      "$vf3_first_rss_median" "$vf3_first_rss_mean" "$vf3_first_rss_stdev" "$vf3_first_rss_min" "$vf3_first_rss_max" \
-                      "$vf3_all_rss_median" "$vf3_all_rss_mean" "$vf3_all_rss_stdev" "$vf3_all_rss_min" "$vf3_all_rss_max"
-                  fi
-                  if [ -n "${vf3_base_first_ms_mean:-}" ] && [ -n "${vf3_first_ms_mean:-}" ]; then
-                    t_test_line "runtime ms first baseline vs Gemini" \
-                      "$vf3_base_first_ms_mean" "$vf3_base_first_ms_stdev" "$vf3_base_first_ms_n" \
-                      "$vf3_first_ms_mean" "$vf3_first_ms_stdev" "$vf3_first_ms_n"
-                  fi
-                  if [ -n "${vf3_base_all_ms_mean:-}" ] && [ -n "${vf3_all_ms_mean:-}" ]; then
-                    t_test_line "runtime ms all baseline vs Gemini" \
-                      "$vf3_base_all_ms_mean" "$vf3_base_all_ms_stdev" "$vf3_base_all_ms_n" \
-                      "$vf3_all_ms_mean" "$vf3_all_ms_stdev" "$vf3_all_ms_n"
                   fi
                   echo
                 } >> outputs/result.txt
@@ -2202,11 +2086,10 @@ jobs:
                 read chatvf3_all_rss_median chatvf3_all_rss_mean chatvf3_all_rss_stdev chatvf3_all_rss_min chatvf3_all_rss_max chatvf3_all_rss_n <<< "$(calc_stats_kb $chatvf3_all_rss_runs)"
                 chatvf3_all_rss_kb="$chatvf3_all_rss_median"
               fi
-              if [ -n "${chatvf3_all_out:-}" ]; then
-                chatvf3_result="$(echo "$chatvf3_all_out" | head -n1)"
+              if [ "$ITERATIONS" -ge 1 ]; then
                 {
                   echo "[VF3 ChatGPT]"
-                  echo "$chatvf3_result"
+                  echo "Matches: ${vf3_chatgpt_match}/${vf3_chatgpt_total} (mismatches: ${vf3_chatgpt_mismatch})"
                   echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
                   if [ -n "${chatvf3_first_ms_median:-}" ] && [ -n "${chatvf3_all_ms_median:-}" ]; then
@@ -2228,6 +2111,52 @@ jobs:
                     t_test_line "runtime ms all baseline vs ChatGPT" \
                       "$vf3_base_all_ms_mean" "$vf3_base_all_ms_stdev" "$vf3_base_all_ms_n" \
                       "$chatvf3_all_ms_mean" "$chatvf3_all_ms_stdev" "$chatvf3_all_ms_n"
+                  fi
+                  echo
+                } >> outputs/result.txt
+              fi
+
+              if [ -n "${vf3_first_ms_runs:-}" ]; then
+                read vf3_first_ms_median vf3_first_ms_mean vf3_first_ms_stdev vf3_first_ms_min vf3_first_ms_max vf3_first_ms_n <<< "$(calc_stats_ms $vf3_first_ms_runs)"
+                vf3_first_ms="$vf3_first_ms_median"
+              fi
+              if [ -n "${vf3_all_ms_runs:-}" ]; then
+                read vf3_all_ms_median vf3_all_ms_mean vf3_all_ms_stdev vf3_all_ms_min vf3_all_ms_max vf3_all_ms_n <<< "$(calc_stats_ms $vf3_all_ms_runs)"
+                vf3_all_ms="$vf3_all_ms_median"
+              fi
+              if [ -n "${vf3_first_rss_runs:-}" ]; then
+                read vf3_first_rss_median vf3_first_rss_mean vf3_first_rss_stdev vf3_first_rss_min vf3_first_rss_max vf3_first_rss_n <<< "$(calc_stats_kb $vf3_first_rss_runs)"
+                vf3_first_rss_kb="$vf3_first_rss_median"
+              fi
+              if [ -n "${vf3_all_rss_runs:-}" ]; then
+                read vf3_all_rss_median vf3_all_rss_mean vf3_all_rss_stdev vf3_all_rss_min vf3_all_rss_max vf3_all_rss_n <<< "$(calc_stats_kb $vf3_all_rss_runs)"
+                vf3_all_rss_kb="$vf3_all_rss_median"
+              fi
+              if [ "$ITERATIONS" -ge 1 ]; then
+                {
+                  echo "[VF3 Gemini]"
+                  echo "Matches: ${vf3_gemini_match}/${vf3_gemini_total} (mismatches: ${vf3_gemini_mismatch})"
+                  echo "Warmup: $WARMUP_REQUESTED"
+                  echo "Iterations: $ITERATIONS"
+                  if [ -n "${vf3_first_ms_median:-}" ] && [ -n "${vf3_all_ms_median:-}" ]; then
+                    print_stats_ms_first_all "Runtime (ms): " \
+                      "$vf3_first_ms_median" "$vf3_first_ms_mean" "$vf3_first_ms_stdev" "$vf3_first_ms_min" "$vf3_first_ms_max" \
+                      "$vf3_all_ms_median" "$vf3_all_ms_mean" "$vf3_all_ms_stdev" "$vf3_all_ms_min" "$vf3_all_ms_max"
+                  fi
+                  if [ -n "${vf3_first_rss_median:-}" ] && [ -n "${vf3_all_rss_median:-}" ]; then
+                    print_stats_kb_first_all "Max RSS (kB): " \
+                      "$vf3_first_rss_median" "$vf3_first_rss_mean" "$vf3_first_rss_stdev" "$vf3_first_rss_min" "$vf3_first_rss_max" \
+                      "$vf3_all_rss_median" "$vf3_all_rss_mean" "$vf3_all_rss_stdev" "$vf3_all_rss_min" "$vf3_all_rss_max"
+                  fi
+                  if [ -n "${vf3_base_first_ms_mean:-}" ] && [ -n "${vf3_first_ms_mean:-}" ]; then
+                    t_test_line "runtime ms first baseline vs Gemini" \
+                      "$vf3_base_first_ms_mean" "$vf3_base_first_ms_stdev" "$vf3_base_first_ms_n" \
+                      "$vf3_first_ms_mean" "$vf3_first_ms_stdev" "$vf3_first_ms_n"
+                  fi
+                  if [ -n "${vf3_base_all_ms_mean:-}" ] && [ -n "${vf3_all_ms_mean:-}" ]; then
+                    t_test_line "runtime ms all baseline vs Gemini" \
+                      "$vf3_base_all_ms_mean" "$vf3_base_all_ms_stdev" "$vf3_base_all_ms_n" \
+                      "$vf3_all_ms_mean" "$vf3_all_ms_stdev" "$vf3_all_ms_n"
                   fi
                   echo
                 } >> outputs/result.txt
@@ -2279,6 +2208,14 @@ jobs:
           echo "GLASGOW_CHATGPT_ALL_RSS_KB=${glasgow_chatgpt_all_rss_kb:-}" >> "$GITHUB_OUTPUT"
           echo "GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV=${glasgow_chatgpt_first_rss_stdev:-}" >> "$GITHUB_OUTPUT"
           echo "GLASGOW_CHATGPT_ALL_RSS_KB_STDEV=${glasgow_chatgpt_all_rss_stdev:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_BASELINE_SUCCESS=${glasgow_success:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_BASELINE_FAILED=${glasgow_fail:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_CHATGPT_MATCH=${glasgow_chatgpt_match:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_CHATGPT_TOTAL=${glasgow_chatgpt_total:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_CHATGPT_MISMATCH=${glasgow_chatgpt_mismatch:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_GEMINI_MATCH=${glasgow_gemini_match:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_GEMINI_TOTAL=${glasgow_gemini_total:-}" >> "$GITHUB_OUTPUT"
+          echo "GLASGOW_GEMINI_MISMATCH=${glasgow_gemini_mismatch:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_BASE_FIRST_MS=${vf3_base_first_ms:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_BASE_ALL_MS=${vf3_base_all_ms:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_BASE_FIRST_MS_STDEV=${vf3_base_first_ms_stdev:-}" >> "$GITHUB_OUTPUT"
@@ -2303,6 +2240,14 @@ jobs:
           echo "VF3_CHATGPT_ALL_RSS_KB=${chatvf3_all_rss_kb:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_CHATGPT_FIRST_RSS_KB_STDEV=${chatvf3_first_rss_stdev:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_CHATGPT_ALL_RSS_KB_STDEV=${chatvf3_all_rss_stdev:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_BASELINE_SUCCESS=${vf3_success:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_BASELINE_FAILED=${vf3_fail:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_CHATGPT_MATCH=${vf3_chatgpt_match:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_CHATGPT_TOTAL=${vf3_chatgpt_total:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_CHATGPT_MISMATCH=${vf3_chatgpt_mismatch:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_GEMINI_MATCH=${vf3_gemini_match:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_GEMINI_TOTAL=${vf3_gemini_total:-}" >> "$GITHUB_OUTPUT"
+          echo "VF3_GEMINI_MISMATCH=${vf3_gemini_mismatch:-}" >> "$GITHUB_OUTPUT"
           # Always exit 0 so later steps run and results are committed
           exit 0
       
@@ -2345,6 +2290,14 @@ jobs:
           GLASGOW_CHATGPT_ALL_RSS_KB: ${{ steps.run.outputs.GLASGOW_CHATGPT_ALL_RSS_KB }}
           GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV }}
           GLASGOW_CHATGPT_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_CHATGPT_ALL_RSS_KB_STDEV }}
+          GLASGOW_BASELINE_SUCCESS: ${{ steps.run.outputs.GLASGOW_BASELINE_SUCCESS }}
+          GLASGOW_BASELINE_FAILED: ${{ steps.run.outputs.GLASGOW_BASELINE_FAILED }}
+          GLASGOW_CHATGPT_MATCH: ${{ steps.run.outputs.GLASGOW_CHATGPT_MATCH }}
+          GLASGOW_CHATGPT_TOTAL: ${{ steps.run.outputs.GLASGOW_CHATGPT_TOTAL }}
+          GLASGOW_CHATGPT_MISMATCH: ${{ steps.run.outputs.GLASGOW_CHATGPT_MISMATCH }}
+          GLASGOW_GEMINI_MATCH: ${{ steps.run.outputs.GLASGOW_GEMINI_MATCH }}
+          GLASGOW_GEMINI_TOTAL: ${{ steps.run.outputs.GLASGOW_GEMINI_TOTAL }}
+          GLASGOW_GEMINI_MISMATCH: ${{ steps.run.outputs.GLASGOW_GEMINI_MISMATCH }}
           VF3_BASE_FIRST_MS: ${{ steps.run.outputs.VF3_BASE_FIRST_MS }}
           VF3_BASE_ALL_MS: ${{ steps.run.outputs.VF3_BASE_ALL_MS }}
           VF3_BASE_FIRST_MS_STDEV: ${{ steps.run.outputs.VF3_BASE_FIRST_MS_STDEV }}
@@ -2369,6 +2322,14 @@ jobs:
           VF3_CHATGPT_ALL_RSS_KB: ${{ steps.run.outputs.VF3_CHATGPT_ALL_RSS_KB }}
           VF3_CHATGPT_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_RSS_KB_STDEV }}
           VF3_CHATGPT_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_CHATGPT_ALL_RSS_KB_STDEV }}
+          VF3_BASELINE_SUCCESS: ${{ steps.run.outputs.VF3_BASELINE_SUCCESS }}
+          VF3_BASELINE_FAILED: ${{ steps.run.outputs.VF3_BASELINE_FAILED }}
+          VF3_CHATGPT_MATCH: ${{ steps.run.outputs.VF3_CHATGPT_MATCH }}
+          VF3_CHATGPT_TOTAL: ${{ steps.run.outputs.VF3_CHATGPT_TOTAL }}
+          VF3_CHATGPT_MISMATCH: ${{ steps.run.outputs.VF3_CHATGPT_MISMATCH }}
+          VF3_GEMINI_MATCH: ${{ steps.run.outputs.VF3_GEMINI_MATCH }}
+          VF3_GEMINI_TOTAL: ${{ steps.run.outputs.VF3_GEMINI_TOTAL }}
+          VF3_GEMINI_MISMATCH: ${{ steps.run.outputs.VF3_GEMINI_MISMATCH }}
         run: |
           python - <<'PY'
           import datetime
@@ -2652,6 +2613,93 @@ jobs:
 
           if memory_kb_stdev:
               data["memory_kb_stdev"] = memory_kb_stdev
+
+          def maybe_int_env(key: str):
+              value = os.environ.get(key, "").strip()
+              if not value:
+                  return None
+              try:
+                  return int(value)
+              except ValueError:
+                  return None
+
+          if algorithm == "glasgow":
+              baseline_success = maybe_int_env("GLASGOW_BASELINE_SUCCESS")
+              baseline_failed = maybe_int_env("GLASGOW_BASELINE_FAILED")
+              chat_match = maybe_int_env("GLASGOW_CHATGPT_MATCH")
+              chat_total = maybe_int_env("GLASGOW_CHATGPT_TOTAL")
+              chat_mismatch = maybe_int_env("GLASGOW_CHATGPT_MISMATCH")
+              gem_match = maybe_int_env("GLASGOW_GEMINI_MATCH")
+              gem_total = maybe_int_env("GLASGOW_GEMINI_TOTAL")
+              gem_mismatch = maybe_int_env("GLASGOW_GEMINI_MISMATCH")
+              if any(
+                  v is not None
+                  for v in (
+                      baseline_success,
+                      baseline_failed,
+                      chat_match,
+                      chat_total,
+                      chat_mismatch,
+                      gem_match,
+                      gem_total,
+                      gem_mismatch,
+                  )
+              ):
+                  data["match_counts"] = {
+                      "baseline": {
+                          "success": baseline_success,
+                          "failed": baseline_failed,
+                      },
+                      "chatgpt": {
+                          "matches": chat_match,
+                          "total": chat_total,
+                          "mismatches": chat_mismatch,
+                      },
+                      "gemini": {
+                          "matches": gem_match,
+                          "total": gem_total,
+                          "mismatches": gem_mismatch,
+                      },
+                  }
+
+          if algorithm == "vf3":
+              baseline_success = maybe_int_env("VF3_BASELINE_SUCCESS")
+              baseline_failed = maybe_int_env("VF3_BASELINE_FAILED")
+              chat_match = maybe_int_env("VF3_CHATGPT_MATCH")
+              chat_total = maybe_int_env("VF3_CHATGPT_TOTAL")
+              chat_mismatch = maybe_int_env("VF3_CHATGPT_MISMATCH")
+              gem_match = maybe_int_env("VF3_GEMINI_MATCH")
+              gem_total = maybe_int_env("VF3_GEMINI_TOTAL")
+              gem_mismatch = maybe_int_env("VF3_GEMINI_MISMATCH")
+              if any(
+                  v is not None
+                  for v in (
+                      baseline_success,
+                      baseline_failed,
+                      chat_match,
+                      chat_total,
+                      chat_mismatch,
+                      gem_match,
+                      gem_total,
+                      gem_mismatch,
+                  )
+              ):
+                  data["match_counts"] = {
+                      "baseline": {
+                          "success": baseline_success,
+                          "failed": baseline_failed,
+                      },
+                      "chatgpt": {
+                          "matches": chat_match,
+                          "total": chat_total,
+                          "mismatches": chat_mismatch,
+                      },
+                      "gemini": {
+                          "matches": gem_match,
+                          "total": gem_total,
+                          "mismatches": gem_mismatch,
+                      },
+                  }
           Path("outputs/result.json").write_text(
               json.dumps(data, indent=2) + "\n", encoding="utf-8"
           )
