@@ -1960,38 +1960,48 @@ jobs:
                   fi
                 fi
 
-                baseline_ok=1
+                baseline_ok=0
                 progress_set_phase "VF3 baseline"
-                vf3_err_tmp=""
-                if ! run_capture_rss_tmp out dur rss vf3_err_tmp ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
-                  baseline_ok=0
-                  if [ "$INPUT_MODE" = "generate" ]; then
-                    echo "[VF3 baseline] first-solution run failed; regenerating graph and retrying." >> outputs/result.txt
-                    if generate_graphs_for_run "vf3_iter_retry" "${i}_retry"; then
-                      vf3_err_tmp_retry=""
-                      if run_capture_rss_tmp out dur rss vf3_err_tmp_retry ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
-                        baseline_ok=1
-                      else
-                        echo "[VF3 baseline] first-solution run failed (retry)." >> outputs/result.txt
-                        if [ -n "${vf3_err_tmp_retry:-}" ] && [ -s "$vf3_err_tmp_retry" ]; then
-                          echo "[VF3 baseline] stderr (retry):" >> outputs/result.txt
-                          head -n 5 "$vf3_err_tmp_retry" >> outputs/result.txt
-                        fi
-                      fi
-                    else
+                max_attempts=1
+                if [ "$INPUT_MODE" = "generate" ]; then
+                  max_attempts=3
+                fi
+                attempt=1
+                while [ "$attempt" -le "$max_attempts" ]; do
+                  if [ "$attempt" -gt 1 ]; then
+                    if ! generate_graphs_for_run "vf3_iter_retry" "${i}_retry${attempt}"; then
                       echo "[VF3 baseline] graph regeneration failed (retry)." >> outputs/result.txt
+                      break
                     fi
+                  fi
+                  vf3_err_tmp=""
+                  if run_capture_rss_tmp out dur rss vf3_err_tmp ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
+                    baseline_ok=1
+                    if [ -n "${vf3_err_tmp:-}" ] && [ -f "$vf3_err_tmp" ]; then
+                      rm -f "$vf3_err_tmp"
+                    fi
+                    break
+                  fi
+                  if [ "$attempt" -eq 1 ] && [ "$max_attempts" -gt 1 ]; then
+                    echo "[VF3 baseline] first-solution run failed; regenerating graph and retrying." >> outputs/result.txt
+                  elif [ "$attempt" -lt "$max_attempts" ]; then
+                    echo "[VF3 baseline] first-solution run failed (retry); regenerating graph and retrying." >> outputs/result.txt
                   else
-                    echo "[VF3 baseline] first-solution run failed." >> outputs/result.txt
+                    echo "[VF3 baseline] first-solution run failed (retry)." >> outputs/result.txt
                   fi
                   if [ -n "${vf3_err_tmp:-}" ] && [ -s "$vf3_err_tmp" ]; then
-                    echo "[VF3 baseline] stderr:" >> outputs/result.txt
+                    if [ "$attempt" -gt 1 ]; then
+                      echo "[VF3 baseline] stderr (retry $attempt):" >> outputs/result.txt
+                    else
+                      echo "[VF3 baseline] stderr:" >> outputs/result.txt
+                    fi
                     head -n 5 "$vf3_err_tmp" >> outputs/result.txt
                   fi
-                fi
-                if [ -n "${vf3_err_tmp:-}" ] && [ -f "$vf3_err_tmp" ]; then
-                  rm -f "$vf3_err_tmp"
-                fi
+                  if [ -n "${vf3_err_tmp:-}" ] && [ -f "$vf3_err_tmp" ]; then
+                    rm -f "$vf3_err_tmp"
+                  fi
+                  attempt=$((attempt + 1))
+                done
                 if [ "$baseline_ok" -ne 1 ]; then
                   EXIT_CODE=1
                 fi

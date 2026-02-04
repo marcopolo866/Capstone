@@ -79,6 +79,61 @@ def ensure_pattern_edges(target_adj: list[list[int]], nodes: list[int], rng: ran
         target_adj[u] = sorted(target_adj[u])
 
 
+def build_undirected_adj(adj: list[list[int]]) -> list[list[int]]:
+    undirected = [set(neigh) for neigh in adj]
+    for u, neighbors in enumerate(adj):
+        for v in neighbors:
+            if v < 0 or v >= len(adj) or v == u:
+                continue
+            undirected[u].add(v)
+            undirected[v].add(u)
+    return [sorted(list(s)) for s in undirected]
+
+
+def pick_connected_nodes(undirected_adj: list[list[int]], k: int, rng: random.Random) -> list[int]:
+    n = len(undirected_adj)
+    if k <= 0 or k > n:
+        raise ValueError("k must be between 1 and N")
+
+    remaining = set(range(n))
+    component = None
+    while remaining:
+        start = rng.choice(tuple(remaining))
+        queue = [start]
+        comp = []
+        seen = {start}
+        while queue:
+            u = queue.pop()
+            comp.append(u)
+            for v in undirected_adj[u]:
+                if v not in seen:
+                    seen.add(v)
+                    queue.append(v)
+        remaining.difference_update(seen)
+        if len(comp) >= k:
+            component = comp
+            break
+
+    if component is None:
+        raise ValueError("No connected component is large enough for the chosen k")
+
+    start = rng.choice(component)
+    selected = {start}
+    frontier = set(undirected_adj[start]) - selected
+    while len(selected) < k:
+        if not frontier:
+            raise ValueError("Failed to build a connected pattern of size k")
+        nxt = rng.choice(tuple(frontier))
+        frontier.discard(nxt)
+        if nxt in selected:
+            continue
+        selected.add(nxt)
+        for v in undirected_adj[nxt]:
+            if v not in selected:
+                frontier.add(v)
+    return list(selected)
+
+
 def write_lad(path: Path, adj: list[list[int]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
@@ -158,7 +213,8 @@ def main() -> None:
         generated.append(path)
     else:
         target_adj = generate_adjacency(n, rng, density)
-        nodes = rng.sample(range(n), k)
+        undirected_adj = build_undirected_adj(target_adj)
+        nodes = pick_connected_nodes(undirected_adj, k, rng)
         ensure_pattern_edges(target_adj, nodes, rng)
         node_set = set(nodes)
         pattern_map = {node: idx for idx, node in enumerate(nodes)}
