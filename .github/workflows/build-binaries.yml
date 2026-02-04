@@ -10,9 +10,9 @@ on:
       - 'baselines/nyaan-library/**'
       - 'baselines/vf3lib/**'
       - 'baselines/glasgow-subgraph-solver/**'
-      - 'src/[CHATGPT] Shortest Path.cpp'
-      - 'src/[GEMINI] Subgraph Isomorphism.cpp'
-      - 'src/[CHATGPT] Subgraph Isomorphism.cpp'
+      - 'src/\[CHATGPT\] Shortest Path.cpp'
+      - 'src/\[GEMINI\] Subgraph Isomorphism.cpp'
+      - 'src/\[CHATGPT\] Subgraph Isomorphism.cpp'
       - '.github/workflows/build-binaries.yml'
       - '.gitmodules'
 
