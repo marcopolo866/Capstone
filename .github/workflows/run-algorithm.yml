@@ -29,22 +29,22 @@ on:
         options:
           - premade
           - generate
-        default: premade
+        default: generate
       n:
         description: 'Generated graph node count (N)'
         required: false
         type: string
-        default: ''
+        default: '100'
       k:
         description: 'Generated pattern node count (k)'
         required: false
         type: string
-        default: ''
+        default: '10'
       density:
         description: 'Generated graph density (0-1)'
         required: false
         type: string
-        default: '0.05'
+        default: '0.01'
       input_files:
         description: 'Comma-separated input file paths'
         required: false
