@@ -2931,10 +2931,16 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             }
 
             const mem = {
-                benchmark: pickPair(['baseline_all', 'baseline', 'first', 'baseline_first', 'all'], memory, memoryStdev),
-                chatgpt: pickPair(['chatgpt_all', 'llm', 'chatgpt_first'], memory, memoryStdev),
-                gemini: pickPair(['gemini_all', 'gemini_first'], memory, memoryStdev)
+                benchmark: pickPair(['baseline_all', 'all'], memory, memoryStdev),
+                chatgpt: pickPair(['chatgpt_all', 'llm'], memory, memoryStdev),
+                gemini: pickPair(['gemini_all'], memory, memoryStdev)
             };
+
+            if (result && result.algorithm === 'dijkstra') {
+                mem.benchmark = pickPair(['baseline'], memory, memoryStdev);
+                mem.chatgpt = pickPair(['llm'], memory, memoryStdev);
+                mem.gemini = { value: null, stdev: null };
+            }
 
             return { runtime, memory: mem };
         }
