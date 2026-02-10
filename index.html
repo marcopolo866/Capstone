@@ -81,9 +81,16 @@
                         <label>Density (fraction of possible edges, 0-1)</label>
                         <input type="number" id="gen-density" min="0.01" max="1" step="0.01" value="0.05" oninput="onGeneratorInputChange()">
                     </div>
+                    <div class="input-group">
+                        <label>Seed (optional, integer)</label>
+                        <input type="number" id="gen-seed" step="1" placeholder="Leave blank for random" oninput="onGeneratorInputChange()">
+                    </div>
                     <div class="inline-note" id="generator-estimate" hidden></div>
                     <div class="inline-warning" id="generator-warning" hidden>
                         k must be smaller than N.
+                    </div>
+                    <div class="inline-warning" id="generator-seed-warning" hidden>
+                        Seed must be an integer.
                     </div>
                 </div>
                 <div id="files-content">
@@ -173,7 +180,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             generator: {
                 n: '',
                 k: '',
-                density: '0.05'
+                density: '0.05',
+                seed: ''
             }
         };
 
@@ -573,9 +581,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const nEl = document.getElementById('gen-n');
             const kEl = document.getElementById('gen-k');
             const dEl = document.getElementById('gen-density');
+            const seedEl = document.getElementById('gen-seed');
             config.generator.n = nEl ? nEl.value : '';
             config.generator.k = kEl ? kEl.value : '';
             config.generator.density = dEl ? dEl.value : config.generator.density;
+            config.generator.seed = seedEl ? seedEl.value : '';
             updateGeneratorEstimate();
             updateRunInfo();
             updateRunButton();
@@ -850,19 +860,24 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
         function validateGeneratorInputs() {
             const warning = document.getElementById('generator-warning');
+            const seedWarning = document.getElementById('generator-seed-warning');
             const nEl = document.getElementById('gen-n');
             const kEl = document.getElementById('gen-k');
             const dEl = document.getElementById('gen-density');
+            const seedEl = document.getElementById('gen-seed');
             if (nEl) config.generator.n = nEl.value;
             if (kEl) config.generator.k = kEl.value;
             if (dEl) config.generator.density = dEl.value;
+            if (seedEl) config.generator.seed = seedEl.value;
             const nValue = parseInt(String(config.generator.n || '').trim(), 10);
             const kValue = parseInt(String(config.generator.k || '').trim(), 10);
             const densityValue = parseFloat(String(config.generator.density || '').trim());
+            const seedRaw = String(config.generator.seed || '').trim();
             const needsK = isGraphPairAlgorithm(config.selectedAlgorithm);
 
             let valid = Number.isFinite(nValue) && nValue >= 2;
             let showKWarning = false;
+            let showSeedWarning = false;
 
             if (needsK) {
                 if (!Number.isFinite(kValue) || kValue < 1) {
@@ -875,9 +890,16 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (!Number.isFinite(densityValue) || densityValue <= 0 || densityValue > 1) {
                 valid = false;
             }
+            if (seedRaw && !/^-?\d+$/.test(seedRaw)) {
+                valid = false;
+                showSeedWarning = true;
+            }
 
             if (warning) {
                 warning.hidden = !showKWarning;
+            }
+            if (seedWarning) {
+                seedWarning.hidden = !showSeedWarning;
             }
 
             return { valid, n: nValue, k: kValue, density: densityValue };
@@ -2377,6 +2399,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         n: String(config.generator.n || ''),
                         k: String(config.generator.k || ''),
                         density: String(config.generator.density || ''),
+                        seed: String(config.generator.seed || ''),
                         request_id: requestId
                     }
                 };
@@ -2405,8 +2428,14 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     'Result:',
                     result.output || '(No output)'
                 ];
+                const seedUsed = result && result.inputs && result.inputs.seed ? String(result.inputs.seed) : '';
                 const elapsedMs = nowMs() - endToEndStartMs;
-                finalLines.push('', `Total end-to-end time: ${formatDurationMs(elapsedMs)}`);
+                if (inputMode === 'generate' && seedUsed) {
+                    finalLines.push('', `Seed used: ${seedUsed}`);
+                    finalLines.push(`Total end-to-end time: ${formatDurationMs(elapsedMs)}`);
+                } else {
+                    finalLines.push('', `Total end-to-end time: ${formatDurationMs(elapsedMs)}`);
+                }
                 outputDiv.textContent = finalLines.join('\n');
                 statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
                 if (progressState.total > 0) {
@@ -2508,6 +2537,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         n: workflowData.inputs.n,
                         k: workflowData.inputs.k,
                         density: workflowData.inputs.density,
+                        seed: workflowData.inputs.seed,
                         request_id: workflowData.inputs.request_id || ''
                     }
                 };

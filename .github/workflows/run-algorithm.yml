@@ -45,6 +45,10 @@ on:
         required: false
         type: string
         default: '0.01'
+      seed:
+        description: 'Generator seed (optional)'
+        required: false
+        type: string
       input_files:
         description: 'Comma-separated input file paths'
         required: false
@@ -69,6 +73,7 @@ jobs:
       GENERATOR_N_INPUT: ${{ github.event.inputs.n || github.event.client_payload.n }}
       GENERATOR_K_INPUT: ${{ github.event.inputs.k || github.event.client_payload.k }}
       GENERATOR_DENSITY_INPUT: ${{ github.event.inputs.density || github.event.client_payload.density }}
+      GENERATOR_SEED_INPUT: ${{ github.event.inputs.seed || github.event.client_payload.seed }}
       INPUT_FILES_INPUT: ${{ github.event.inputs.input_files || github.event.client_payload.input_files }}
       REQUEST_ID_INPUT: ${{ github.event.inputs.request_id || github.event.client_payload.request_id }}
 
@@ -354,6 +359,7 @@ jobs:
           GENERATOR_N="${GENERATOR_N_INPUT:-}"
           GENERATOR_K="${GENERATOR_K_INPUT:-}"
           GENERATOR_DENSITY="${GENERATOR_DENSITY_INPUT:-0.05}"
+          GENERATOR_SEED_RAW="${GENERATOR_SEED_INPUT:-}"
           INPUT_FILES="${INPUT_FILES_INPUT:-}"
           REQUEST_ID="${REQUEST_ID_INPUT:-}"
 
@@ -362,6 +368,16 @@ jobs:
           RUN_STARTED_NS="$(date +%s%N)"
           GEN_COUNTER=0
           SOLVER_TIME_MS_TOTAL=""
+          SEED_USED=""
+
+          if [ "$INPUT_MODE" = "generate" ]; then
+            seed_trimmed="$(echo "${GENERATOR_SEED_RAW}" | tr -d '\r' | xargs)"
+            if [[ "${seed_trimmed}" =~ ^-?[0-9]+$ ]]; then
+              SEED_USED="${seed_trimmed}"
+            else
+              SEED_USED="$(python -c "import secrets; print(secrets.randbits(31))")"
+            fi
+          fi
 
           generate_graphs_for_run() {
             local variant="$1"
@@ -369,7 +385,8 @@ jobs:
             local gen_dir="outputs/generated/${ALGORITHM}/${variant}/iter_${iter}"
             mkdir -p "$gen_dir"
             GEN_COUNTER=$((GEN_COUNTER + 1))
-            local seed=$((RUN_STARTED_NS + GEN_COUNTER))
+            local seed
+            seed="$(python -c "import sys; base=int(sys.argv[1]); offset=int(sys.argv[2]); print(base + offset)" "$SEED_USED" "$GEN_COUNTER")"
             local output status files
             local -a gen_args
             gen_args=(--algorithm "$ALGORITHM" --n "$GENERATOR_N" --density "$GENERATOR_DENSITY" --seed "$seed" --out-dir "$gen_dir")
@@ -2309,6 +2326,7 @@ jobs:
           echo "VF3_GEMINI_MATCH=${vf3_gemini_match:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_GEMINI_TOTAL=${vf3_gemini_total:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_GEMINI_MISMATCH=${vf3_gemini_mismatch:-}" >> "$GITHUB_OUTPUT"
+          echo "SEED_USED=${SEED_USED:-}" >> "$GITHUB_OUTPUT"
           # Always exit 0 so later steps run and results are committed
           exit 0
       
@@ -2319,6 +2337,7 @@ jobs:
           ITERATIONS: ${{ steps.run.outputs.ITERATIONS }}
           WARMUP: ${{ steps.run.outputs.WARMUP }}
           RUN_DURATION_MS: ${{ steps.run.outputs.RUN_DURATION_MS }}
+          SEED_USED: ${{ steps.run.outputs.SEED_USED }}
           DIJKSTRA_BASELINE_MS: ${{ steps.run.outputs.DIJKSTRA_BASELINE_MS }}
           DIJKSTRA_LLM_MS: ${{ steps.run.outputs.DIJKSTRA_LLM_MS }}
           DIJKSTRA_BASELINE_MS_STDEV: ${{ steps.run.outputs.DIJKSTRA_BASELINE_MS_STDEV }}
@@ -2407,6 +2426,7 @@ jobs:
           gen_n = os.environ.get("GENERATOR_N_INPUT", "")
           gen_k = os.environ.get("GENERATOR_K_INPUT", "")
           gen_density = os.environ.get("GENERATOR_DENSITY_INPUT", "")
+          seed_used = os.environ.get("SEED_USED", "")
 
           result_txt = Path("outputs/result.txt")
           text = ""
@@ -2447,6 +2467,11 @@ jobs:
                   inputs["density"] = float(gen_density)
               except ValueError:
                   inputs["density"] = gen_density
+          if seed_used:
+              try:
+                  inputs["seed"] = int(seed_used)
+              except ValueError:
+                  inputs["seed"] = seed_used
           if inputs:
               data["inputs"] = inputs
           iterations = os.environ.get("ITERATIONS", "").strip()
