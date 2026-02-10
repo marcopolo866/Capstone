@@ -253,6 +253,8 @@ struct State {
 long long match_count = 0;
 bool first_only_mode = false;
 bool induced_mode = true;
+double first_solution_sec = -1.0;
+chrono::steady_clock::time_point solve_start_time;
 
 // --- Feasibility Check ---
 
@@ -307,6 +309,10 @@ void solve(const Graph& pat, const Graph& tar, State& s, const vector<int>& orde
         return;
     }
     if (s.core_len == pat.n) {
+        if (match_count == 0) {
+            auto now = chrono::steady_clock::now();
+            first_solution_sec = chrono::duration<double>(now - solve_start_time).count();
+        }
         match_count++;
         return;
     }
@@ -428,7 +434,8 @@ int main(int argc, char** argv) {
     Graph pat = load_graph(pat_file);
     Graph tar = load_graph(tar_file);
 
-    auto start_time = chrono::steady_clock::now();
+    solve_start_time = chrono::steady_clock::now();
+    first_solution_sec = -1.0;
 
     // Heuristic: Determine matching order (Node Ordering)
     // Greedy approach: Start with node with max degree, then BFS/DFS
@@ -478,10 +485,13 @@ int main(int argc, char** argv) {
     solve(pat, tar, state, order);
 
     auto end_time = chrono::steady_clock::now();
-    double duration = chrono::duration<double, milli>(end_time - start_time).count();
+    double all_sec = chrono::duration<double>(end_time - solve_start_time).count();
+    if (first_solution_sec < 0.0) {
+        first_solution_sec = all_sec;
+    }
 
-    cout << match_count << endl;
-    cout << fixed << setprecision(3) << duration << endl;
+    cout.setf(std::ios::fixed);
+    cout << setprecision(6) << match_count << " " << first_solution_sec << " " << all_sec << endl;
 
     return 0;
 }

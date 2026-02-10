@@ -51,7 +51,8 @@ jobs:
             -o "src/dijkstra_llm"
 
           echo "Building VF3 baseline..."
-          make -C baselines/vf3lib vf3
+          VF3_CFLAGS="-std=c++11 -O3 -DNDEBUG -flto -fomit-frame-pointer -pipe -mtune=generic -Wno-deprecated"
+          make -C baselines/vf3lib vf3 CFLAGS="$VF3_CFLAGS"
 
           echo "Building VF3 Gemini (src)..."
           g++ -std=c++17 -O3 "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3"

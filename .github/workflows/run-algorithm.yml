@@ -529,7 +529,7 @@ jobs:
               ;;
             vf3)
               UNITS_PER_ITER=3   # baseline + gemini + chatgpt
-              TICKS_PER_ITER=6   # each has first + all (each ticks)
+              TICKS_PER_ITER=3   # each runs once (reports first + all)
               ;;
             *)
               UNITS_PER_ITER=0
@@ -1085,6 +1085,27 @@ jobs:
 
           extract_solution_count() {
             echo "$1" | tr -d '\r' | awk 'match($0, /-?[0-9]+/) {print substr($0, RSTART, RLENGTH); exit}'
+          }
+
+          extract_solution_times_ms() {
+            python - <<'PY' "$1"
+          import re
+          import sys
+
+          text = sys.argv[1]
+          nums = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", text)
+          if len(nums) < 3:
+              print("")
+              raise SystemExit(0)
+          try:
+              sol = int(float(nums[0]))
+              first_sec = float(nums[1])
+              all_sec = float(nums[2])
+          except ValueError:
+              print("")
+              raise SystemExit(0)
+          print(f"{sol} {first_sec * 1000:.3f} {all_sec * 1000:.3f}")
+          PY
           }
 
           sum_ms_runs() {
@@ -1856,32 +1877,14 @@ jobs:
                       EXIT_CODE=1
                       break
                     fi
-                    if ! run_capture out dur ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
-                      echo "[Warmup] VF3 baseline first failed." >> outputs/result.txt
-                      EXIT_CODE=1
-                      break
-                    fi
-                    progress_setup_tick
                     if ! run_capture out dur ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
                       echo "[Warmup] VF3 baseline all failed." >> outputs/result.txt
                       EXIT_CODE=1
                       break
                     fi
                     progress_setup_tick
-                    if ! run_capture out dur ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
-                      echo "[Warmup] VF3 ChatGPT first failed." >> outputs/result.txt
-                      EXIT_CODE=1
-                      break
-                    fi
-                    progress_setup_tick
                     if ! run_capture out dur ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
                       echo "[Warmup] VF3 ChatGPT all failed." >> outputs/result.txt
-                      EXIT_CODE=1
-                      break
-                    fi
-                    progress_setup_tick
-                    if ! run_capture out dur ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
-                      echo "[Warmup] VF3 Gemini first failed." >> outputs/result.txt
                       EXIT_CODE=1
                       break
                     fi
@@ -1894,19 +1897,10 @@ jobs:
                     progress_setup_tick
                   done
                 else
-                  if ! warmup_only "VF3 baseline first" ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                  fi
                   if ! warmup_only "VF3 baseline all" ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
                     EXIT_CODE=1
                   fi
-                  if ! warmup_only "VF3 ChatGPT first" ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                  fi
                   if ! warmup_only "VF3 ChatGPT all" ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                  fi
-                  if ! warmup_only "VF3 Gemini first" ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
                     EXIT_CODE=1
                   fi
                   if ! warmup_only "VF3 Gemini all" ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
@@ -1975,7 +1969,7 @@ jobs:
                     fi
                   fi
                   vf3_err_tmp=""
-                  if run_capture_rss_tmp out dur rss vf3_err_tmp ./baselines/vf3lib/bin/vf3 -r 0 -F "${FILES[0]}" "${FILES[1]}"; then
+                  if run_capture_rss_tmp out dur rss vf3_err_tmp ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
                     baseline_ok=1
                     if [ -n "${vf3_err_tmp:-}" ] && [ -f "$vf3_err_tmp" ]; then
                       rm -f "$vf3_err_tmp"
@@ -1983,11 +1977,11 @@ jobs:
                     break
                   fi
                   if [ "$attempt" -eq 1 ] && [ "$max_attempts" -gt 1 ]; then
-                    echo "[VF3 baseline] first-solution run failed; regenerating graph and retrying." >> outputs/result.txt
+                    echo "[VF3 baseline] run failed; regenerating graph and retrying." >> outputs/result.txt
                   elif [ "$attempt" -lt "$max_attempts" ]; then
-                    echo "[VF3 baseline] first-solution run failed (retry); regenerating graph and retrying." >> outputs/result.txt
+                    echo "[VF3 baseline] run failed (retry); regenerating graph and retrying." >> outputs/result.txt
                   else
-                    echo "[VF3 baseline] first-solution run failed (retry)." >> outputs/result.txt
+                    echo "[VF3 baseline] run failed (retry)." >> outputs/result.txt
                   fi
                   if [ -n "${vf3_err_tmp:-}" ] && [ -s "$vf3_err_tmp" ]; then
                     if [ "$attempt" -gt 1 ]; then
@@ -2006,25 +2000,17 @@ jobs:
                   EXIT_CODE=1
                 fi
                 if [ "$baseline_ok" -eq 1 ]; then
-                  base_first_times+=("$dur")
-                  base_first_rsses+=("$rss")
-                  progress_tick
-                fi
-                if [ "$baseline_ok" -eq 1 ]; then
-                  if ! run_capture_rss out dur rss ./baselines/vf3lib/bin/vf3 -r 0 "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                    echo "[VF3 baseline] all-solutions run failed." >> outputs/result.txt
+                  read baseline_count base_first_ms base_all_ms <<< "$(extract_solution_times_ms "$out")"
+                  if [ -z "${baseline_count:-}" ] || [ -z "${base_first_ms:-}" ] || [ -z "${base_all_ms:-}" ]; then
+                    echo "[VF3 baseline] could not parse solution timings." >> outputs/result.txt
                     baseline_ok=0
+                    EXIT_CODE=1
                   else
-                    base_all_times+=("$dur")
+                    base_first_times+=("$base_first_ms")
+                    base_all_times+=("$base_all_ms")
+                    base_first_rsses+=("$rss")
                     base_all_rsses+=("$rss")
                     progress_tick
-                    baseline_count="$(extract_solution_count "$out")"
-                    if [ -z "${baseline_count:-}" ]; then
-                      echo "[VF3 baseline] could not parse solution count." >> outputs/result.txt
-                      baseline_ok=0
-                      EXIT_CODE=1
-                    fi
                   fi
                 fi
 
@@ -2039,24 +2025,23 @@ jobs:
                 vf3_chatgpt_total=$((vf3_chatgpt_total + 1))
                 chat_ok=1
                 chat_count=""
-                if ! run_capture_rss out dur rss ./src/chatvf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[VF3 ChatGPT] first-solution run failed." >> outputs/result.txt
-                  chat_ok=0
-                else
-                  chat_first_times+=("$dur")
-                  chat_first_rsses+=("$rss")
-                  progress_tick
-                fi
                 if ! run_capture_rss out dur rss ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
                   echo "[VF3 ChatGPT] all-solutions run failed." >> outputs/result.txt
                   chat_ok=0
                 else
-                  chat_all_times+=("$dur")
-                  chat_all_rsses+=("$rss")
-                  progress_tick
-                  chat_count="$(extract_solution_count "$out")"
+                  read chat_count chat_first_ms chat_all_ms <<< "$(extract_solution_times_ms "$out")"
+                  if [ -z "${chat_count:-}" ] || [ -z "${chat_first_ms:-}" ] || [ -z "${chat_all_ms:-}" ]; then
+                    EXIT_CODE=1
+                    echo "[VF3 ChatGPT] could not parse solution timings." >> outputs/result.txt
+                    chat_ok=0
+                  else
+                    chat_first_times+=("$chat_first_ms")
+                    chat_all_times+=("$chat_all_ms")
+                    chat_first_rsses+=("$rss")
+                    chat_all_rsses+=("$rss")
+                    progress_tick
+                  fi
                 fi
                 if [ "$chat_ok" -eq 1 ] && [ -n "${chat_count:-}" ] && [ "$chat_count" = "$baseline_count" ]; then
                   vf3_chatgpt_match=$((vf3_chatgpt_match + 1))
@@ -2068,24 +2053,23 @@ jobs:
                 vf3_gemini_total=$((vf3_gemini_total + 1))
                 gem_ok=1
                 gem_count=""
-                if ! run_capture_rss out dur rss ./src/vf3 --first-only "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[VF3 Gemini] first-solution run failed." >> outputs/result.txt
-                  gem_ok=0
-                else
-                  gem_first_times+=("$dur")
-                  gem_first_rsses+=("$rss")
-                  progress_tick
-                fi
                 if ! run_capture_rss out dur rss ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
                   echo "[VF3 Gemini] all-solutions run failed." >> outputs/result.txt
                   gem_ok=0
                 else
-                  gem_all_times+=("$dur")
-                  gem_all_rsses+=("$rss")
-                  progress_tick
-                  gem_count="$(extract_solution_count "$out")"
+                  read gem_count gem_first_ms gem_all_ms <<< "$(extract_solution_times_ms "$out")"
+                  if [ -z "${gem_count:-}" ] || [ -z "${gem_first_ms:-}" ] || [ -z "${gem_all_ms:-}" ]; then
+                    EXIT_CODE=1
+                    echo "[VF3 Gemini] could not parse solution timings." >> outputs/result.txt
+                    gem_ok=0
+                  else
+                    gem_first_times+=("$gem_first_ms")
+                    gem_all_times+=("$gem_all_ms")
+                    gem_first_rsses+=("$rss")
+                    gem_all_rsses+=("$rss")
+                    progress_tick
+                  fi
                 fi
                 if [ "$gem_ok" -eq 1 ] && [ -n "${gem_count:-}" ] && [ "$gem_count" = "$baseline_count" ]; then
                   vf3_gemini_match=$((vf3_gemini_match + 1))
@@ -2238,8 +2222,8 @@ jobs:
                   echo
                 } >> outputs/result.txt
               fi
-              if [ -n "${vf3_base_first_ms_runs:-}" ] || [ -n "${vf3_base_all_ms_runs:-}" ] || [ -n "${vf3_first_ms_runs:-}" ] || [ -n "${vf3_all_ms_runs:-}" ] || [ -n "${chatvf3_first_ms_runs:-}" ] || [ -n "${chatvf3_all_ms_runs:-}" ]; then
-                SOLVER_TIME_MS_TOTAL="$(sum_ms_runs $vf3_base_first_ms_runs $vf3_base_all_ms_runs $vf3_first_ms_runs $vf3_all_ms_runs $chatvf3_first_ms_runs $chatvf3_all_ms_runs)"
+              if [ -n "${vf3_base_all_ms_runs:-}" ] || [ -n "${vf3_all_ms_runs:-}" ] || [ -n "${chatvf3_all_ms_runs:-}" ]; then
+                SOLVER_TIME_MS_TOTAL="$(sum_ms_runs $vf3_base_all_ms_runs $vf3_all_ms_runs $chatvf3_all_ms_runs)"
               fi
               ;;
             *)

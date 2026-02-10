@@ -516,18 +516,16 @@ int main(int argc, char **argv) {
     // Empty / impossible cases
     if (pattern.n == 0) {
         auto t1 = chrono::steady_clock::now();
-        double ms = chrono::duration<double, milli>(t1 - t0).count();
-        cout << 1 << "\n";
+        double sec = chrono::duration<double>(t1 - t0).count();
         cout.setf(std::ios::fixed);
-        cout << setprecision(3) << ms << "\n";
+        cout << setprecision(6) << 1 << " " << sec << " " << sec << "\n";
         return 0;
     }
     if (pattern.n > target.n) {
         auto t1 = chrono::steady_clock::now();
-        double ms = chrono::duration<double, milli>(t1 - t0).count();
-        cout << 0 << "\n";
+        double sec = chrono::duration<double>(t1 - t0).count();
         cout.setf(std::ios::fixed);
-        cout << setprecision(3) << ms << "\n";
+        cout << setprecision(6) << 0 << " " << sec << " " << sec << "\n";
         return 0;
     }
 
@@ -560,10 +558,9 @@ int main(int argc, char **argv) {
         }
         if (cand[u].empty()) {
             auto t1 = chrono::steady_clock::now();
-            double ms = chrono::duration<double, milli>(t1 - t0).count();
-            cout << 0 << "\n";
+            double sec = chrono::duration<double>(t1 - t0).count();
             cout.setf(std::ios::fixed);
-            cout << setprecision(3) << ms << "\n";
+            cout << setprecision(6) << 0 << " " << sec << " " << sec << "\n";
             return 0;
         }
     }
@@ -595,6 +592,7 @@ int main(int argc, char **argv) {
     vector<int> mapped; mapped.reserve(pattern.n);
 
     long long solutions = 0;
+    double first_solution_sec = -1.0;
 
     auto consistent = [&](int u, int v) -> bool {
         if (use_directed) {
@@ -652,6 +650,10 @@ int main(int argc, char **argv) {
     function<void(int)> dfs = [&](int depth) {
         if (first_only && solutions > 0) return;
         if (depth == pattern.n) {
+            if (solutions == 0) {
+                auto now = chrono::steady_clock::now();
+                first_solution_sec = chrono::duration<double>(now - t0).count();
+            }
             ++solutions;
             return;
         }
@@ -711,14 +713,13 @@ int main(int argc, char **argv) {
     dfs(0);
 
     auto t1 = chrono::steady_clock::now();
-    double ms = chrono::duration<double, milli>(t1 - t0).count();
+    double all_sec = chrono::duration<double>(t1 - t0).count();
+    if (first_solution_sec < 0.0) {
+        first_solution_sec = all_sec;
+    }
 
-    // After all mappings, print count
-    cout << solutions << "\n";
-
-    // Last line: runtime in milliseconds (with 3 decimals)
     cout.setf(std::ios::fixed);
-    cout << setprecision(3) << ms << "\n";
+    cout << setprecision(6) << solutions << " " << first_solution_sec << " " << all_sec << "\n";
 
     return 0;
 }
