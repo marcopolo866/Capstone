@@ -83,8 +83,19 @@ jobs:
       checks: write
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (shallow)
+        id: checkout_shallow
         uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          fetch-depth: 1
+
+      - name: Checkout repository (full fallback)
+        if: steps.checkout_shallow.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
 
       - name: Resolve build-binaries artifact
         id: binaries_meta
@@ -173,6 +184,7 @@ jobs:
       - name: Cache binaries
         id: binaries_cache
         uses: actions/cache@v4
+        continue-on-error: true
         with:
           path: |
             baselines/dijkstra
