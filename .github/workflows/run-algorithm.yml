@@ -1101,7 +1101,14 @@ jobs:
           }
 
           extract_solution_count() {
-            echo "$1" | tr -d '\r' | awk 'match($0, /-?[0-9]+/) {print substr($0, RSTART, RLENGTH); exit}'
+            local text="$1"
+            local count
+            count=$(echo "$text" | tr -d '\r' | awk -F= '/solution_count[[:space:]]*=/{gsub(/[^0-9-]/, "", $2); if ($2 != "") {print $2; exit}}')
+            if [ -n "$count" ]; then
+              echo "$count"
+              return 0
+            fi
+            echo "$text" | tr -d '\r' | awk 'match($0, /-?[0-9]+/) {print substr($0, RSTART, RLENGTH); exit}'
           }
 
           extract_solution_times_ms() {
