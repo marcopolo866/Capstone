@@ -2858,26 +2858,49 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const memory = result && result.memory_kb ? result.memory_kb : {};
             const memoryStdev = result && result.memory_kb_stdev ? result.memory_kb_stdev : {};
 
+            const pickNumber = (raw) => {
+                if (raw === null || raw === undefined || raw === '') return null;
+                const num = Number(raw);
+                return Number.isFinite(num) ? num : null;
+            };
+
             const pickValue = (keys, source) => {
                 for (const key of keys) {
-                    const raw = source && Object.prototype.hasOwnProperty.call(source, key) ? source[key] : null;
-                    if (raw === 0 || Number.isFinite(Number(raw))) return Number(raw);
+                    if (!source || !Object.prototype.hasOwnProperty.call(source, key)) continue;
+                    const value = pickNumber(source[key]);
+                    if (value !== null) return value;
                 }
                 return null;
             };
 
             const pickPair = (keys, valueSource, stdevSource) => {
                 for (const key of keys) {
-                    const raw = valueSource && Object.prototype.hasOwnProperty.call(valueSource, key) ? valueSource[key] : null;
-                    if (raw === 0 || Number.isFinite(Number(raw))) {
-                        const stdevRaw = stdevSource && Object.prototype.hasOwnProperty.call(stdevSource, key)
-                            ? stdevSource[key]
-                            : null;
-                        const stdev = Number.isFinite(Number(stdevRaw)) ? Number(stdevRaw) : null;
-                        return { value: Number(raw), stdev };
-                    }
+                    if (!valueSource || !Object.prototype.hasOwnProperty.call(valueSource, key)) continue;
+                    const value = pickNumber(valueSource[key]);
+                    if (value === null) continue;
+                    const stdevRaw = stdevSource && Object.prototype.hasOwnProperty.call(stdevSource, key)
+                        ? stdevSource[key]
+                        : null;
+                    const stdev = pickNumber(stdevRaw);
+                    return { value, stdev };
                 }
                 return { value: null, stdev: null };
+            };
+
+            const parseGlasgowBaselineFromOutput = (output) => {
+                if (!output) return null;
+                const start = output.indexOf('[Glasgow Subgraph Solver]');
+                if (start < 0) return null;
+                const rest = output.slice(start);
+                const nextHeader = rest.slice(1).search(/\n\[/);
+                const section = nextHeader >= 0 ? rest.slice(0, nextHeader + 1) : rest;
+                const firstMatch = section.match(/Runtime \(ms\):\s*first\s+median=\s*([0-9.]+)/i);
+                const allMatch = section.match(/\n\s*all\s+median=\s*([0-9.]+)/i);
+                if (!firstMatch || !allMatch) return null;
+                const first = Number(firstMatch[1]);
+                const all = Number(allMatch[1]);
+                if (!Number.isFinite(first) || !Number.isFinite(all)) return null;
+                return { first, all };
             };
 
             const runtime = {
@@ -2894,6 +2917,18 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     all: pickPair(['gemini_all'], timings, timingsStdev)
                 }
             };
+
+            if (result && result.algorithm === 'glasgow') {
+                const baseline = parseGlasgowBaselineFromOutput(result.output);
+                if (baseline) {
+                    if (!Number.isFinite(runtime.benchmark.first.value)) {
+                        runtime.benchmark.first = { value: baseline.first, stdev: null };
+                    }
+                    if (!Number.isFinite(runtime.benchmark.all.value)) {
+                        runtime.benchmark.all = { value: baseline.all, stdev: null };
+                    }
+                }
+            }
 
             const mem = {
                 benchmark: pickPair(['baseline_all', 'baseline', 'first', 'baseline_first', 'all'], memory, memoryStdev),
@@ -3024,7 +3059,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 backgroundColor: dataset.backgroundColor,
                 borderColor: dataset.borderColor,
                 borderWidth: 1,
-                borderRadius: 6
+                borderRadius: 6,
+                minBarLength: Number.isFinite(dataset.minBarLength) ? dataset.minBarLength : 2
             }));
 
             return new Chart(canvas, {
