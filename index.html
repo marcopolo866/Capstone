@@ -2881,9 +2881,18 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             };
 
             const runtime = {
-                benchmark: pickPair(['baseline_all', 'baseline', 'first', 'baseline_first', 'all'], timings, timingsStdev),
-                chatgpt: pickPair(['chatgpt_all', 'llm', 'chatgpt_first'], timings, timingsStdev),
-                gemini: pickPair(['gemini_all', 'gemini_first'], timings, timingsStdev)
+                benchmark: {
+                    first: pickPair(['baseline_first', 'first'], timings, timingsStdev),
+                    all: pickPair(['baseline_all', 'baseline', 'all'], timings, timingsStdev)
+                },
+                chatgpt: {
+                    first: pickPair(['chatgpt_first'], timings, timingsStdev),
+                    all: pickPair(['chatgpt_all', 'llm'], timings, timingsStdev)
+                },
+                gemini: {
+                    first: pickPair(['gemini_first'], timings, timingsStdev),
+                    all: pickPair(['gemini_all'], timings, timingsStdev)
+                }
             };
 
             const mem = {
@@ -2943,7 +2952,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
             const labels = data.map(item => item.label);
             const values = data.map(item => (Number.isFinite(Number(item.value)) ? Number(item.value) : null));
-            const errors = data.map(item => (Number.isFinite(Number(item.stdev)) ? Number(item.stdev) : null));
+            const errors = data.map(item => {
+                const value = Number.isFinite(Number(item.value)) ? Number(item.value) : null;
+                if (!Number.isFinite(value)) return null;
+                return Number.isFinite(Number(item.stdev)) ? Number(item.stdev) : 0;
+            });
 
             return new Chart(canvas, {
                 type: 'bar',
@@ -2975,8 +2988,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                                     const err = context.dataset && context.dataset.errorBars
                                         ? context.dataset.errorBars[context.dataIndex]
                                         : null;
-                                    if (Number.isFinite(err)) {
-                                        return `${v.toFixed(2)} ± ${err.toFixed(2)} ${unitLabel}`;
+                                    if (Number.isFinite(err) && err > 0) {
+                                        return `${v.toFixed(2)} +/- ${err.toFixed(2)} ${unitLabel}`;
                                     }
                                     return `${v.toFixed(2)} ${unitLabel}`;
                                 }
@@ -3000,12 +3013,89 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             });
         }
 
+        function renderGroupedBarChart(canvasId, labels, datasets, unitLabel) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas || !window.Chart) return null;
+
+            const chartDatasets = datasets.map((dataset) => ({
+                label: dataset.label,
+                data: dataset.values,
+                errorBars: dataset.errors,
+                backgroundColor: dataset.backgroundColor,
+                borderColor: dataset.borderColor,
+                borderWidth: 1,
+                borderRadius: 6
+            }));
+
+            return new Chart(canvas, {
+                type: 'bar',
+                plugins: [errorBarsPlugin],
+                data: {
+                    labels,
+                    datasets: chartDatasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            labels: {
+                                usePointStyle: true,
+                                pointStyle: 'rectRounded'
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: context => {
+                                    const v = context.raw;
+                                    if (v === null || v === undefined || Number.isNaN(v)) return 'N/A';
+                                    const err = context.dataset && context.dataset.errorBars
+                                        ? context.dataset.errorBars[context.dataIndex]
+                                        : null;
+                                    if (Number.isFinite(err) && err > 0) {
+                                        return `${context.dataset.label}: ${v.toFixed(2)} +/- ${err.toFixed(2)} ${unitLabel}`;
+                                    }
+                                    return `${context.dataset.label}: ${v.toFixed(2)} ${unitLabel}`;
+                                }
+                            }
+                        },
+                        errorBars: {
+                            capWidth: 10,
+                            lineWidth: 1
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: value => `${value} ${unitLabel}`
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         function renderCharts(result) {
             const charts = document.getElementById('charts');
             if (!charts) return;
 
             const metrics = normalizeVersionMetrics(result || {});
-            const hasRuntime = Object.values(metrics.runtime).some(v => Number.isFinite(Number(v.value)));
+            const runtimePairs = [
+                metrics.runtime.benchmark.first,
+                metrics.runtime.benchmark.all,
+                metrics.runtime.chatgpt.first,
+                metrics.runtime.chatgpt.all,
+                metrics.runtime.gemini.first,
+                metrics.runtime.gemini.all
+            ];
+            const hasRuntime = runtimePairs.some(v => Number.isFinite(Number(v.value)));
             const hasMemory = Object.values(metrics.memory).some(v => Number.isFinite(Number(v.value)));
 
             if (!hasRuntime && !hasMemory) {
@@ -3013,10 +3103,40 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 return;
             }
 
-            const runtimeData = [
-                { label: 'Benchmark', value: metrics.runtime.benchmark.value, stdev: metrics.runtime.benchmark.stdev },
-                { label: 'ChatGPT', value: metrics.runtime.chatgpt.value, stdev: metrics.runtime.chatgpt.stdev },
-                { label: 'Gemini', value: metrics.runtime.gemini.value, stdev: metrics.runtime.gemini.stdev }
+            const runtimeLabels = ['Benchmark', 'ChatGPT', 'Gemini'];
+            const runtimeFirst = [
+                metrics.runtime.benchmark.first,
+                metrics.runtime.chatgpt.first,
+                metrics.runtime.gemini.first
+            ];
+            const runtimeAll = [
+                metrics.runtime.benchmark.all,
+                metrics.runtime.chatgpt.all,
+                metrics.runtime.gemini.all
+            ];
+            const runtimeDataSets = [
+                {
+                    label: 'First',
+                    values: runtimeFirst.map(item => (Number.isFinite(Number(item.value)) ? Number(item.value) : null)),
+                    errors: runtimeFirst.map(item => {
+                        const value = Number.isFinite(Number(item.value)) ? Number(item.value) : null;
+                        if (!Number.isFinite(value)) return null;
+                        return Number.isFinite(Number(item.stdev)) ? Number(item.stdev) : 0;
+                    }),
+                    backgroundColor: '#7aa6c2',
+                    borderColor: '#5e869f'
+                },
+                {
+                    label: 'All',
+                    values: runtimeAll.map(item => (Number.isFinite(Number(item.value)) ? Number(item.value) : null)),
+                    errors: runtimeAll.map(item => {
+                        const value = Number.isFinite(Number(item.value)) ? Number(item.value) : null;
+                        if (!Number.isFinite(value)) return null;
+                        return Number.isFinite(Number(item.stdev)) ? Number(item.stdev) : 0;
+                    }),
+                    backgroundColor: '#e5a06a',
+                    borderColor: '#c98453'
+                }
             ];
             const memoryData = [
                 { label: 'Benchmark', value: metrics.memory.benchmark.value, stdev: metrics.memory.benchmark.stdev },
@@ -3026,7 +3146,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
             if (runtimeChartInstance) runtimeChartInstance.destroy();
             if (memoryChartInstance) memoryChartInstance.destroy();
-            runtimeChartInstance = renderBarChart('runtime-chart', runtimeData, 'ms', 'Runtime');
+            runtimeChartInstance = renderGroupedBarChart('runtime-chart', runtimeLabels, runtimeDataSets, 'ms');
             memoryChartInstance = renderBarChart('memory-chart', memoryData, 'kB', 'Memory');
             charts.hidden = false;
         }
