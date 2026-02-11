@@ -2267,6 +2267,316 @@ jobs:
               EXIT_CODE=1
               ;;
           esac
+
+          VISUALIZATION_FILE="outputs/visualization.json"
+          rm -f "$VISUALIZATION_FILE"
+          if [ "$INPUT_MODE" = "generate" ] && [ -n "${SEED_USED:-}" ]; then
+            python - <<'PY'
+          import csv
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          algo = os.environ.get("ALGORITHM", "")
+          seed_raw = os.environ.get("SEED_USED", "")
+          n_raw = os.environ.get("GENERATOR_N", "")
+          k_raw = os.environ.get("GENERATOR_K", "")
+          density_raw = os.environ.get("GENERATOR_DENSITY", "")
+          out_path = Path("outputs/visualization.json")
+          out_dir = Path("outputs/visualization")
+          out_dir.mkdir(parents=True, exist_ok=True)
+
+          if algo not in {"dijkstra", "glasgow", "vf3"}:
+              raise SystemExit(0)
+
+          try:
+              base_seed = int(seed_raw)
+          except (TypeError, ValueError):
+              raise SystemExit(0)
+
+          try:
+              n_val = int(n_raw)
+          except (TypeError, ValueError):
+              raise SystemExit(0)
+
+          try:
+              density_val = float(density_raw)
+          except (TypeError, ValueError):
+              density_val = 0.05
+
+          k_val = None
+          if algo in {"glasgow", "vf3"}:
+              try:
+                  k_val = int(k_raw)
+              except (TypeError, ValueError):
+                  raise SystemExit(0)
+
+          # Use the same seed as the first generated iteration (SEED_USED + 1).
+          vis_seed = base_seed + 1
+
+          gen_cmd = [
+              sys.executable,
+              "utilities/generate_graphs.py",
+              "--algorithm",
+              algo,
+              "--n",
+              str(n_val),
+              "--density",
+              str(density_val),
+              "--seed",
+              str(vis_seed),
+              "--out-dir",
+              str(out_dir),
+          ]
+          if k_val is not None:
+              gen_cmd += ["--k", str(k_val)]
+
+          res = subprocess.run(gen_cmd, capture_output=True, text=True)
+          if res.returncode != 0:
+              raise SystemExit(0)
+
+          files_line = ""
+          for line in res.stdout.strip().splitlines():
+              if line.strip():
+                  files_line = line.strip()
+          if not files_line:
+              raise SystemExit(0)
+
+          files = [Path(p) for p in files_line.split(",") if p]
+
+          def parse_lad(path: Path):
+              with path.open("r", encoding="utf-8") as fh:
+                  first = fh.readline()
+                  if not first:
+                      return []
+                  n = int(first.strip())
+                  adj = [set() for _ in range(n)]
+                  for i in range(n):
+                      line = fh.readline()
+                      if not line:
+                          break
+                      parts = line.strip().split()
+                      if not parts:
+                          continue
+                      d = int(parts[0])
+                      for v in parts[1:1 + d]:
+                          try:
+                              j = int(v)
+                          except ValueError:
+                              continue
+                          if 0 <= j < n and j != i:
+                              adj[i].add(j)
+              for i in range(len(adj)):
+                  for j in list(adj[i]):
+                      adj[j].add(i)
+              return adj
+
+          def parse_vf(path: Path):
+              with path.open("r", encoding="utf-8") as fh:
+                  first = fh.readline()
+                  if not first:
+                      return []
+                  n = int(first.strip())
+                  for _ in range(n):
+                      fh.readline()
+                  adj = [set() for _ in range(n)]
+                  for i in range(n):
+                      line = fh.readline()
+                      if not line:
+                          break
+                      try:
+                          m = int(line.strip().split()[0])
+                      except (ValueError, IndexError):
+                          m = 0
+                      for _ in range(m):
+                          edge_line = fh.readline()
+                          if not edge_line:
+                              break
+                          nums = [int(x) for x in re.findall(r"-?\\d+", edge_line)]
+                          if not nums:
+                              continue
+                          if len(nums) >= 2:
+                              a, b = nums[0], nums[1]
+                              if a == i and 0 <= b < n:
+                                  j = b
+                              elif b == i and 0 <= a < n:
+                                  j = a
+                              else:
+                                  j = a if 0 <= a < n else (b if 0 <= b < n else None)
+                          else:
+                              j = nums[0] if 0 <= nums[0] < n else None
+                          if j is None or j == i:
+                              continue
+                          adj[i].add(j)
+              for i in range(len(adj)):
+                  for j in list(adj[i]):
+                      adj[j].add(i)
+              return adj
+
+          def parse_dijkstra(path: Path):
+              edges = []
+              nodes = set()
+              with path.open("r", encoding="utf-8") as fh:
+                  reader = csv.reader(fh)
+                  for row in reader:
+                      if not row:
+                          continue
+                      if row[0].startswith("#"):
+                          continue
+                      if row[0] == "source":
+                          continue
+                      if len(row) < 2:
+                          continue
+                      src = row[0].strip()
+                      tgt = row[1].strip()
+                      if not src or not tgt:
+                          continue
+                      nodes.add(src)
+                      nodes.add(tgt)
+                      edges.append((src, tgt))
+              node_list = sorted(nodes)
+              node_index = {name: idx for idx, name in enumerate(node_list)}
+              adj = [set() for _ in range(len(node_list))]
+              for src, tgt in edges:
+                  i = node_index.get(src)
+                  j = node_index.get(tgt)
+                  if i is None or j is None or i == j:
+                      continue
+                  adj[i].add(j)
+                  adj[j].add(i)
+              return adj, node_list
+
+          adj_target = []
+          adj_pattern = []
+          node_labels = None
+
+          if algo == "dijkstra":
+              adj_target, node_labels = parse_dijkstra(files[0])
+          elif algo == "glasgow":
+              pattern_path = next((p for p in files if "pattern" in p.name), files[0])
+              target_path = next((p for p in files if "target" in p.name), files[-1])
+              adj_pattern = parse_lad(pattern_path)
+              adj_target = parse_lad(target_path)
+          else:
+              pattern_path = next((p for p in files if "pattern" in p.name), files[0])
+              target_path = next((p for p in files if "target" in p.name), files[-1])
+              adj_pattern = parse_vf(pattern_path)
+              adj_target = parse_vf(target_path)
+
+          def edge_key(a, b):
+              return (a, b) if a <= b else (b, a)
+
+          target_edges = set()
+          for i, nbrs in enumerate(adj_target):
+              for j in nbrs:
+                  if i == j:
+                      continue
+                  target_edges.add(edge_key(i, j))
+
+          pattern_edges = set()
+          for i, nbrs in enumerate(adj_pattern):
+              for j in nbrs:
+                  if i == j:
+                      continue
+                  pattern_edges.add(edge_key(i, j))
+
+          mapping = {}
+          if algo == "glasgow":
+              solver = Path("baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver")
+              if solver.exists():
+                  out = subprocess.run(
+                      [str(solver), "--induced", "--format", "lad", str(pattern_path), str(target_path)],
+                      capture_output=True,
+                      text=True,
+                  )
+                  if out.returncode == 0:
+                      match_line = ""
+                      for line in out.stdout.splitlines():
+                          if "mapping =" in line:
+                              match_line = line
+                              break
+                      if match_line:
+                          for p, t in re.findall(r"\\((\\d+)\\s*->\\s*(\\d+)\\)", match_line):
+                              mapping[int(p)] = int(t)
+          elif algo == "vf3":
+              solver = Path("baselines/vf3lib/bin/vf3")
+              if solver.exists():
+                  out = subprocess.run(
+                      [str(solver), "-u", "-s", "-F", str(pattern_path), str(target_path)],
+                      capture_output=True,
+                      text=True,
+                  )
+                  if out.returncode == 0:
+                      mapping_line = ""
+                      for line in out.stdout.splitlines():
+                          if re.search(r"\\d+,\\d+:", line):
+                              mapping_line = line
+                              break
+                      if mapping_line:
+                          for p, t in re.findall(r"(\\d+),(\\d+):", mapping_line):
+                              mapping[int(p)] = int(t)
+
+          highlight_nodes = set(mapping.values())
+          highlight_edges = set()
+          for a, b in pattern_edges:
+              ta = mapping.get(a)
+              tb = mapping.get(b)
+              if ta is None or tb is None:
+                  continue
+              ek = edge_key(ta, tb)
+              if ek in target_edges:
+                  highlight_edges.add(ek)
+
+          max_nodes = 4000
+          max_edges = 4000
+          truncated = False
+
+          total_nodes = len(adj_target)
+          total_edges = len(target_edges)
+
+          allowed_nodes = set(range(min(total_nodes, max_nodes)))
+          if total_nodes > max_nodes:
+              truncated = True
+
+          edges_sorted = sorted(target_edges)
+          filtered_edges = [e for e in edges_sorted if e[0] in allowed_nodes and e[1] in allowed_nodes]
+          if len(filtered_edges) > max_edges:
+              filtered_edges = filtered_edges[:max_edges]
+              truncated = True
+
+          highlight_nodes = [n for n in highlight_nodes if n in allowed_nodes]
+          highlight_edges = [e for e in highlight_edges if e in filtered_edges]
+
+          nodes = []
+          for i in range(min(total_nodes, max_nodes)):
+              label = str(node_labels[i]) if node_labels and i < len(node_labels) else str(i)
+              nodes.append({"data": {"id": str(i), "label": label}})
+
+          edges = []
+          for a, b in filtered_edges:
+              eid = f"{a}-{b}"
+              edges.append({"data": {"id": eid, "source": str(a), "target": str(b)}})
+
+          highlight_edge_ids = [f"{a}-{b}" for (a, b) in highlight_edges]
+
+          payload = {
+              "algorithm": algo,
+              "seed": vis_seed,
+              "node_count": total_nodes,
+              "edge_count": total_edges,
+              "nodes": nodes,
+              "edges": edges,
+              "highlight_nodes": [str(n) for n in highlight_nodes],
+              "highlight_edges": highlight_edge_ids,
+              "truncated": truncated,
+          }
+
+          out_path.write_text(json.dumps(payload, indent=2) + "\\n", encoding="utf-8")
+          PY
+          fi
           
           finish_run
           echo "EXIT_CODE=$EXIT_CODE" >> "$GITHUB_OUTPUT"
@@ -2470,6 +2780,12 @@ jobs:
               "error": error,
               "request_id": request_id,
           }
+          vis_path = Path("outputs/visualization.json")
+          if vis_path.exists():
+              try:
+                  data["visualization"] = json.loads(vis_path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
+                  pass
           inputs = {"input_mode": input_mode, "input_files": input_files}
           if gen_n:
               try:

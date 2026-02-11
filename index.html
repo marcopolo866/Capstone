@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.29.2/dist/cytoscape.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -163,6 +164,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         <div class="chart-title">Memory (kB)</div>
                         <div class="chart"><canvas id="memory-chart"></canvas></div>
                     </div>
+                </div>
+                <div class="graph-panel" id="graph-panel" hidden>
+                    <div class="chart-title">Graph Visualization</div>
+                    <div class="graph-note" id="graph-note"></div>
+                    <div class="graph-canvas" id="graph-canvas"></div>
                 </div>
             </div>
         </div>
@@ -2442,6 +2448,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     progressSetDeterminate('Completed', progressState.total, progressState.total);
                 }
                 renderCharts(result);
+                renderVisualization(result);
             } catch (error) {
                 if (runCtx && runCtx.aborted) {
                     return;
@@ -2850,6 +2857,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (runtime) runtime.height = runtime.height;
             if (memory) memory.height = memory.height;
             if (charts) charts.hidden = true;
+            clearVisualization();
         }
 
         function normalizeVersionMetrics(result) {
@@ -2947,6 +2955,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
         let runtimeChartInstance = null;
         let memoryChartInstance = null;
+        let graphInstance = null;
 
         const errorBarsPlugin = {
             id: 'errorBars',
@@ -3191,6 +3200,120 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             runtimeChartInstance = renderGroupedBarChart('runtime-chart', runtimeLabels, runtimeDataSets, 'ms');
             memoryChartInstance = renderBarChart('memory-chart', memoryData, 'kB', 'Memory');
             charts.hidden = false;
+        }
+
+        function clearVisualization() {
+            const panel = document.getElementById('graph-panel');
+            const note = document.getElementById('graph-note');
+            const canvas = document.getElementById('graph-canvas');
+            if (graphInstance) {
+                graphInstance.destroy();
+                graphInstance = null;
+            }
+            if (canvas) canvas.innerHTML = '';
+            if (note) note.textContent = '';
+            if (panel) panel.hidden = true;
+        }
+
+        function renderVisualization(result) {
+            const panel = document.getElementById('graph-panel');
+            const note = document.getElementById('graph-note');
+            const canvas = document.getElementById('graph-canvas');
+            if (!panel || !canvas || !window.cytoscape) return;
+
+            const vis = result && result.visualization ? result.visualization : null;
+            if (!vis || !Array.isArray(vis.nodes) || !Array.isArray(vis.edges)) {
+                clearVisualization();
+                return;
+            }
+
+            if (graphInstance) {
+                graphInstance.destroy();
+                graphInstance = null;
+            }
+            canvas.innerHTML = '';
+
+            const elements = [];
+            for (const node of vis.nodes) {
+                elements.push(node);
+            }
+            for (const edge of vis.edges) {
+                elements.push(edge);
+            }
+
+            graphInstance = cytoscape({
+                container: canvas,
+                elements,
+                style: [
+                    {
+                        selector: 'node',
+                        style: {
+                            'background-color': '#7aa6c2',
+                            'label': 'data(label)',
+                            'color': '#1f2d3d',
+                            'font-size': 10,
+                            'text-outline-width': 2,
+                            'text-outline-color': '#ffffff',
+                            'text-valign': 'center',
+                            'text-halign': 'center',
+                            'width': 16,
+                            'height': 16
+                        }
+                    },
+                    {
+                        selector: 'edge',
+                        style: {
+                            'line-color': '#cbd2d9',
+                            'width': 1,
+                            'curve-style': 'straight',
+                            'target-arrow-shape': 'none'
+                        }
+                    },
+                    {
+                        selector: '.highlight-node',
+                        style: {
+                            'background-color': '#e45756',
+                            'width': 20,
+                            'height': 20
+                        }
+                    },
+                    {
+                        selector: '.highlight-edge',
+                        style: {
+                            'line-color': '#e45756',
+                            'width': 3
+                        }
+                    }
+                ],
+                layout: {
+                    name: 'grid',
+                    avoidOverlap: true,
+                    spacingFactor: 1.2
+                }
+            });
+
+            if (Array.isArray(vis.highlight_nodes)) {
+                for (const nodeId of vis.highlight_nodes) {
+                    const node = graphInstance.getElementById(String(nodeId));
+                    if (node) node.addClass('highlight-node');
+                }
+            }
+            if (Array.isArray(vis.highlight_edges)) {
+                for (const edgeId of vis.highlight_edges) {
+                    const edge = graphInstance.getElementById(String(edgeId));
+                    if (edge) edge.addClass('highlight-edge');
+                }
+            }
+
+            const noteParts = [];
+            if (Number.isFinite(Number(vis.node_count)) && Number.isFinite(Number(vis.edge_count))) {
+                noteParts.push(`Nodes: ${vis.node_count}, Edges: ${vis.edge_count}`);
+            }
+            if (vis.truncated) {
+                noteParts.push('Showing up to 4000 nodes and 4000 edges.');
+            }
+            note.textContent = noteParts.join(' ');
+            panel.hidden = false;
         }
         
         function buildRequestHeaders(options = {}) {
