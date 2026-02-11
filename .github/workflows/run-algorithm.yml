@@ -2594,6 +2594,9 @@ jobs:
 
           out_path.write_text(json.dumps(payload, indent=2) + "\\n", encoding="utf-8")
           PY
+            if [ ! -s "$VISUALIZATION_FILE" ]; then
+              echo "[Visualization] visualization.json was not generated." >> outputs/result.txt
+            fi
           fi
           
           finish_run
@@ -2803,7 +2806,10 @@ jobs:
               try:
                   data["visualization"] = json.loads(vis_path.read_text(encoding="utf-8"))
               except (OSError, json.JSONDecodeError):
-                  pass
+                  data["visualization_error"] = "Failed to parse visualization.json"
+          else:
+              if input_mode == "generate":
+                  data["visualization_error"] = "Visualization data missing"
           inputs = {"input_mode": input_mode, "input_files": input_files}
           if gen_n:
               try:
