@@ -2807,6 +2807,13 @@ jobs:
                   data["visualization"] = json.loads(vis_path.read_text(encoding="utf-8"))
               except (OSError, json.JSONDecodeError):
                   data["visualization_error"] = "Failed to parse visualization.json"
+                  try:
+                      raw = vis_path.read_text(encoding="utf-8", errors="replace")
+                      data["visualization_raw"] = raw[:2000]
+                      if len(raw) > 2000:
+                          data["visualization_raw_truncated"] = True
+                  except OSError:
+                      pass
           else:
               if input_mode == "generate":
                   data["visualization_error"] = "Visualization data missing"
