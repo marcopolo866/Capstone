@@ -381,6 +381,7 @@ jobs:
           GEN_COUNTER=0
           SOLVER_TIME_MS_TOTAL=""
           SEED_USED=""
+          VIS_SEED=""
 
           if [ "$INPUT_MODE" = "generate" ]; then
             seed_trimmed="$(echo "${GENERATOR_SEED_RAW}" | tr -d '\r' | xargs)"
@@ -414,6 +415,15 @@ jobs:
                 echo "$output" >> outputs/result.txt
               fi
               return 1
+            fi
+            if [ -z "${VIS_SEED:-}" ]; then
+              if [[ "$variant" == "dijkstra_baseline" && "$iter" == "1" ]]; then
+                VIS_SEED="$seed"
+              elif [[ "$variant" == "glasgow_iter" && "$iter" == "1" ]]; then
+                VIS_SEED="$seed"
+              elif [[ "$variant" == "vf3_iter"* && "$iter" == 1* ]]; then
+                VIS_SEED="$seed"
+              fi
             fi
             IFS=',' read -ra FILES <<< "$files"
             return 0
@@ -2271,6 +2281,14 @@ jobs:
           VISUALIZATION_FILE="outputs/visualization.json"
           rm -f "$VISUALIZATION_FILE"
           if [ "$INPUT_MODE" = "generate" ] && [ -n "${SEED_USED:-}" ]; then
+            if [ -z "${VIS_SEED:-}" ]; then
+              VIS_SEED="$SEED_USED"
+            fi
+            export VIS_SEED
+            export ALGORITHM
+            export GENERATOR_N
+            export GENERATOR_K
+            export GENERATOR_DENSITY
             python - <<'PY'
           import csv
           import json
@@ -2281,7 +2299,7 @@ jobs:
           from pathlib import Path
 
           algo = os.environ.get("ALGORITHM", "")
-          seed_raw = os.environ.get("SEED_USED", "")
+          seed_raw = os.environ.get("VIS_SEED", "")
           n_raw = os.environ.get("GENERATOR_N", "")
           k_raw = os.environ.get("GENERATOR_K", "")
           density_raw = os.environ.get("GENERATOR_DENSITY", "")
@@ -2314,8 +2332,8 @@ jobs:
               except (TypeError, ValueError):
                   raise SystemExit(0)
 
-          # Use the same seed as the first generated iteration (SEED_USED + 1).
-          vis_seed = base_seed + 1
+          # Use the recorded seed for the first generated iteration.
+          vis_seed = base_seed
 
           gen_cmd = [
               sys.executable,
