@@ -3166,6 +3166,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+      - name: Upload visualization data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visualization-data-${{ steps.run.outputs.REQUEST_ID || github.run_id }}
+          path: outputs/visualization.json
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload results artifact
         if: always()
         uses: actions/upload-artifact@v4
