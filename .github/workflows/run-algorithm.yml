@@ -2393,31 +2393,38 @@ jobs:
               return adj
 
           def parse_vf(path: Path):
+              def next_int_line(handle):
+                  while True:
+                      line = handle.readline()
+                      if not line:
+                          return None
+                      stripped = line.strip()
+                      if not stripped or stripped.startswith("#"):
+                          continue
+                      nums = [int(x) for x in re.findall(r"-?\d+", line)]
+                      if nums:
+                          return nums
+
               with path.open("r", encoding="utf-8") as fh:
-                  first = fh.readline()
-                  if not first:
+                  header = next_int_line(fh)
+                  if not header:
                       return []
-                  n = int(first.strip())
+                  n = int(header[0])
                   for _ in range(n):
-                      fh.readline()
+                      if next_int_line(fh) is None:
+                          break
                   adj = [set() for _ in range(n)]
                   for i in range(n):
-                      line = fh.readline()
-                      if not line:
+                      count_line = next_int_line(fh)
+                      if not count_line:
                           break
-                      try:
-                          m = int(line.strip().split()[0])
-                      except (ValueError, IndexError):
-                          m = 0
+                      m = int(count_line[0])
                       for _ in range(m):
-                          edge_line = fh.readline()
-                          if not edge_line:
+                          edge_nums = next_int_line(fh)
+                          if not edge_nums:
                               break
-                          nums = [int(x) for x in re.findall(r"-?\\d+", edge_line)]
-                          if not nums:
-                              continue
-                          if len(nums) >= 2:
-                              a, b = nums[0], nums[1]
+                          if len(edge_nums) >= 2:
+                              a, b = edge_nums[0], edge_nums[1]
                               if a == i and 0 <= b < n:
                                   j = b
                               elif b == i and 0 <= a < n:
@@ -2425,7 +2432,7 @@ jobs:
                               else:
                                   j = a if 0 <= a < n else (b if 0 <= b < n else None)
                           else:
-                              j = nums[0] if 0 <= nums[0] < n else None
+                              j = edge_nums[0] if 0 <= edge_nums[0] < n else None
                           if j is None or j == i:
                               continue
                           adj[i].add(j)
