@@ -2592,7 +2592,7 @@ jobs:
               "truncated": truncated,
           }
 
-          out_path.write_text(json.dumps(payload, indent=2) + "\\n", encoding="utf-8")
+          out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
           PY
             if [ ! -s "$VISUALIZATION_FILE" ]; then
               echo "[Visualization] visualization.json was not generated." >> outputs/result.txt
