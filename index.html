@@ -3232,6 +3232,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 graphInstance = null;
             }
             canvas.innerHTML = '';
+            panel.hidden = false;
 
             const elements = [];
             for (const node of vis.nodes) {
@@ -3288,7 +3289,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 layout: {
                     name: 'grid',
                     avoidOverlap: true,
-                    spacingFactor: 1.2
+                    spacingFactor: 1.2,
+                    fit: true
                 }
             });
 
@@ -3313,7 +3315,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 noteParts.push('Showing up to 4000 nodes and 4000 edges.');
             }
             note.textContent = noteParts.join(' ');
-            panel.hidden = false;
+            requestAnimationFrame(() => {
+                if (graphInstance) {
+                    graphInstance.resize();
+                    graphInstance.fit();
+                }
+            });
         }
         
         function buildRequestHeaders(options = {}) {
