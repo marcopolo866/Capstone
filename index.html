@@ -3449,10 +3449,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         }
                     ],
                     layout: {
-                        name: 'grid',
-                        avoidOverlap: true,
-                        spacingFactor: 1.2,
-                        fit: true
+                        name: 'circle',
+                        fit: true,
+                        padding: 20
                     }
                 });
                 attachHoverHighlight(patternInstance, { current: patternHoverEdgeId, set current(val) { patternHoverEdgeId = val; }, get current() { return patternHoverEdgeId; } });
