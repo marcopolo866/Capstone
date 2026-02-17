@@ -362,18 +362,17 @@ body {
     margin-bottom: 12px;
 }
 
-.graph-title-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-}
-
 .btn-center-graph {
     padding: 6px 14px;
     font-size: 12px;
 }
 
+.graph-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    margin-bottom: 8px;
+}
 .chart {
     position: relative;
     height: 360px;
