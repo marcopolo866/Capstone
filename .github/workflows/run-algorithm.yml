@@ -2535,14 +2535,22 @@ jobs:
                       text=True,
                   )
                   if out.returncode == 0:
-                      stdout = out.stdout or ""
-                      pairs = re.findall(r"(\\d+),(\\d+):", stdout)
+                      text_out = "\n".join(
+                          part for part in [(out.stdout or ""), (out.stderr or "")] if part
+                      )
+                      lines = [line.strip() for line in text_out.splitlines() if line.strip()]
+                      pairs = []
+                      for line in lines:
+                          if "," in line and ":" in line:
+                              pairs.extend(re.findall(r"(\\d+),(\\d+):", line))
                       if not pairs:
-                          pairs = re.findall(r"\\((\\d+)\\s*->\\s*(\\d+)\\)", stdout)
+                          pairs = re.findall(r"\\((\\d+)\\s*->\\s*(\\d+)\\)", text_out)
                       if not pairs:
-                          pairs = re.findall(r"(\\d+)\\s*->\\s*(\\d+)", stdout)
+                          pairs = re.findall(r"(\\d+)\\s*->\\s*(\\d+)", text_out)
                       for p, t in pairs:
-                          mapping[int(p)] = int(t)
+                          p_i = int(p)
+                          if p_i not in mapping:
+                              mapping[p_i] = int(t)
 
           highlight_nodes = set(mapping.values())
           highlight_edges = set()
