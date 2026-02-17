@@ -166,12 +166,18 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     </div>
                 </div>
                 <div class="graph-panel graph-panel-small" id="pattern-panel" hidden>
-                    <div class="chart-title">Pattern Visualization</div>
+                    <div class="chart-title graph-title-row">
+                        <span>Pattern Visualization</span>
+                        <button class="btn btn-secondary btn-center-graph" id="pattern-center-btn" onclick="centerPatternGraph()" type="button">Center</button>
+                    </div>
                     <div class="graph-note" id="pattern-note"></div>
                     <div class="graph-canvas graph-canvas-small" id="pattern-canvas"></div>
                 </div>
                 <div class="graph-panel" id="graph-panel" hidden>
-                    <div class="chart-title">Graph Visualization</div>
+                    <div class="chart-title graph-title-row">
+                        <span>Graph Visualization</span>
+                        <button class="btn btn-secondary btn-center-graph" id="graph-center-btn" onclick="centerMainGraph()" type="button">Center</button>
+                    </div>
                     <div class="graph-note" id="graph-note"></div>
                     <div class="graph-canvas" id="graph-canvas"></div>
                 </div>
@@ -3217,6 +3223,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const patternPanel = document.getElementById('pattern-panel');
             const patternNote = document.getElementById('pattern-note');
             const patternCanvas = document.getElementById('pattern-canvas');
+            const graphCenterBtn = document.getElementById('graph-center-btn');
+            const patternCenterBtn = document.getElementById('pattern-center-btn');
             if (graphInstance) {
                 graphInstance.destroy();
                 graphInstance = null;
@@ -3231,8 +3239,25 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (patternCanvas) patternCanvas.innerHTML = '';
             if (note) note.textContent = '';
             if (patternNote) patternNote.textContent = '';
+            if (graphCenterBtn) graphCenterBtn.disabled = true;
+            if (patternCenterBtn) patternCenterBtn.disabled = true;
             if (panel) panel.hidden = true;
             if (patternPanel) patternPanel.hidden = true;
+        }
+
+        function centerGraphInstance(instance) {
+            if (!instance) return;
+            instance.resize();
+            instance.fit();
+            instance.center();
+        }
+
+        function centerMainGraph() {
+            centerGraphInstance(graphInstance);
+        }
+
+        function centerPatternGraph() {
+            centerGraphInstance(patternInstance);
         }
 
         function attachHoverHighlight(cy, hoverState) {
@@ -3292,6 +3317,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (patternCanvas) patternCanvas.innerHTML = '';
             panel.hidden = false;
             if (patternPanel) patternPanel.hidden = true;
+            const graphCenterBtn = document.getElementById('graph-center-btn');
+            const patternCenterBtn = document.getElementById('pattern-center-btn');
 
             const elements = [];
             for (const node of vis.nodes) {
@@ -3381,6 +3408,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 }
             }
             attachHoverHighlight(graphInstance, { current: graphHoverEdgeId, set current(val) { graphHoverEdgeId = val; }, get current() { return graphHoverEdgeId; } });
+            if (graphCenterBtn) graphCenterBtn.disabled = false;
 
             const noteParts = [];
             if (Number.isFinite(Number(vis.node_count)) && Number.isFinite(Number(vis.edge_count))) {
@@ -3455,6 +3483,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     }
                 });
                 attachHoverHighlight(patternInstance, { current: patternHoverEdgeId, set current(val) { patternHoverEdgeId = val; }, get current() { return patternHoverEdgeId; } });
+                if (patternCenterBtn) patternCenterBtn.disabled = false;
                 if (patternNote) {
                     patternNote.textContent = `Nodes: ${patternNodeSet.size}, Edges: ${(vis.highlight_edges || []).length}`;
                 }
