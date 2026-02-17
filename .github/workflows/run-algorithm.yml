@@ -2364,6 +2364,16 @@ jobs:
               raise SystemExit(0)
 
           files = [Path(p) for p in files_line.split(",") if p]
+          pattern_nodes = None
+          metadata_path = out_dir / "metadata.json"
+          if metadata_path.exists():
+              try:
+                  meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+                  candidate = meta.get("pattern_nodes")
+                  if isinstance(candidate, list) and all(isinstance(x, int) for x in candidate):
+                      pattern_nodes = candidate
+              except (OSError, json.JSONDecodeError):
+                  pattern_nodes = None
 
           def parse_lad(path: Path):
               with path.open("r", encoding="utf-8") as fh:
@@ -2551,6 +2561,8 @@ jobs:
                           p_i = int(p)
                           if p_i not in mapping:
                               mapping[p_i] = int(t)
+          if not mapping and pattern_nodes:
+              mapping = {i: node for i, node in enumerate(pattern_nodes)}
 
           highlight_nodes = set(mapping.values())
           highlight_edges = set()

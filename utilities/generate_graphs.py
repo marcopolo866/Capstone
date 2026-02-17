@@ -205,6 +205,7 @@ def main() -> None:
 
     generated = []
 
+    pattern_nodes = None
     if algorithm == "dijkstra":
         labels = [f"v{i}" for i in range(n)]
         edges = generate_directed_edges(n, rng, density)
@@ -215,6 +216,7 @@ def main() -> None:
         target_adj = generate_adjacency(n, rng, density)
         undirected_adj = build_undirected_adj(target_adj)
         nodes = pick_connected_nodes(undirected_adj, k, rng)
+        pattern_nodes = list(nodes)
         ensure_pattern_edges(target_adj, nodes, rng)
         node_set = set(nodes)
         pattern_map = {node: idx for idx, node in enumerate(nodes)}
@@ -246,6 +248,8 @@ def main() -> None:
         "seed": seed,
         "files": [p.as_posix() for p in generated],
     }
+    if pattern_nodes is not None:
+        metadata["pattern_nodes"] = [int(x) for x in pattern_nodes]
     (out_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
     print(",".join(p.as_posix() for p in generated))
