@@ -165,6 +165,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         <div class="chart"><canvas id="memory-chart"></canvas></div>
                     </div>
                 </div>
+                <div class="graph-panel graph-panel-small" id="pattern-panel" hidden>
+                    <div class="chart-title">Pattern Visualization</div>
+                    <div class="graph-note" id="pattern-note"></div>
+                    <div class="graph-canvas graph-canvas-small" id="pattern-canvas"></div>
+                </div>
                 <div class="graph-panel" id="graph-panel" hidden>
                     <div class="chart-title">Graph Visualization</div>
                     <div class="graph-note" id="graph-note"></div>
@@ -2956,6 +2961,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         let runtimeChartInstance = null;
         let memoryChartInstance = null;
         let graphInstance = null;
+        let patternInstance = null;
+        let graphHoverEdgeId = null;
+        let patternHoverEdgeId = null;
 
         const errorBarsPlugin = {
             id: 'errorBars',
@@ -3206,19 +3214,64 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const panel = document.getElementById('graph-panel');
             const note = document.getElementById('graph-note');
             const canvas = document.getElementById('graph-canvas');
+            const patternPanel = document.getElementById('pattern-panel');
+            const patternNote = document.getElementById('pattern-note');
+            const patternCanvas = document.getElementById('pattern-canvas');
             if (graphInstance) {
                 graphInstance.destroy();
                 graphInstance = null;
             }
+            if (patternInstance) {
+                patternInstance.destroy();
+                patternInstance = null;
+            }
+            graphHoverEdgeId = null;
+            patternHoverEdgeId = null;
             if (canvas) canvas.innerHTML = '';
+            if (patternCanvas) patternCanvas.innerHTML = '';
             if (note) note.textContent = '';
+            if (patternNote) patternNote.textContent = '';
             if (panel) panel.hidden = true;
+            if (patternPanel) patternPanel.hidden = true;
+        }
+
+        function attachHoverHighlight(cy, hoverState) {
+            if (!cy) return;
+            cy.on('mouseover', 'edge', (evt) => {
+                const edge = evt.target;
+                if (!edge) return;
+                const edgeId = edge.id();
+                if (hoverState.current && hoverState.current !== edgeId) {
+                    const prev = cy.getElementById(hoverState.current);
+                    if (prev) {
+                        prev.removeClass('hover-edge');
+                        prev.connectedNodes().removeClass('hover-node');
+                    }
+                }
+                hoverState.current = edgeId;
+                edge.addClass('hover-edge');
+                edge.connectedNodes().addClass('hover-node');
+            });
+            cy.on('mouseout', 'edge', (evt) => {
+                const edge = evt.target;
+                if (!edge) return;
+                const edgeId = edge.id();
+                if (hoverState.current && hoverState.current !== edgeId) {
+                    return;
+                }
+                edge.removeClass('hover-edge');
+                edge.connectedNodes().removeClass('hover-node');
+                hoverState.current = null;
+            });
         }
 
         function renderVisualization(result) {
             const panel = document.getElementById('graph-panel');
             const note = document.getElementById('graph-note');
             const canvas = document.getElementById('graph-canvas');
+            const patternPanel = document.getElementById('pattern-panel');
+            const patternNote = document.getElementById('pattern-note');
+            const patternCanvas = document.getElementById('pattern-canvas');
             if (!panel || !canvas || !window.cytoscape) return;
 
             const vis = result && result.visualization ? result.visualization : null;
@@ -3231,8 +3284,14 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 graphInstance.destroy();
                 graphInstance = null;
             }
+            if (patternInstance) {
+                patternInstance.destroy();
+                patternInstance = null;
+            }
             canvas.innerHTML = '';
+            if (patternCanvas) patternCanvas.innerHTML = '';
             panel.hidden = false;
+            if (patternPanel) patternPanel.hidden = true;
 
             const elements = [];
             for (const node of vis.nodes) {
@@ -3284,6 +3343,21 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                             'line-color': '#e45756',
                             'width': 3
                         }
+                    },
+                    {
+                        selector: '.hover-edge',
+                        style: {
+                            'line-color': '#f2a444',
+                            'width': 3
+                        }
+                    },
+                    {
+                        selector: '.hover-node',
+                        style: {
+                            'background-color': '#f2a444',
+                            'width': 20,
+                            'height': 20
+                        }
                     }
                 ],
                 layout: {
@@ -3306,6 +3380,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     if (edge) edge.addClass('highlight-edge');
                 }
             }
+            attachHoverHighlight(graphInstance, { current: graphHoverEdgeId, set current(val) { graphHoverEdgeId = val; }, get current() { return graphHoverEdgeId; } });
 
             const noteParts = [];
             if (Number.isFinite(Number(vis.node_count)) && Number.isFinite(Number(vis.edge_count))) {
@@ -3315,6 +3390,82 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 noteParts.push('Showing up to 4000 nodes and 4000 edges.');
             }
             note.textContent = noteParts.join(' ');
+
+            if (patternPanel && patternCanvas && Array.isArray(vis.highlight_nodes) && Array.isArray(vis.highlight_edges) && vis.highlight_nodes.length) {
+                const patternNodeSet = new Set(vis.highlight_nodes.map(String));
+                const patternElements = [];
+                for (const nodeId of patternNodeSet) {
+                    patternElements.push({ data: { id: nodeId, label: nodeId } });
+                }
+                for (const edgeId of vis.highlight_edges || []) {
+                    const edge = (vis.edges || []).find(e => e.data && e.data.id === edgeId);
+                    if (edge) {
+                        patternElements.push({ data: { id: edgeId, source: edge.data.source, target: edge.data.target } });
+                    }
+                }
+                patternPanel.hidden = false;
+                patternInstance = cytoscape({
+                    container: patternCanvas,
+                    elements: patternElements,
+                    style: [
+                        {
+                            selector: 'node',
+                            style: {
+                                'background-color': '#7aa6c2',
+                                'label': 'data(label)',
+                                'color': '#1f2d3d',
+                                'font-size': 10,
+                                'text-outline-width': 2,
+                                'text-outline-color': '#ffffff',
+                                'text-valign': 'center',
+                                'text-halign': 'center',
+                                'width': 16,
+                                'height': 16
+                            }
+                        },
+                        {
+                            selector: 'edge',
+                            style: {
+                                'line-color': '#cbd2d9',
+                                'width': 1,
+                                'curve-style': 'straight',
+                                'target-arrow-shape': 'none'
+                            }
+                        },
+                        {
+                            selector: '.hover-edge',
+                            style: {
+                                'line-color': '#f2a444',
+                                'width': 3
+                            }
+                        },
+                        {
+                            selector: '.hover-node',
+                            style: {
+                                'background-color': '#f2a444',
+                                'width': 20,
+                                'height': 20
+                            }
+                        }
+                    ],
+                    layout: {
+                        name: 'grid',
+                        avoidOverlap: true,
+                        spacingFactor: 1.2,
+                        fit: true
+                    }
+                });
+                attachHoverHighlight(patternInstance, { current: patternHoverEdgeId, set current(val) { patternHoverEdgeId = val; }, get current() { return patternHoverEdgeId; } });
+                if (patternNote) {
+                    patternNote.textContent = `Nodes: ${patternNodeSet.size}, Edges: ${(vis.highlight_edges || []).length}`;
+                }
+                requestAnimationFrame(() => {
+                    if (patternInstance) {
+                        patternInstance.resize();
+                        patternInstance.fit();
+                    }
+                });
+            }
             requestAnimationFrame(() => {
                 if (graphInstance) {
                     graphInstance.resize();
