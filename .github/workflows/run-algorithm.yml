@@ -2326,7 +2326,7 @@ jobs:
                       return base
                   retry_dir = Path("outputs/generated/vf3/vf3_iter_retry")
                   if retry_dir.exists():
-                      candidates = sorted(retry_dir.glob(f\"iter_{iter_idx}_retry*/metadata.json\"))
+                      candidates = sorted(retry_dir.glob(f"iter_{iter_idx}_retry*/metadata.json"))
                       if candidates:
                           return candidates[-1]
                   return None
