@@ -2546,7 +2546,7 @@ jobs:
                       for line in out.stdout.splitlines():
                           if "mapping =" not in line:
                               continue
-                          pairs = re.findall(r"\\(\\s*(\\d+)\\s*->\\s*(\\d+)\\s*\\)", line)
+                          pairs = re.findall(r"\(\s*(\d+)\s*->\s*(\d+)\s*\)", line)
                           if not pairs:
                               continue
                           solution_lines += 1
@@ -2565,7 +2565,7 @@ jobs:
                       lines = [line.strip() for line in text_out.splitlines() if line.strip()]
                       for line in lines:
                           if "," in line and ":" in line:
-                              pairs = re.findall(r"(\\d+)\\s*,\\s*(\\d+)\\s*:", line)
+                              pairs = re.findall(r"(\d+)\s*,\s*(\d+)\s*:", line)
                               if not pairs:
                                   continue
                               solution_lines += 1
@@ -2573,9 +2573,9 @@ jobs:
                               if mapping and len(solutions) < solution_limit:
                                   solutions.append(mapping)
                       if not solutions:
-                          pairs = re.findall(r"\\(\\s*(\\d+)\\s*->\\s*(\\d+)\\s*\\)", text_out)
+                          pairs = re.findall(r"\(\s*(\d+)\s*->\s*(\d+)\s*\)", text_out)
                           if not pairs:
-                              pairs = re.findall(r"(\\d+)\\s*->\\s*(\\d+)", text_out)
+                              pairs = re.findall(r"(\d+)\s*->\s*(\d+)", text_out)
                           if pairs:
                               mapping = {int(p): int(t) for p, t in pairs}
                               if mapping:
