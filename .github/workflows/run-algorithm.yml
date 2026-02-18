@@ -2464,7 +2464,7 @@ jobs:
 
               mapping = {}
               solutions = []
-              solution_limit = 250
+              solution_limit = 25 if algo == "glasgow" else 250
               solver_stdout = ""
               solver_stderr = ""
               solver_cmd = []
