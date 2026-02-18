@@ -177,6 +177,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     <div class="chart-title">Graph Visualization</div>
                     <div class="graph-actions">
                         <button class="btn btn-secondary btn-center-graph" id="graph-center-btn" onclick="centerMainGraph()" type="button">Center</button>
+                        <div class="solution-controls" id="solution-controls">
+                            <button class="btn btn-secondary btn-solution-nav" id="solution-prev-btn" onclick="showPreviousSolution()" type="button">◀</button>
+                            <span class="solution-label" id="solution-label">Solution 0</span>
+                            <button class="btn btn-secondary btn-solution-nav" id="solution-next-btn" onclick="showNextSolution()" type="button">▶</button>
+                        </div>
+                        <span class="solution-warning" id="solution-warning" hidden>No solutions found</span>
                     </div>
                     <div class="graph-note" id="graph-note"></div>
                     <div class="graph-canvas" id="graph-canvas"></div>
@@ -2970,6 +2976,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         let patternInstance = null;
         let graphHoverEdgeId = null;
         let patternHoverEdgeId = null;
+        let visSolutions = [];
+        let currentSolutionIndex = 0;
 
         const errorBarsPlugin = {
             id: 'errorBars',
@@ -3225,6 +3233,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const patternCanvas = document.getElementById('pattern-canvas');
             const graphCenterBtn = document.getElementById('graph-center-btn');
             const patternCenterBtn = document.getElementById('pattern-center-btn');
+            const solutionControls = document.getElementById('solution-controls');
+            const solutionWarning = document.getElementById('solution-warning');
             if (graphInstance) {
                 graphInstance.destroy();
                 graphInstance = null;
@@ -3235,12 +3245,16 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             }
             graphHoverEdgeId = null;
             patternHoverEdgeId = null;
+            visSolutions = [];
+            currentSolutionIndex = 0;
             if (canvas) canvas.innerHTML = '';
             if (patternCanvas) patternCanvas.innerHTML = '';
             if (note) note.textContent = '';
             if (patternNote) patternNote.textContent = '';
             if (graphCenterBtn) graphCenterBtn.disabled = true;
             if (patternCenterBtn) patternCenterBtn.disabled = true;
+            if (solutionControls) solutionControls.hidden = true;
+            if (solutionWarning) solutionWarning.hidden = true;
             if (panel) panel.hidden = true;
             if (patternPanel) patternPanel.hidden = true;
         }
@@ -3258,6 +3272,63 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
         function centerPatternGraph() {
             centerGraphInstance(patternInstance);
+        }
+
+        function updateSolutionControls() {
+            const label = document.getElementById('solution-label');
+            const prevBtn = document.getElementById('solution-prev-btn');
+            const nextBtn = document.getElementById('solution-next-btn');
+            const controls = document.getElementById('solution-controls');
+            const total = visSolutions.length;
+            if (!controls) return;
+            if (!total) {
+                controls.hidden = true;
+                return;
+            }
+            controls.hidden = false;
+            if (label) label.textContent = `Solution ${currentSolutionIndex + 1} of ${total}`;
+            if (prevBtn) prevBtn.disabled = currentSolutionIndex <= 0;
+            if (nextBtn) nextBtn.disabled = currentSolutionIndex >= total - 1;
+        }
+
+        function applySolution(index) {
+            if (!graphInstance || !visSolutions.length) return;
+            const solution = visSolutions[index];
+            if (!solution) return;
+            graphInstance.elements('.highlight-node').removeClass('highlight-node');
+            graphInstance.elements('.highlight-edge').removeClass('highlight-edge');
+            if (Array.isArray(solution.highlight_nodes)) {
+                for (const nodeId of solution.highlight_nodes) {
+                    const node = graphInstance.getElementById(String(nodeId));
+                    if (node) node.addClass('highlight-node');
+                }
+            }
+            if (Array.isArray(solution.highlight_edges)) {
+                for (const edgeId of solution.highlight_edges) {
+                    const edge = graphInstance.getElementById(String(edgeId));
+                    if (edge) edge.addClass('highlight-edge');
+                }
+            }
+            if (patternInstance && Array.isArray(solution.mapping)) {
+                for (let i = 0; i < solution.mapping.length; i++) {
+                    const node = patternInstance.getElementById(`p${i}`);
+                    if (!node) continue;
+                    const label = solution.mapping[i];
+                    node.data('label', label === null || label === undefined ? String(i) : String(label));
+                }
+            }
+            currentSolutionIndex = index;
+            updateSolutionControls();
+        }
+
+        function showPreviousSolution() {
+            if (currentSolutionIndex <= 0) return;
+            applySolution(currentSolutionIndex - 1);
+        }
+
+        function showNextSolution() {
+            if (currentSolutionIndex >= visSolutions.length - 1) return;
+            applySolution(currentSolutionIndex + 1);
         }
 
         function attachHoverHighlight(cy, hoverState) {
@@ -3319,6 +3390,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (patternPanel) patternPanel.hidden = true;
             const graphCenterBtn = document.getElementById('graph-center-btn');
             const patternCenterBtn = document.getElementById('pattern-center-btn');
+            const solutionWarning = document.getElementById('solution-warning');
 
             const elements = [];
             for (const node of vis.nodes) {
@@ -3410,6 +3482,19 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             attachHoverHighlight(graphInstance, { current: graphHoverEdgeId, set current(val) { graphHoverEdgeId = val; }, get current() { return graphHoverEdgeId; } });
             if (graphCenterBtn) graphCenterBtn.disabled = false;
 
+            visSolutions = Array.isArray(vis.solutions) ? vis.solutions : [];
+            if (!visSolutions.length && (Array.isArray(vis.highlight_nodes) || Array.isArray(vis.highlight_edges))) {
+                visSolutions = [{
+                    mapping: Array.isArray(vis.pattern_nodes) ? vis.pattern_nodes : [],
+                    highlight_nodes: vis.highlight_nodes || [],
+                    highlight_edges: vis.highlight_edges || []
+                }];
+            }
+            currentSolutionIndex = 0;
+            if (solutionWarning) {
+                solutionWarning.hidden = !vis.no_solutions;
+            }
+
             const noteParts = [];
             if (Number.isFinite(Number(vis.node_count)) && Number.isFinite(Number(vis.edge_count))) {
                 noteParts.push(`Nodes: ${vis.node_count}, Edges: ${vis.edge_count}`);
@@ -3419,22 +3504,31 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             }
             note.textContent = noteParts.join(' ');
 
-            if (patternPanel && patternCanvas && Array.isArray(vis.highlight_nodes) && Array.isArray(vis.highlight_edges) && vis.highlight_nodes.length) {
-                const patternNodeSet = new Set(vis.highlight_nodes.map(String));
-                const patternElements = [];
-                for (const nodeId of patternNodeSet) {
-                    patternElements.push({ data: { id: nodeId, label: nodeId } });
-                }
-                for (const edgeId of vis.highlight_edges || []) {
-                    const edge = (vis.edges || []).find(e => e.data && e.data.id === edgeId);
-                    if (edge) {
-                        patternElements.push({ data: { id: edgeId, source: edge.data.source, target: edge.data.target } });
+            if (patternPanel && patternCanvas) {
+                const patternCount = Number.isFinite(Number(vis.pattern_node_count))
+                    ? Number(vis.pattern_node_count)
+                    : (Array.isArray(vis.pattern_nodes) ? vis.pattern_nodes.length : 0);
+                const patternEdges = Array.isArray(vis.pattern_edges) ? vis.pattern_edges : [];
+                const hasPattern = patternCount > 0 && patternEdges.length > 0;
+                if (!hasPattern) {
+                    patternPanel.hidden = true;
+                } else {
+                    const patternElements = [];
+                    for (let i = 0; i < patternCount; i++) {
+                        patternElements.push({ data: { id: `p${i}`, label: String(i) } });
                     }
-                }
-                patternPanel.hidden = false;
-                patternInstance = cytoscape({
-                    container: patternCanvas,
-                    elements: patternElements,
+                    for (const edge of patternEdges) {
+                        if (!Array.isArray(edge) || edge.length < 2) continue;
+                        const a = Number(edge[0]);
+                        const b = Number(edge[1]);
+                        if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+                        const eid = `p${a}-p${b}`;
+                        patternElements.push({ data: { id: eid, source: `p${a}`, target: `p${b}` } });
+                    }
+                    patternPanel.hidden = false;
+                    patternInstance = cytoscape({
+                        container: patternCanvas,
+                        elements: patternElements,
                     style: [
                         {
                             selector: 'node',
@@ -3485,7 +3579,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 attachHoverHighlight(patternInstance, { current: patternHoverEdgeId, set current(val) { patternHoverEdgeId = val; }, get current() { return patternHoverEdgeId; } });
                 if (patternCenterBtn) patternCenterBtn.disabled = false;
                 if (patternNote) {
-                    patternNote.textContent = `Nodes: ${patternNodeSet.size}, Edges: ${(vis.highlight_edges || []).length}`;
+                    patternNote.textContent = `Nodes: ${patternCount}, Edges: ${patternEdges.length}`;
                 }
                 requestAnimationFrame(() => {
                     if (patternInstance) {
@@ -3493,6 +3587,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         patternInstance.fit();
                     }
                 });
+                }
+            }
+            if (visSolutions.length) {
+                applySolution(0);
+            } else {
+                updateSolutionControls();
             }
             requestAnimationFrame(() => {
                 if (graphInstance) {

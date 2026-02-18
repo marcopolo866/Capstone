@@ -2519,28 +2519,41 @@ jobs:
                   pattern_edges.add(edge_key(i, j))
 
           mapping = {}
+          solutions = []
+          solution_limit = 250
           if algo == "glasgow":
               solver = Path("baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver")
               if solver.exists():
                   out = subprocess.run(
-                      [str(solver), "--induced", "--format", "lad", str(pattern_path), str(target_path)],
+                      [
+                          str(solver),
+                          "--induced",
+                          "--format",
+                          "lad",
+                          "--print-all-solutions",
+                          "--solution-limit",
+                          str(solution_limit),
+                          str(pattern_path),
+                          str(target_path),
+                      ],
                       capture_output=True,
                       text=True,
                   )
                   if out.returncode == 0:
-                      match_line = ""
                       for line in out.stdout.splitlines():
-                          if "mapping =" in line:
-                              match_line = line
-                              break
-                      if match_line:
-                          for p, t in re.findall(r"\\((\\d+)\\s*->\\s*(\\d+)\\)", match_line):
-                              mapping[int(p)] = int(t)
+                          if "mapping =" not in line:
+                              continue
+                          pairs = re.findall(r"\\((\\d+)\\s*->\\s*(\\d+)\\)", line)
+                          if not pairs:
+                              continue
+                          mapping = {int(p): int(t) for p, t in pairs}
+                          if mapping and len(solutions) < solution_limit:
+                              solutions.append(mapping)
           elif algo == "vf3":
               solver = Path("baselines/vf3lib/bin/vf3")
               if solver.exists():
                   out = subprocess.run(
-                      [str(solver), "-u", "-s", "-F", str(pattern_path), str(target_path)],
+                      [str(solver), "-u", "-s", "-r", "0", str(pattern_path), str(target_path)],
                       capture_output=True,
                       text=True,
                   )
@@ -2549,31 +2562,53 @@ jobs:
                           part for part in [(out.stdout or ""), (out.stderr or "")] if part
                       )
                       lines = [line.strip() for line in text_out.splitlines() if line.strip()]
-                      pairs = []
                       for line in lines:
                           if "," in line and ":" in line:
-                              pairs.extend(re.findall(r"(\\d+),(\\d+):", line))
-                      if not pairs:
+                              pairs = re.findall(r"(\\d+),(\\d+):", line)
+                              if not pairs:
+                                  continue
+                              mapping = {int(p): int(t) for p, t in pairs}
+                              if mapping and len(solutions) < solution_limit:
+                                  solutions.append(mapping)
+                      if not solutions:
                           pairs = re.findall(r"\\((\\d+)\\s*->\\s*(\\d+)\\)", text_out)
-                      if not pairs:
-                          pairs = re.findall(r"(\\d+)\\s*->\\s*(\\d+)", text_out)
-                      for p, t in pairs:
-                          p_i = int(p)
-                          if p_i not in mapping:
-                              mapping[p_i] = int(t)
-          if not mapping and pattern_nodes:
+                          if not pairs:
+                              pairs = re.findall(r"(\\d+)\\s*->\\s*(\\d+)", text_out)
+                          if pairs:
+                              mapping = {int(p): int(t) for p, t in pairs}
+                              if mapping:
+                                  solutions.append(mapping)
+          if not solutions and pattern_nodes:
               mapping = {i: node for i, node in enumerate(pattern_nodes)}
+              solutions.append(mapping)
+          elif solutions:
+              mapping = solutions[0]
 
-          highlight_nodes = set(mapping.values())
-          highlight_edges = set()
-          for a, b in pattern_edges:
-              ta = mapping.get(a)
-              tb = mapping.get(b)
-              if ta is None or tb is None:
-                  continue
-              ek = edge_key(ta, tb)
-              if ek in target_edges:
-                  highlight_edges.add(ek)
+          pattern_edge_list = sorted(pattern_edges)
+
+          def mapping_to_solution(mapping_dict):
+              if not mapping_dict:
+                  return None
+              pattern_n = len(adj_pattern)
+              mapping_list = [None] * pattern_n
+              for p, t in mapping_dict.items():
+                  if 0 <= p < pattern_n:
+                      mapping_list[p] = t
+              highlight_nodes = [t for t in mapping_list if t is not None]
+              highlight_edges = []
+              for a, b in pattern_edges:
+                  ta = mapping_dict.get(a)
+                  tb = mapping_dict.get(b)
+                  if ta is None or tb is None:
+                      continue
+                  ek = edge_key(ta, tb)
+                  if ek in target_edges:
+                      highlight_edges.append(ek)
+              return {
+                  "mapping": mapping_list,
+                  "highlight_nodes": highlight_nodes,
+                  "highlight_edges": highlight_edges,
+              }
 
           max_nodes = 4000
           max_edges = 4000
@@ -2592,8 +2627,7 @@ jobs:
               filtered_edges = filtered_edges[:max_edges]
               truncated = True
 
-          highlight_nodes = [n for n in highlight_nodes if n in allowed_nodes]
-          highlight_edges = [e for e in highlight_edges if e in filtered_edges]
+          filtered_edge_set = set(filtered_edges)
 
           nodes = []
           for i in range(min(total_nodes, max_nodes)):
@@ -2605,7 +2639,30 @@ jobs:
               eid = f"{a}-{b}"
               edges.append({"data": {"id": eid, "source": str(a), "target": str(b)}})
 
-          highlight_edge_ids = [f"{a}-{b}" for (a, b) in highlight_edges]
+          solutions_payload = []
+          seen_mappings = set()
+          for mapping_dict in solutions:
+              solution = mapping_to_solution(mapping_dict)
+              if not solution:
+                  continue
+              mapping_key = tuple(solution["mapping"])
+              if mapping_key in seen_mappings:
+                  continue
+              seen_mappings.add(mapping_key)
+              solution["highlight_nodes"] = [n for n in solution["highlight_nodes"] if n in allowed_nodes]
+              solution_edges = [e for e in solution["highlight_edges"] if e in filtered_edge_set]
+              solution["highlight_edges"] = [f"{a}-{b}" for (a, b) in solution_edges]
+              solutions_payload.append(solution)
+              if len(solutions_payload) >= solution_limit:
+                  break
+          if solutions_payload:
+              highlight_nodes = solutions_payload[0]["highlight_nodes"]
+              highlight_edge_ids = solutions_payload[0]["highlight_edges"]
+              mapping_list = solutions_payload[0]["mapping"]
+          else:
+              highlight_nodes = []
+              highlight_edge_ids = []
+              mapping_list = []
 
           payload = {
               "algorithm": algo,
@@ -2616,6 +2673,11 @@ jobs:
               "edges": edges,
               "highlight_nodes": [str(n) for n in highlight_nodes],
               "highlight_edges": highlight_edge_ids,
+              "pattern_node_count": len(adj_pattern),
+              "pattern_nodes": mapping_list,
+              "pattern_edges": [[int(a), int(b)] for (a, b) in pattern_edge_list],
+              "solutions": solutions_payload,
+              "no_solutions": len(solutions_payload) == 0,
               "truncated": truncated,
           }
 
