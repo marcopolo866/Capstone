@@ -2655,16 +2655,33 @@ jobs:
                   continue
               pattern_path = next((p for p in files if "pattern" in p.name), files[0])
               target_path = next((p for p in files if "target" in p.name), files[-1])
+              if not pattern_path.exists() or not target_path.exists():
+                  continue
               pattern_nodes = None
               candidate = meta.get("pattern_nodes")
               if isinstance(candidate, list) and all(isinstance(x, int) for x in candidate):
                   pattern_nodes = candidate
               seed_value = meta.get("seed")
-              vis_payload = build_visualization(pattern_path, target_path, pattern_nodes, i, seed_value)
+              try:
+                  vis_payload = build_visualization(pattern_path, target_path, pattern_nodes, i, seed_value)
+              except Exception:
+                  continue
               if vis_payload:
                   vis_iterations.append(vis_payload)
 
           if not vis_iterations:
+              out_path.write_text(
+                  json.dumps(
+                      {
+                          "algorithm": algo,
+                          "visualization_error": "No visualization iterations available",
+                          "visualization_iterations": [],
+                      },
+                      indent=2,
+                  )
+                  + "\n",
+                  encoding="utf-8",
+              )
               raise SystemExit(0)
 
           payload = dict(vis_iterations[0])

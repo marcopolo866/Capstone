@@ -2983,6 +2983,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         let patternHoverEdgeId = null;
         let visSolutions = [];
         let currentSolutionIndex = 0;
+        let visIterations = [];
+        let currentIterationIndex = 0;
 
         const errorBarsPlugin = {
             id: 'errorBars',
@@ -3256,6 +3258,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             patternHoverEdgeId = null;
             visSolutions = [];
             currentSolutionIndex = 0;
+            visIterations = [];
+            currentIterationIndex = 0;
             if (canvas) canvas.innerHTML = '';
             if (patternCanvas) patternCanvas.innerHTML = '';
             if (note) note.textContent = '';
