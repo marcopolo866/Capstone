@@ -177,6 +177,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     <div class="chart-title">Graph Visualization</div>
                     <div class="graph-actions">
                         <button class="btn btn-secondary btn-center-graph" id="graph-center-btn" onclick="centerMainGraph()" type="button">Center</button>
+                        <div class="iteration-controls" id="iteration-controls">
+                            <button class="btn btn-secondary btn-solution-nav" id="iteration-prev-btn" onclick="showPreviousIteration()" type="button">◀</button>
+                            <span class="solution-label" id="iteration-label">Iteration 1</span>
+                            <button class="btn btn-secondary btn-solution-nav" id="iteration-next-btn" onclick="showNextIteration()" type="button">▶</button>
+                        </div>
                         <div class="solution-controls" id="solution-controls">
                             <button class="btn btn-secondary btn-solution-nav" id="solution-prev-btn" onclick="showPreviousSolution()" type="button">◀</button>
                             <span class="solution-label" id="solution-label">Solution 0</span>
@@ -3235,6 +3240,10 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const patternCenterBtn = document.getElementById('pattern-center-btn');
             const solutionControls = document.getElementById('solution-controls');
             const solutionWarning = document.getElementById('solution-warning');
+            const iterationControls = document.getElementById('iteration-controls');
+            const iterationLabel = document.getElementById('iteration-label');
+            const iterationPrev = document.getElementById('iteration-prev-btn');
+            const iterationNext = document.getElementById('iteration-next-btn');
             if (graphInstance) {
                 graphInstance.destroy();
                 graphInstance = null;
@@ -3255,6 +3264,10 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (patternCenterBtn) patternCenterBtn.disabled = true;
             if (solutionControls) solutionControls.hidden = true;
             if (solutionWarning) solutionWarning.hidden = true;
+            if (iterationControls) iterationControls.hidden = true;
+            if (iterationLabel) iterationLabel.textContent = 'Iteration 1';
+            if (iterationPrev) iterationPrev.disabled = true;
+            if (iterationNext) iterationNext.disabled = true;
             if (panel) panel.hidden = true;
             if (patternPanel) patternPanel.hidden = true;
         }
@@ -3272,6 +3285,39 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
         function centerPatternGraph() {
             centerGraphInstance(patternInstance);
+        }
+
+        function updateIterationControls() {
+            const label = document.getElementById('iteration-label');
+            const prevBtn = document.getElementById('iteration-prev-btn');
+            const nextBtn = document.getElementById('iteration-next-btn');
+            const controls = document.getElementById('iteration-controls');
+            const total = visIterations.length;
+            if (!controls) return;
+            controls.hidden = false;
+            const safeTotal = total || 1;
+            const displayIndex = Math.min(Math.max(currentIterationIndex, 0), safeTotal - 1);
+            if (label) label.textContent = `Iteration ${displayIndex + 1} of ${safeTotal}`;
+            const disabled = safeTotal <= 1;
+            if (prevBtn) prevBtn.disabled = disabled || displayIndex <= 0;
+            if (nextBtn) nextBtn.disabled = disabled || displayIndex >= safeTotal - 1;
+        }
+
+        function showPreviousIteration() {
+            if (currentIterationIndex <= 0) return;
+            applyIteration(currentIterationIndex - 1);
+        }
+
+        function showNextIteration() {
+            if (currentIterationIndex >= visIterations.length - 1) return;
+            applyIteration(currentIterationIndex + 1);
+        }
+
+        function applyIteration(index) {
+            if (!visIterations.length) return;
+            const safeIndex = Math.min(Math.max(0, index), visIterations.length - 1);
+            currentIterationIndex = safeIndex;
+            renderVisualizationCurrent();
         }
 
         function updateSolutionControls() {
@@ -3362,6 +3408,21 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         }
 
         function renderVisualization(result) {
+            const baseVis = result && result.visualization ? result.visualization : null;
+            const iterations = baseVis && Array.isArray(baseVis.visualization_iterations)
+                ? baseVis.visualization_iterations
+                : (baseVis ? [baseVis] : []);
+            if (!iterations.length) {
+                clearVisualization();
+                return;
+            }
+            visIterations = iterations;
+            currentIterationIndex = 0;
+            updateIterationControls();
+            renderVisualizationCurrent();
+        }
+
+        function renderVisualizationCurrent() {
             const panel = document.getElementById('graph-panel');
             const note = document.getElementById('graph-note');
             const canvas = document.getElementById('graph-canvas');
@@ -3370,12 +3431,11 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const patternCanvas = document.getElementById('pattern-canvas');
             if (!panel || !canvas || !window.cytoscape) return;
 
-            const vis = result && result.visualization ? result.visualization : null;
+            const vis = visIterations[currentIterationIndex];
             if (!vis || !Array.isArray(vis.nodes) || !Array.isArray(vis.edges)) {
                 clearVisualization();
                 return;
             }
-
             if (graphInstance) {
                 graphInstance.destroy();
                 graphInstance = null;
@@ -3590,8 +3650,10 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 }
             }
             if (visSolutions.length) {
+                updateIterationControls();
                 applySolution(0);
             } else {
+                updateIterationControls();
                 updateSolutionControls();
             }
             requestAnimationFrame(() => {

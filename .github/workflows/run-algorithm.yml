@@ -2289,20 +2289,17 @@ jobs:
             export GENERATOR_N
             export GENERATOR_K
             export GENERATOR_DENSITY
+            export ITERATIONS
             python - <<'PY'
           import csv
           import json
           import os
           import re
           import subprocess
-          import sys
           from pathlib import Path
 
           algo = os.environ.get("ALGORITHM", "")
-          seed_raw = os.environ.get("VIS_SEED", "")
-          n_raw = os.environ.get("GENERATOR_N", "")
-          k_raw = os.environ.get("GENERATOR_K", "")
-          density_raw = os.environ.get("GENERATOR_DENSITY", "")
+          iterations_raw = os.environ.get("ITERATIONS", "1")
           out_path = Path("outputs/visualization.json")
           out_dir = Path("outputs/visualization")
           out_dir.mkdir(parents=True, exist_ok=True)
@@ -2311,69 +2308,29 @@ jobs:
               raise SystemExit(0)
 
           try:
-              base_seed = int(seed_raw)
+              iterations = int(iterations_raw)
           except (TypeError, ValueError):
-              raise SystemExit(0)
+              iterations = 1
+          if iterations < 1:
+              iterations = 1
 
-          try:
-              n_val = int(n_raw)
-          except (TypeError, ValueError):
-              raise SystemExit(0)
-
-          try:
-              density_val = float(density_raw)
-          except (TypeError, ValueError):
-              density_val = 0.05
-
-          k_val = None
-          if algo in {"glasgow", "vf3"}:
-              try:
-                  k_val = int(k_raw)
-              except (TypeError, ValueError):
-                  raise SystemExit(0)
-
-          # Use the recorded seed for the first generated iteration.
-          vis_seed = base_seed
-
-          gen_cmd = [
-              sys.executable,
-              "utilities/generate_graphs.py",
-              "--algorithm",
-              algo,
-              "--n",
-              str(n_val),
-              "--density",
-              str(density_val),
-              "--seed",
-              str(vis_seed),
-              "--out-dir",
-              str(out_dir),
-          ]
-          if k_val is not None:
-              gen_cmd += ["--k", str(k_val)]
-
-          res = subprocess.run(gen_cmd, capture_output=True, text=True)
-          if res.returncode != 0:
-              raise SystemExit(0)
-
-          files_line = ""
-          for line in res.stdout.strip().splitlines():
-              if line.strip():
-                  files_line = line.strip()
-          if not files_line:
-              raise SystemExit(0)
-
-          files = [Path(p) for p in files_line.split(",") if p]
-          pattern_nodes = None
-          metadata_path = out_dir / "metadata.json"
-          if metadata_path.exists():
-              try:
-                  meta = json.loads(metadata_path.read_text(encoding="utf-8"))
-                  candidate = meta.get("pattern_nodes")
-                  if isinstance(candidate, list) and all(isinstance(x, int) for x in candidate):
-                      pattern_nodes = candidate
-              except (OSError, json.JSONDecodeError):
-                  pattern_nodes = None
+          def load_metadata(iter_idx: int):
+              if algo == "glasgow":
+                  base = Path(f"outputs/generated/glasgow/glasgow_iter/iter_{iter_idx}/metadata.json")
+                  if base.exists():
+                      return base
+                  return None
+              if algo == "vf3":
+                  base = Path(f"outputs/generated/vf3/vf3_iter/iter_{iter_idx}/metadata.json")
+                  if base.exists():
+                      return base
+                  retry_dir = Path("outputs/generated/vf3/vf3_iter_retry")
+                  if retry_dir.exists():
+                      candidates = sorted(retry_dir.glob(f\"iter_{iter_idx}_retry*/metadata.json\"))
+                      if candidates:
+                          return candidates[-1]
+                  return None
+              return None
 
           def parse_lad(path: Path):
               with path.open("r", encoding="utf-8") as fh:
@@ -2484,216 +2441,234 @@ jobs:
                   adj[j].add(i)
               return adj, node_list
 
-          adj_target = []
-          adj_pattern = []
-          node_labels = None
-
-          if algo == "dijkstra":
-              adj_target, node_labels = parse_dijkstra(files[0])
-          elif algo == "glasgow":
-              pattern_path = next((p for p in files if "pattern" in p.name), files[0])
-              target_path = next((p for p in files if "target" in p.name), files[-1])
-              adj_pattern = parse_lad(pattern_path)
-              adj_target = parse_lad(target_path)
-          else:
-              pattern_path = next((p for p in files if "pattern" in p.name), files[0])
-              target_path = next((p for p in files if "target" in p.name), files[-1])
-              adj_pattern = parse_vf(pattern_path)
-              adj_target = parse_vf(target_path)
-
           def edge_key(a, b):
               return (a, b) if a <= b else (b, a)
 
-          target_edges = set()
-          for i, nbrs in enumerate(adj_target):
-              for j in nbrs:
-                  if i == j:
-                      continue
-                  target_edges.add(edge_key(i, j))
+          def build_visualization(pattern_path, target_path, pattern_nodes, iteration_index, seed_value):
+              adj_pattern = parse_lad(pattern_path) if algo == "glasgow" else parse_vf(pattern_path)
+              adj_target = parse_lad(target_path) if algo == "glasgow" else parse_vf(target_path)
 
-          pattern_edges = set()
-          for i, nbrs in enumerate(adj_pattern):
-              for j in nbrs:
-                  if i == j:
-                      continue
-                  pattern_edges.add(edge_key(i, j))
+              target_edges = set()
+              for i, nbrs in enumerate(adj_target):
+                  for j in nbrs:
+                      if i == j:
+                          continue
+                      target_edges.add(edge_key(i, j))
 
-          mapping = {}
-          solutions = []
-          solution_limit = 250
-          solver_stdout = ""
-          solver_stderr = ""
-          solver_cmd = []
-          solution_lines = 0
-          if algo == "glasgow":
-              solver = Path("baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver")
-              if solver.exists():
-                  solver_cmd = [
-                      str(solver),
-                      "--induced",
-                      "--format",
-                      "lad",
-                      "--print-all-solutions",
-                      "--solution-limit",
-                      str(solution_limit),
-                      str(pattern_path),
-                      str(target_path),
-                  ]
-                  out = subprocess.run(solver_cmd, capture_output=True, text=True)
-                  if out.returncode == 0:
-                      solver_stdout = out.stdout or ""
-                      solver_stderr = out.stderr or ""
-                      for line in out.stdout.splitlines():
-                          if "mapping =" not in line:
-                              continue
-                          pairs = re.findall(r"\(\s*(\d+)\s*->\s*(\d+)\s*\)", line)
-                          if not pairs:
-                              continue
-                          solution_lines += 1
-                          mapping = {int(p): int(t) for p, t in pairs}
-                          if mapping and len(solutions) < solution_limit:
-                              solutions.append(mapping)
-          elif algo == "vf3":
-              solver = Path("baselines/vf3lib/bin/vf3")
-              if solver.exists():
-                  solver_cmd = [str(solver), "-u", "-s", "-r", "0", str(pattern_path), str(target_path)]
-                  out = subprocess.run(solver_cmd, capture_output=True, text=True)
-                  if out.returncode == 0:
-                      solver_stdout = out.stdout or ""
-                      solver_stderr = out.stderr or ""
-                      text_out = "\n".join(part for part in [solver_stdout, solver_stderr] if part)
-                      lines = [line.strip() for line in text_out.splitlines() if line.strip()]
-                      for line in lines:
-                          if "," in line and ":" in line:
-                              pairs = re.findall(r"(\d+)\s*,\s*(\d+)\s*:", line)
+              pattern_edges = set()
+              for i, nbrs in enumerate(adj_pattern):
+                  for j in nbrs:
+                      if i == j:
+                          continue
+                      pattern_edges.add(edge_key(i, j))
+
+              mapping = {}
+              solutions = []
+              solution_limit = 250
+              solver_stdout = ""
+              solver_stderr = ""
+              solver_cmd = []
+              solution_lines = 0
+
+              if algo == "glasgow":
+                  solver = Path("baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver")
+                  if solver.exists():
+                      solver_cmd = [
+                          str(solver),
+                          "--induced",
+                          "--format",
+                          "lad",
+                          "--print-all-solutions",
+                          "--solution-limit",
+                          str(solution_limit),
+                          str(pattern_path),
+                          str(target_path),
+                      ]
+                      out = subprocess.run(solver_cmd, capture_output=True, text=True)
+                      if out.returncode == 0:
+                          solver_stdout = out.stdout or ""
+                          solver_stderr = out.stderr or ""
+                          for line in out.stdout.splitlines():
+                              if "mapping =" not in line:
+                                  continue
+                              pairs = re.findall(r"\(\s*(\d+)\s*->\s*(\d+)\s*\)", line)
                               if not pairs:
                                   continue
                               solution_lines += 1
                               mapping = {int(p): int(t) for p, t in pairs}
                               if mapping and len(solutions) < solution_limit:
                                   solutions.append(mapping)
-                      if not solutions:
-                          pairs = re.findall(r"\(\s*(\d+)\s*->\s*(\d+)\s*\)", text_out)
-                          if not pairs:
-                              pairs = re.findall(r"(\d+)\s*->\s*(\d+)", text_out)
-                          if pairs:
-                              mapping = {int(p): int(t) for p, t in pairs}
-                              if mapping:
-                                  solutions.append(mapping)
-          if not solutions and pattern_nodes:
-              mapping = {i: node for i, node in enumerate(pattern_nodes)}
-              solutions.append(mapping)
-          elif solutions:
-              mapping = solutions[0]
+              elif algo == "vf3":
+                  solver = Path("baselines/vf3lib/bin/vf3")
+                  if solver.exists():
+                      solver_cmd = [str(solver), "-u", "-s", "-r", "0", str(pattern_path), str(target_path)]
+                      out = subprocess.run(solver_cmd, capture_output=True, text=True)
+                      if out.returncode == 0:
+                          solver_stdout = out.stdout or ""
+                          solver_stderr = out.stderr or ""
+                          text_out = "\n".join(part for part in [solver_stdout, solver_stderr] if part)
+                          lines = [line.strip() for line in text_out.splitlines() if line.strip()]
+                          for line in lines:
+                              if "," in line and ":" in line:
+                                  pairs = re.findall(r"(\d+)\s*,\s*(\d+)\s*:", line)
+                                  if not pairs:
+                                      continue
+                                  solution_lines += 1
+                                  mapping = {int(p): int(t) for p, t in pairs}
+                                  if mapping and len(solutions) < solution_limit:
+                                      solutions.append(mapping)
+                          if not solutions:
+                              pairs = re.findall(r"\(\s*(\d+)\s*->\s*(\d+)\s*\)", text_out)
+                              if not pairs:
+                                  pairs = re.findall(r"(\d+)\s*->\s*(\d+)", text_out)
+                              if pairs:
+                                  mapping = {int(p): int(t) for p, t in pairs}
+                                  if mapping:
+                                      solutions.append(mapping)
 
-          pattern_edge_list = sorted(pattern_edges)
+              if not solutions and pattern_nodes:
+                  mapping = {i: node for i, node in enumerate(pattern_nodes)}
+                  solutions.append(mapping)
+              elif solutions:
+                  mapping = solutions[0]
 
-          def mapping_to_solution(mapping_dict):
-              if not mapping_dict:
-                  return None
-              pattern_n = len(adj_pattern)
-              mapping_list = [None] * pattern_n
-              for p, t in mapping_dict.items():
-                  if 0 <= p < pattern_n:
-                      mapping_list[p] = t
-              highlight_nodes = [t for t in mapping_list if t is not None]
-              highlight_edges = []
-              for a, b in pattern_edges:
-                  ta = mapping_dict.get(a)
-                  tb = mapping_dict.get(b)
-                  if ta is None or tb is None:
+              pattern_edge_list = sorted(pattern_edges)
+
+              def mapping_to_solution(mapping_dict):
+                  if not mapping_dict:
+                      return None
+                  pattern_n = len(adj_pattern)
+                  mapping_list = [None] * pattern_n
+                  for p, t in mapping_dict.items():
+                      if 0 <= p < pattern_n:
+                          mapping_list[p] = t
+                  highlight_nodes = [t for t in mapping_list if t is not None]
+                  highlight_edges = []
+                  for a, b in pattern_edges:
+                      ta = mapping_dict.get(a)
+                      tb = mapping_dict.get(b)
+                      if ta is None or tb is None:
+                          continue
+                      ek = edge_key(ta, tb)
+                      if ek in target_edges:
+                          highlight_edges.append(ek)
+                  return {
+                      "mapping": mapping_list,
+                      "highlight_nodes": highlight_nodes,
+                      "highlight_edges": highlight_edges,
+                  }
+
+              max_nodes = 4000
+              max_edges = 4000
+              truncated = False
+
+              total_nodes = len(adj_target)
+              total_edges = len(target_edges)
+
+              allowed_nodes = set(range(min(total_nodes, max_nodes)))
+              if total_nodes > max_nodes:
+                  truncated = True
+
+              edges_sorted = sorted(target_edges)
+              filtered_edges = [e for e in edges_sorted if e[0] in allowed_nodes and e[1] in allowed_nodes]
+              if len(filtered_edges) > max_edges:
+                  filtered_edges = filtered_edges[:max_edges]
+                  truncated = True
+
+              filtered_edge_set = set(filtered_edges)
+
+              nodes = []
+              for i in range(min(total_nodes, max_nodes)):
+                  nodes.append({"data": {"id": str(i), "label": str(i)}})
+
+              edges = []
+              for a, b in filtered_edges:
+                  eid = f"{a}-{b}"
+                  edges.append({"data": {"id": eid, "source": str(a), "target": str(b)}})
+
+              solutions_payload = []
+              seen_mappings = set()
+              for mapping_dict in solutions:
+                  solution = mapping_to_solution(mapping_dict)
+                  if not solution:
                       continue
-                  ek = edge_key(ta, tb)
-                  if ek in target_edges:
-                      highlight_edges.append(ek)
-              return {
-                  "mapping": mapping_list,
-                  "highlight_nodes": highlight_nodes,
-                  "highlight_edges": highlight_edges,
+                  mapping_key = tuple(solution["mapping"])
+                  if mapping_key in seen_mappings:
+                      continue
+                  seen_mappings.add(mapping_key)
+                  solution["highlight_nodes"] = [n for n in solution["highlight_nodes"] if n in allowed_nodes]
+                  solution_edges = [e for e in solution["highlight_edges"] if e in filtered_edge_set]
+                  solution["highlight_edges"] = [f"{a}-{b}" for (a, b) in solution_edges]
+                  solutions_payload.append(solution)
+                  if len(solutions_payload) >= solution_limit:
+                      break
+              if solutions_payload:
+                  highlight_nodes = solutions_payload[0]["highlight_nodes"]
+                  highlight_edge_ids = solutions_payload[0]["highlight_edges"]
+                  mapping_list = solutions_payload[0]["mapping"]
+              else:
+                  highlight_nodes = []
+                  highlight_edge_ids = []
+                  mapping_list = []
+
+              payload = {
+                  "algorithm": algo,
+                  "seed": seed_value,
+                  "iteration": iteration_index,
+                  "node_count": total_nodes,
+                  "edge_count": total_edges,
+                  "nodes": nodes,
+                  "edges": edges,
+                  "highlight_nodes": [str(n) for n in highlight_nodes],
+                  "highlight_edges": highlight_edge_ids,
+                  "pattern_node_count": len(adj_pattern),
+                  "pattern_nodes": mapping_list,
+                  "pattern_edges": [[int(a), int(b)] for (a, b) in pattern_edge_list],
+                  "solutions": solutions_payload,
+                  "no_solutions": len(solutions_payload) == 0,
+                  "truncated": truncated,
               }
+              if solver_cmd:
+                  payload["solver_cmd"] = solver_cmd
+                  payload["solver_solution_lines"] = solution_lines
+                  if solver_stdout:
+                      payload["solver_stdout"] = solver_stdout[:5000]
+                      if len(solver_stdout) > 5000:
+                          payload["solver_stdout_truncated"] = True
+                  if solver_stderr:
+                      payload["solver_stderr"] = solver_stderr[:5000]
+                      if len(solver_stderr) > 5000:
+                          payload["solver_stderr_truncated"] = True
+              return payload
 
-          max_nodes = 4000
-          max_edges = 4000
-          truncated = False
-
-          total_nodes = len(adj_target)
-          total_edges = len(target_edges)
-
-          allowed_nodes = set(range(min(total_nodes, max_nodes)))
-          if total_nodes > max_nodes:
-              truncated = True
-
-          edges_sorted = sorted(target_edges)
-          filtered_edges = [e for e in edges_sorted if e[0] in allowed_nodes and e[1] in allowed_nodes]
-          if len(filtered_edges) > max_edges:
-              filtered_edges = filtered_edges[:max_edges]
-              truncated = True
-
-          filtered_edge_set = set(filtered_edges)
-
-          nodes = []
-          for i in range(min(total_nodes, max_nodes)):
-              label = str(node_labels[i]) if node_labels and i < len(node_labels) else str(i)
-              nodes.append({"data": {"id": str(i), "label": label}})
-
-          edges = []
-          for a, b in filtered_edges:
-              eid = f"{a}-{b}"
-              edges.append({"data": {"id": eid, "source": str(a), "target": str(b)}})
-
-          solutions_payload = []
-          seen_mappings = set()
-          for mapping_dict in solutions:
-              solution = mapping_to_solution(mapping_dict)
-              if not solution:
+          vis_iterations = []
+          for i in range(1, iterations + 1):
+              meta_path = load_metadata(i)
+              if not meta_path:
                   continue
-              mapping_key = tuple(solution["mapping"])
-              if mapping_key in seen_mappings:
+              try:
+                  meta = json.loads(meta_path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
                   continue
-              seen_mappings.add(mapping_key)
-              solution["highlight_nodes"] = [n for n in solution["highlight_nodes"] if n in allowed_nodes]
-              solution_edges = [e for e in solution["highlight_edges"] if e in filtered_edge_set]
-              solution["highlight_edges"] = [f"{a}-{b}" for (a, b) in solution_edges]
-              solutions_payload.append(solution)
-              if len(solutions_payload) >= solution_limit:
-                  break
-          if solutions_payload:
-              highlight_nodes = solutions_payload[0]["highlight_nodes"]
-              highlight_edge_ids = solutions_payload[0]["highlight_edges"]
-              mapping_list = solutions_payload[0]["mapping"]
-          else:
-              highlight_nodes = []
-              highlight_edge_ids = []
-              mapping_list = []
+              files = [Path(p) for p in meta.get("files", []) if p]
+              if not files:
+                  continue
+              pattern_path = next((p for p in files if "pattern" in p.name), files[0])
+              target_path = next((p for p in files if "target" in p.name), files[-1])
+              pattern_nodes = None
+              candidate = meta.get("pattern_nodes")
+              if isinstance(candidate, list) and all(isinstance(x, int) for x in candidate):
+                  pattern_nodes = candidate
+              seed_value = meta.get("seed")
+              vis_payload = build_visualization(pattern_path, target_path, pattern_nodes, i, seed_value)
+              if vis_payload:
+                  vis_iterations.append(vis_payload)
 
-          payload = {
-              "algorithm": algo,
-              "seed": vis_seed,
-              "node_count": total_nodes,
-              "edge_count": total_edges,
-              "nodes": nodes,
-              "edges": edges,
-              "highlight_nodes": [str(n) for n in highlight_nodes],
-              "highlight_edges": highlight_edge_ids,
-              "pattern_node_count": len(adj_pattern),
-              "pattern_nodes": mapping_list,
-              "pattern_edges": [[int(a), int(b)] for (a, b) in pattern_edge_list],
-              "solutions": solutions_payload,
-              "no_solutions": len(solutions_payload) == 0,
-              "truncated": truncated,
-          }
-          if solver_cmd:
-              payload["solver_cmd"] = solver_cmd
-              payload["solver_solution_lines"] = solution_lines
-              if solver_stdout:
-                  payload["solver_stdout"] = solver_stdout[:5000]
-                  if len(solver_stdout) > 5000:
-                      payload["solver_stdout_truncated"] = True
-              if solver_stderr:
-                  payload["solver_stderr"] = solver_stderr[:5000]
-                  if len(solver_stderr) > 5000:
-                      payload["solver_stderr_truncated"] = True
+          if not vis_iterations:
+              raise SystemExit(0)
 
+          payload = dict(vis_iterations[0])
+          payload["visualization_iterations"] = vis_iterations
           out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
           PY
             if [ ! -s "$VISUALIZATION_FILE" ]; then
