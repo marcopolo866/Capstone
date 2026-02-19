@@ -22,6 +22,7 @@ printed on the final line.
 #include <chrono>
 #include <string>
 #include <cstdlib>
+#include <functional>
 
 using namespace std;
 
