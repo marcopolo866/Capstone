@@ -60,6 +60,12 @@ jobs:
           echo "Building VF3 ChatGPT (src)..."
           g++ -std=c++17 -O3 "src/[CHATGPT] Subgraph Isomorphism.cpp" -o "src/chatvf3"
 
+          echo "Building Glasgow ChatGPT (src)..."
+          g++ -std=c++17 -O3 "src/[CHATGPT] Glasgow.cpp" -o "src/glasgow_chatgpt"
+
+          echo "Building Glasgow Gemini (src)..."
+          g++ -std=c++17 -O3 "src/[GEMINI] Glasgow.cpp" -o "src/glasgow_gemini"
+
           echo "Building Glasgow..."
           cd baselines/glasgow-subgraph-solver
           mkdir -p build
@@ -73,6 +79,8 @@ jobs:
             src/dijkstra_llm \
             src/vf3 \
             src/chatvf3 \
+            src/glasgow_chatgpt \
+            src/glasgow_gemini \
             baselines/vf3lib/bin/vf3 \
             baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver
 
@@ -85,6 +93,8 @@ jobs:
             src/dijkstra_llm
             src/vf3
             src/chatvf3
+            src/glasgow_chatgpt
+            src/glasgow_gemini
             baselines/vf3lib/bin/vf3
             baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver
           if-no-files-found: error

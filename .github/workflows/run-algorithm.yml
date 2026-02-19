@@ -12,6 +12,7 @@ on:
           - dijkstra
           - glasgow
           - vf3
+          - subgraph
       iterations:
         description: 'Number of benchmark iterations'
         required: false
@@ -191,6 +192,8 @@ jobs:
             src/dijkstra_llm
             src/vf3
             src/chatvf3
+            src/glasgow_chatgpt
+            src/glasgow_gemini
             baselines/vf3lib/bin/vf3
             baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver
           key: ${{ runner.os }}-algorithm-binaries-${{ steps.binaries_meta.outputs.RUN_ID || 'unknown' }}
@@ -212,6 +215,8 @@ jobs:
             "src/dijkstra_llm"
             "src/vf3"
             "src/chatvf3"
+            "src/glasgow_chatgpt"
+            "src/glasgow_gemini"
             "baselines/vf3lib/bin/vf3"
             "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver"
           )
@@ -325,6 +330,8 @@ jobs:
               "src/dijkstra_llm",
               "src/vf3",
               "src/chatvf3",
+              "src/glasgow_chatgpt",
+              "src/glasgow_gemini",
               "baselines/vf3lib/bin/vf3",
               "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver",
           ]
@@ -426,6 +433,16 @@ jobs:
               fi
             fi
             IFS=',' read -ra FILES <<< "$files"
+            if [ "$ALGORITHM" = "subgraph" ]; then
+              SUBGRAPH_VF_FILES=()
+              SUBGRAPH_LAD_FILES=()
+              for f in "${FILES[@]}"; do
+                case "$f" in
+                  *.vf) SUBGRAPH_VF_FILES+=("$f") ;;
+                  *.lad) SUBGRAPH_LAD_FILES+=("$f") ;;
+                esac
+              done
+            fi
             return 0
           }
 
@@ -472,7 +489,7 @@ jobs:
 
             # Normalize graph inputs so the smaller graph is always the pattern/subgraph.
             # (Order of clicks in the UI should not matter.)
-            if [ "$ALGORITHM" = "glasgow" ] || [ "$ALGORITHM" = "vf3" ]; then
+            if [ "$ALGORITHM" = "glasgow" ] || [ "$ALGORITHM" = "vf3" ] || [ "$ALGORITHM" = "subgraph" ]; then
               graph_nodes() {
                 python - <<'PY' "$1" 2>/dev/null || true
           import re
@@ -520,6 +537,161 @@ jobs:
                 FILES[1]="$file0"
                 echo "Normalized inputs (smaller graph used as pattern/subgraph)." >> outputs/result.txt
               fi
+            fi
+
+            if [ "$ALGORITHM" = "subgraph" ]; then
+              mkdir -p outputs/converted
+              conv_out="$(printf '%s\n' \
+                'import re' \
+                'import sys' \
+                'from pathlib import Path' \
+                '' \
+                'pattern_path = Path(sys.argv[1])' \
+                'target_path = Path(sys.argv[2])' \
+                'out_dir = Path(\"outputs/converted\")' \
+                'out_dir.mkdir(parents=True, exist_ok=True)' \
+                '' \
+                'def read_lad(path: Path):' \
+                '    with path.open(\"r\", encoding=\"utf-8\") as fh:' \
+                '        first = fh.readline()' \
+                '        if not first:' \
+                '            raise ValueError(\"Empty LAD file\")' \
+                '        n = int(first.strip())' \
+                '        adj = [set() for _ in range(n)]' \
+                '        for i in range(n):' \
+                '            line = fh.readline()' \
+                '            if not line:' \
+                '                break' \
+                '            parts = line.strip().split()' \
+                '            if not parts:' \
+                '                continue' \
+                '            d = int(parts[0])' \
+                '            for v in parts[1:1 + d]:' \
+                '                j = int(v)' \
+                '                if 0 <= j < n and j != i:' \
+                '                    adj[i].add(j)' \
+                '    for i in range(n):' \
+                '        for j in list(adj[i]):' \
+                '            adj[j].add(i)' \
+                '    return [sorted(list(s)) for s in adj]' \
+                '' \
+                'def read_vf(path: Path):' \
+                '    def next_int_line(handle):' \
+                '        while True:' \
+                '            line = handle.readline()' \
+                '            if not line:' \
+                '                return None' \
+                '            stripped = line.strip()' \
+                '            if not stripped or stripped.startswith(\"#\"):' \
+                '                continue' \
+                '            nums = [int(x) for x in re.findall(r\"-?\\d+\", line)]' \
+                '            if nums:' \
+                '                return nums' \
+                '    with path.open(\"r\", encoding=\"utf-8\") as fh:' \
+                '        header = next_int_line(fh)' \
+                '        if not header:' \
+                '            raise ValueError(\"Empty VF file\")' \
+                '        n = int(header[0])' \
+                '        for _ in range(n):' \
+                '            if next_int_line(fh) is None:' \
+                '                break' \
+                '        adj = [set() for _ in range(n)]' \
+                '        for i in range(n):' \
+                '            count_line = next_int_line(fh)' \
+                '            if not count_line:' \
+                '                break' \
+                '            m = int(count_line[0])' \
+                '            for _ in range(m):' \
+                '                edge_nums = next_int_line(fh)' \
+                '                if not edge_nums:' \
+                '                    break' \
+                '                if len(edge_nums) >= 2:' \
+                '                    a, b = edge_nums[0], edge_nums[1]' \
+                '                    if a == i and 0 <= b < n:' \
+                '                        j = b' \
+                '                    elif b == i and 0 <= a < n:' \
+                '                        j = a' \
+                '                    else:' \
+                '                        j = a if 0 <= a < n else (b if 0 <= b < n else None)' \
+                '                else:' \
+                '                    j = edge_nums[0] if 0 <= edge_nums[0] < n else None' \
+                '                if j is None or j == i:' \
+                '                    continue' \
+                '                adj[i].add(j)' \
+                '    for i in range(n):' \
+                '        for j in list(adj[i]):' \
+                '            adj[j].add(i)' \
+                '    return [sorted(list(s)) for s in adj]' \
+                '' \
+                'def write_lad(path: Path, adj):' \
+                '    with path.open(\"w\", encoding=\"utf-8\") as fh:' \
+                '        fh.write(f\"{len(adj)}\\n\")' \
+                '        for neighbors in adj:' \
+                '            line = f\"{len(neighbors)}\"' \
+                '            if neighbors:' \
+                '                line += \" \" + \" \".join(str(v) for v in neighbors)' \
+                '            fh.write(line + \"\\n\")' \
+                '' \
+                'def write_vf(path: Path, adj):' \
+                '    with path.open(\"w\", encoding=\"utf-8\") as fh:' \
+                '        fh.write(f\"{len(adj)}\\n\")' \
+                '        labels = [i % 4 for i in range(len(adj))]' \
+                '        for i, label in enumerate(labels):' \
+                '            fh.write(f\"{i} {label}\\n\")' \
+                '        for i, neighbors in enumerate(adj):' \
+                '            fh.write(f\"{len(neighbors)}\\n\")' \
+                '            for v in neighbors:' \
+                '                fh.write(f\"{i} {v}\\n\")' \
+                '' \
+                'def detect_format(path: Path):' \
+                '    if path.suffix.lower() == \".lad\":' \
+                '        return \"lad\"' \
+                '    if path.suffix.lower() == \".vf\":' \
+                '        return \"vf\"' \
+                '    return \"\"' \
+                '' \
+                'fmt_pattern = detect_format(pattern_path)' \
+                'fmt_target = detect_format(target_path)' \
+                'if fmt_pattern != fmt_target or fmt_pattern == \"\":' \
+                '    raise SystemExit(\"Mixed or unsupported formats for subgraph premade input.\")' \
+                '' \
+                'if fmt_pattern == \"lad\":' \
+                '    pattern_adj = read_lad(pattern_path)' \
+                '    target_adj = read_lad(target_path)' \
+                'else:' \
+                '    pattern_adj = read_vf(pattern_path)' \
+                '    target_adj = read_vf(target_path)' \
+                '' \
+                'lad_pattern = out_dir / \"pattern.lad\"' \
+                'lad_target = out_dir / \"target.lad\"' \
+                'vf_pattern = out_dir / \"pattern.vf\"' \
+                'vf_target = out_dir / \"target.vf\"' \
+                '' \
+                'write_lad(lad_pattern, pattern_adj)' \
+                'write_lad(lad_target, target_adj)' \
+                'write_vf(vf_pattern, pattern_adj)' \
+                'write_vf(vf_target, target_adj)' \
+                '' \
+                'print(\",\".join([str(lad_pattern), str(lad_target), str(vf_pattern), str(vf_target)]))' \
+                | python - "${FILES[0]}" "${FILES[1]}")"
+              status=$?
+              if [ $status -ne 0 ]; then
+                echo "Failed to convert premade subgraph inputs." >> outputs/result.txt
+                echo "$conv_out" >> outputs/result.txt
+                finish_run
+                echo "EXIT_CODE=1" >> "$GITHUB_OUTPUT"
+                echo "REQUEST_ID=${REQUEST_ID}" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              IFS=',' read -ra FILES <<< "$conv_out"
+              SUBGRAPH_VF_FILES=()
+              SUBGRAPH_LAD_FILES=()
+              for f in "${FILES[@]}"; do
+                case "$f" in
+                  *.vf) SUBGRAPH_VF_FILES+=("$f") ;;
+                  *.lad) SUBGRAPH_LAD_FILES+=("$f") ;;
+                esac
+              done
             fi
           fi
 
@@ -569,6 +741,10 @@ jobs:
             vf3)
               UNITS_PER_ITER=3   # baseline + gemini + chatgpt
               TICKS_PER_ITER=3   # each runs once (reports first + all)
+              ;;
+            subgraph)
+              UNITS_PER_ITER=6   # vf3 baseline/chatgpt/gemini + glasgow baseline/chatgpt/gemini
+              TICKS_PER_ITER=9   # vf3 (3) + glasgow (6: first+all)
               ;;
             *)
               UNITS_PER_ITER=0
@@ -1154,6 +1330,34 @@ jobs:
           PY
           }
 
+          extract_count_time_ms() {
+            python - <<'PY' "$1"
+          import re
+          import sys
+
+          text = sys.argv[1]
+          lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+          count = None
+          for ln in reversed(lines):
+            if re.fullmatch(r"-?\d+", ln):
+              count = int(ln)
+              break
+          if count is None:
+            count = sum(1 for ln in lines if "Mapping:" in ln)
+          nums = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", text)
+          time_ms = None
+          if nums:
+            try:
+              time_ms = float(nums[-1])
+            except ValueError:
+              time_ms = None
+          if time_ms is None:
+            print("")
+            raise SystemExit(0)
+          print(f"{count} {time_ms} {time_ms}")
+          PY
+          }
+
           sum_ms_runs() {
             python - <<'PY' "$@"
           import sys
@@ -1554,29 +1758,19 @@ jobs:
                       break
                     fi
                     progress_setup_tick
-                    if ! run_capture out dur ./src/chatvf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
-                      echo "[Warmup] Glasgow ChatGPT first failed." >> outputs/result.txt
+                    if ! run_capture out dur ./src/glasgow_chatgpt "${FILES[0]}" "${FILES[1]}"; then
+                      echo "[Warmup] Glasgow ChatGPT run failed." >> outputs/result.txt
                       EXIT_CODE=1
                       break
                     fi
                     progress_setup_tick
-                    if ! run_capture out dur ./src/chatvf3 --induced "${FILES[0]}" "${FILES[1]}"; then
-                      echo "[Warmup] Glasgow ChatGPT all failed." >> outputs/result.txt
+                    progress_setup_tick
+                    if ! run_capture out dur ./src/glasgow_gemini "${FILES[0]}" "${FILES[1]}"; then
+                      echo "[Warmup] Glasgow Gemini run failed." >> outputs/result.txt
                       EXIT_CODE=1
                       break
                     fi
                     progress_setup_tick
-                    if ! run_capture out dur ./src/vf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
-                      echo "[Warmup] Glasgow Gemini first failed." >> outputs/result.txt
-                      EXIT_CODE=1
-                      break
-                    fi
-                    progress_setup_tick
-                    if ! run_capture out dur ./src/vf3 --induced "${FILES[0]}" "${FILES[1]}"; then
-                      echo "[Warmup] Glasgow Gemini all failed." >> outputs/result.txt
-                      EXIT_CODE=1
-                      break
-                    fi
                     progress_setup_tick
                   done
                 else
@@ -1586,18 +1780,18 @@ jobs:
                   if ! warmup_only "Glasgow all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
                     EXIT_CODE=1
                   fi
-                  if ! warmup_only "Glasgow ChatGPT first" ./src/chatvf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
+                  if ! warmup_only "Glasgow ChatGPT" ./src/glasgow_chatgpt "${FILES[0]}" "${FILES[1]}"; then
                     EXIT_CODE=1
                   fi
-                  if ! warmup_only "Glasgow ChatGPT all" ./src/chatvf3 --induced "${FILES[0]}" "${FILES[1]}"; then
+                  for ((i=1; i<=WARMUP_REQUESTED; i++)); do
+                    progress_setup_tick
+                  done
+                  if ! warmup_only "Glasgow Gemini" ./src/glasgow_gemini "${FILES[0]}" "${FILES[1]}"; then
                     EXIT_CODE=1
                   fi
-                  if ! warmup_only "Glasgow Gemini first" ./src/vf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                  fi
-                  if ! warmup_only "Glasgow Gemini all" ./src/vf3 --induced "${FILES[0]}" "${FILES[1]}"; then
-                    EXIT_CODE=1
-                  fi
+                  for ((i=1; i<=WARMUP_REQUESTED; i++)); do
+                    progress_setup_tick
+                  done
                 fi
               else
                 progress_setup_tick
@@ -1686,24 +1880,24 @@ jobs:
                 glasgow_chatgpt_total=$((glasgow_chatgpt_total + 1))
                 chat_ok=1
                 chat_count=""
-                if ! run_capture_rss out dur rss ./src/chatvf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
+                if ! run_capture_rss out dur rss ./src/glasgow_chatgpt "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
-                  echo "[Glasgow ChatGPT] first-solution run failed." >> outputs/result.txt
+                  echo "[Glasgow ChatGPT] run failed." >> outputs/result.txt
                   chat_ok=0
                 else
                   chat_first_times+=("$dur")
                   chat_first_rsses+=("$rss")
-                  progress_tick
-                fi
-                if ! run_capture_rss out dur rss ./src/chatvf3 --induced "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[Glasgow ChatGPT] all-solutions run failed." >> outputs/result.txt
-                  chat_ok=0
-                else
                   chat_all_times+=("$dur")
                   chat_all_rsses+=("$rss")
                   progress_tick
-                  chat_count="$(extract_solution_count "$out")"
+                  progress_tick
+                  parsed="$(extract_count_time_ms "$out")"
+                  if [ -n "${parsed:-}" ]; then
+                    read chat_count _ _ <<< "$parsed"
+                  else
+                    chat_ok=0
+                    echo "[Glasgow ChatGPT] could not parse solution count/time." >> outputs/result.txt
+                  fi
                 fi
                 if [ "$chat_ok" -eq 1 ] && [ -n "${chat_count:-}" ] && [ "$chat_count" = "$baseline_count" ]; then
                   glasgow_chatgpt_match=$((glasgow_chatgpt_match + 1))
@@ -1715,24 +1909,24 @@ jobs:
                 glasgow_gemini_total=$((glasgow_gemini_total + 1))
                 gem_ok=1
                 gem_count=""
-                if ! run_capture_rss out dur rss ./src/vf3 --induced --first-only "${FILES[0]}" "${FILES[1]}"; then
+                if ! run_capture_rss out dur rss ./src/glasgow_gemini "${FILES[0]}" "${FILES[1]}"; then
                   EXIT_CODE=1
-                  echo "[Glasgow Gemini] first-solution run failed." >> outputs/result.txt
+                  echo "[Glasgow Gemini] run failed." >> outputs/result.txt
                   gem_ok=0
                 else
                   gem_first_times+=("$dur")
                   gem_first_rsses+=("$rss")
-                  progress_tick
-                fi
-                if ! run_capture_rss out dur rss ./src/vf3 --induced "${FILES[0]}" "${FILES[1]}"; then
-                  EXIT_CODE=1
-                  echo "[Glasgow Gemini] all-solutions run failed." >> outputs/result.txt
-                  gem_ok=0
-                else
                   gem_all_times+=("$dur")
                   gem_all_rsses+=("$rss")
                   progress_tick
-                  gem_count="$(extract_solution_count "$out")"
+                  progress_tick
+                  parsed="$(extract_count_time_ms "$out")"
+                  if [ -n "${parsed:-}" ]; then
+                    read gem_count _ _ <<< "$parsed"
+                  else
+                    gem_ok=0
+                    echo "[Glasgow Gemini] could not parse solution count/time." >> outputs/result.txt
+                  fi
                 fi
                 if [ "$gem_ok" -eq 1 ] && [ -n "${gem_count:-}" ] && [ "$gem_count" = "$baseline_count" ]; then
                   glasgow_gemini_match=$((glasgow_gemini_match + 1))

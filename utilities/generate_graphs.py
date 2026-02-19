@@ -180,12 +180,12 @@ def main() -> None:
     args = parser.parse_args()
 
     algorithm = args.algorithm.strip().lower()
-    if algorithm not in {"dijkstra", "glasgow", "vf3"}:
+    if algorithm not in {"dijkstra", "glasgow", "vf3", "subgraph"}:
         raise ValueError("Unknown algorithm for generation")
 
     n = parse_int(args.n, "N", minimum=2)
     k = None
-    if algorithm in {"glasgow", "vf3"}:
+    if algorithm in {"glasgow", "vf3", "subgraph"}:
         if args.k is None or str(args.k).strip() == "":
             raise ValueError("k is required for subgraph generation")
         k = parse_int(args.k, "k", minimum=1)
@@ -225,20 +225,21 @@ def main() -> None:
             neighbors = [pattern_map[v] for v in target_adj[node] if v in node_set]
             pattern_adj.append(sorted(neighbors))
 
-        if algorithm == "glasgow":
+        if algorithm in {"glasgow", "subgraph"}:
             target_path = out_dir / "glasgow_target.lad"
             pattern_path = out_dir / "glasgow_pattern.lad"
             write_lad(target_path, target_adj)
             write_lad(pattern_path, pattern_adj)
-        else:
+            generated.extend([pattern_path, target_path])
+
+        if algorithm in {"vf3", "subgraph"}:
             labels = [i % 4 for i in range(n)]
             pattern_labels = [labels[node] for node in nodes]
             target_path = out_dir / "vf3_target.vf"
             pattern_path = out_dir / "vf3_pattern.vf"
             write_vf(target_path, target_adj, labels)
             write_vf(pattern_path, pattern_adj, pattern_labels)
-
-        generated.extend([pattern_path, target_path])
+            generated.extend([pattern_path, target_path])
 
     metadata = {
         "algorithm": algorithm,

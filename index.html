@@ -3036,6 +3036,10 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 if (!Number.isFinite(value)) return null;
                 return Number.isFinite(Number(item.stdev)) ? Number(item.stdev) : 0;
             });
+            const palette = ['#1f77b4', '#e45756', '#54a24b', '#b279a2', '#f28e2b', '#59a14f'];
+            const borderPalette = ['#1b6aa1', '#c84544', '#3f8f3b', '#9b6790', '#d07a25', '#4c8b4f'];
+            const backgroundColor = labels.map((_, index) => palette[index % palette.length]);
+            const borderColor = labels.map((_, index) => borderPalette[index % borderPalette.length]);
 
             return new Chart(canvas, {
                 type: 'bar',
@@ -3047,8 +3051,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                             label: title,
                             data: values,
                             errorBars: errors,
-                            backgroundColor: ['#1f77b4', '#e45756', '#54a24b'],
-                            borderColor: ['#1b6aa1', '#c84544', '#3f8f3b'],
+                            backgroundColor,
+                            borderColor,
                             borderWidth: 1,
                             borderRadius: 6
                         }
@@ -3165,6 +3169,100 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         function renderCharts(result) {
             const charts = document.getElementById('charts');
             if (!charts) return;
+
+            if (result && result.algorithm === 'subgraph') {
+                const timings = result.timings_ms || {};
+                const timingsStdev = result.timings_ms_stdev || {};
+                const memory = result.memory_kb || {};
+                const memoryStdev = result.memory_kb_stdev || {};
+
+                const pickNumber = (raw) => {
+                    if (raw === null || raw === undefined || raw === '') return null;
+                    const num = Number(raw);
+                    return Number.isFinite(num) ? num : null;
+                };
+
+                const pickPair = (keys, valueSource, stdevSource) => {
+                    for (const key of keys) {
+                        if (!valueSource || !Object.prototype.hasOwnProperty.call(valueSource, key)) continue;
+                        const value = pickNumber(valueSource[key]);
+                        if (value === null) continue;
+                        const stdevRaw = stdevSource && Object.prototype.hasOwnProperty.call(stdevSource, key)
+                            ? stdevSource[key]
+                            : null;
+                        const stdev = pickNumber(stdevRaw);
+                        return { value, stdev };
+                    }
+                    return { value: null, stdev: null };
+                };
+
+                const runtimeLabels = ['VF3', '.vf ChatGPT', '.vf Gemini', 'Glasgow', '.lad ChatGPT', '.lad Gemini'];
+                const runtimeFirst = [
+                    pickPair(['vf3_baseline_first', 'baseline_first'], timings, timingsStdev),
+                    pickPair(['vf3_chatgpt_first', 'chatgpt_first'], timings, timingsStdev),
+                    pickPair(['vf3_gemini_first', 'gemini_first'], timings, timingsStdev),
+                    pickPair(['glasgow_baseline_first', 'glasgow_first', 'first'], timings, timingsStdev),
+                    pickPair(['glasgow_chatgpt_first'], timings, timingsStdev),
+                    pickPair(['glasgow_gemini_first'], timings, timingsStdev)
+                ];
+                const runtimeAll = [
+                    pickPair(['vf3_baseline_all', 'baseline_all'], timings, timingsStdev),
+                    pickPair(['vf3_chatgpt_all', 'chatgpt_all'], timings, timingsStdev),
+                    pickPair(['vf3_gemini_all', 'gemini_all'], timings, timingsStdev),
+                    pickPair(['glasgow_baseline_all', 'glasgow_all', 'all'], timings, timingsStdev),
+                    pickPair(['glasgow_chatgpt_all'], timings, timingsStdev),
+                    pickPair(['glasgow_gemini_all'], timings, timingsStdev)
+                ];
+
+                const runtimePairs = [...runtimeFirst, ...runtimeAll];
+                const hasRuntime = runtimePairs.some(item => Number.isFinite(Number(item.value)));
+                const memoryData = [
+                    { label: 'VF3', ...pickPair(['vf3_baseline_all', 'baseline_all'], memory, memoryStdev) },
+                    { label: '.vf ChatGPT', ...pickPair(['vf3_chatgpt_all', 'chatgpt_all'], memory, memoryStdev) },
+                    { label: '.vf Gemini', ...pickPair(['vf3_gemini_all', 'gemini_all'], memory, memoryStdev) },
+                    { label: 'Glasgow', ...pickPair(['glasgow_baseline_all', 'glasgow_all', 'all'], memory, memoryStdev) },
+                    { label: '.lad ChatGPT', ...pickPair(['glasgow_chatgpt_all'], memory, memoryStdev) },
+                    { label: '.lad Gemini', ...pickPair(['glasgow_gemini_all'], memory, memoryStdev) }
+                ];
+                const hasMemory = memoryData.some(item => Number.isFinite(Number(item.value)));
+
+                if (!hasRuntime && !hasMemory) {
+                    clearCharts();
+                    return;
+                }
+
+                const runtimeDataSets = [
+                    {
+                        label: 'First',
+                        values: runtimeFirst.map(item => (Number.isFinite(Number(item.value)) ? Number(item.value) : null)),
+                        errors: runtimeFirst.map(item => {
+                            const value = Number.isFinite(Number(item.value)) ? Number(item.value) : null;
+                            if (!Number.isFinite(value)) return null;
+                            return Number.isFinite(Number(item.stdev)) ? Number(item.stdev) : 0;
+                        }),
+                        backgroundColor: '#7aa6c2',
+                        borderColor: '#5e869f'
+                    },
+                    {
+                        label: 'All',
+                        values: runtimeAll.map(item => (Number.isFinite(Number(item.value)) ? Number(item.value) : null)),
+                        errors: runtimeAll.map(item => {
+                            const value = Number.isFinite(Number(item.value)) ? Number(item.value) : null;
+                            if (!Number.isFinite(value)) return null;
+                            return Number.isFinite(Number(item.stdev)) ? Number(item.stdev) : 0;
+                        }),
+                        backgroundColor: '#e5a06a',
+                        borderColor: '#c98453'
+                    }
+                ];
+
+                if (runtimeChartInstance) runtimeChartInstance.destroy();
+                if (memoryChartInstance) memoryChartInstance.destroy();
+                runtimeChartInstance = renderGroupedBarChart('runtime-chart', runtimeLabels, runtimeDataSets, 'ms');
+                memoryChartInstance = renderBarChart('memory-chart', memoryData, 'kB', 'Memory');
+                charts.hidden = false;
+                return;
+            }
 
             const metrics = normalizeVersionMetrics(result || {});
             const runtimePairs = [
