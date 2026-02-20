@@ -215,6 +215,8 @@ def main() -> None:
     else:
         target_adj = generate_adjacency(n, rng, density)
         undirected_adj = build_undirected_adj(target_adj)
+        if algorithm in {"glasgow", "vf3", "subgraph"}:
+            target_adj = undirected_adj
         nodes = pick_connected_nodes(undirected_adj, k, rng)
         pattern_nodes = list(nodes)
         ensure_pattern_edges(target_adj, nodes, rng)

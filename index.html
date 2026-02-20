@@ -1023,7 +1023,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (!Number.isFinite(density) || density <= 0 || density > 1) return '';
 
             const isSubgraph = algoId === 'vf3' || algoId === 'glasgow' || algoId === 'subgraph';
-            const directed = algoId === 'vf3';
+            const directed = algoId === 'dijkstra';
             const mTarget = estimateEdgeCount(n, density, directed);
             const avgDegTarget = estimateAvgDegree(n, mTarget, directed);
 
