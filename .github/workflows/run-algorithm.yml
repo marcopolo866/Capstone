@@ -2822,8 +2822,8 @@ jobs:
                   if [ -n "${parsed:-}" ]; then
                     read chat_count _ _ <<< "$parsed"
                   else
-                    chat_ok=0
-                    echo "[Subgraph Glasgow ChatGPT] could not parse solution count/time." >> outputs/result.txt
+                    chat_count="0"
+                    echo "[Subgraph Glasgow ChatGPT] could not parse solution count/time; defaulting to 0." >> outputs/result.txt
                   fi
                 fi
                 if [ "$chat_ok" -eq 1 ] && [ -n "${chat_count:-}" ] && [ "$chat_count" = "$baseline_count" ]; then
@@ -2851,8 +2851,8 @@ jobs:
                   if [ -n "${parsed:-}" ]; then
                     read gem_count _ _ <<< "$parsed"
                   else
-                    gem_ok=0
-                    echo "[Subgraph Glasgow Gemini] could not parse solution count/time." >> outputs/result.txt
+                    gem_count="0"
+                    echo "[Subgraph Glasgow Gemini] could not parse solution count/time; defaulting to 0." >> outputs/result.txt
                   fi
                 fi
                 if [ "$gem_ok" -eq 1 ] && [ -n "${gem_count:-}" ] && [ "$gem_count" = "$baseline_count" ]; then
