@@ -53,6 +53,12 @@
                         <p>Graph matching algorithm</p>
                         <div class="command">./bin/vf3 [subgraph] [graph]</div>
                     </div>
+
+                    <div class="algorithm-card" onclick="selectAlgorithm(event, 'subgraph')">
+                        <h3>Subgraph Isomorphism (Combined)</h3>
+                        <p>Runs VF3, Glasgow, and LLM variants on identical graphs</p>
+                        <div class="command">VF3 + Glasgow + LLM comparisons</div>
+                    </div>
                 </div>
             </div>
             
@@ -244,6 +250,16 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 requiredFiles: 2,
                 fileTypes: ['.grf'],
                 fileLabels: ['Subgraph File', 'Graph File']
+            },
+            subgraph: {
+                name: "Subgraph Isomorphism (Combined)",
+                requiredFiles: 2,
+                fileTypes: ['.vf', '.lad', '.grf'],
+                fileLabels: ['Pattern File', 'Target File'],
+                instructions: [
+                    'Provide either a .vf/.grf pair (VF3 format) or a .lad pair (Glasgow format).',
+                    'Both files must be in the same format; the runner will convert to both formats internally.'
+                ]
             }
         };
 
@@ -264,6 +280,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (algoId === 'dijkstra') return 2;
             if (algoId === 'glasgow') return 3;
             if (algoId === 'vf3') return 3;
+            if (algoId === 'subgraph') return 6;
             return 0;
         }
 
@@ -732,7 +749,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         }
         
         function isGraphPairAlgorithm(algoId) {
-            return algoId === 'glasgow' || algoId === 'vf3';
+            return algoId === 'glasgow' || algoId === 'vf3' || algoId === 'subgraph';
         }
 
         function parseLeadingIntLine(text) {
@@ -758,7 +775,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             const bytes = meta && Number.isFinite(Number(meta.size)) ? Number(meta.size) : null;
 
             const ext = p.toLowerCase().split('.').pop();
-            if (ext !== 'grf' && ext !== 'lad') {
+            if (ext !== 'grf' && ext !== 'lad' && ext !== 'vf') {
                 const result = { nodes: null, bytes };
                 graphMetricCache.set(cacheKey, result);
                 return result;
@@ -962,6 +979,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 if (config.selectedAlgorithm === 'dijkstra') formatHint = 'CSV (labeled)';
                 if (config.selectedAlgorithm === 'glasgow') formatHint = '.lad';
                 if (config.selectedAlgorithm === 'vf3') formatHint = '.grf';
+                if (config.selectedAlgorithm === 'subgraph') formatHint = '.lad/.vf';
                 html += `<div class="selected-files"><strong>Generated:</strong> N=${escapeHtml(n || '?')}`;
                 if (isGraphPairAlgorithm(config.selectedAlgorithm)) {
                     html += `, k=${escapeHtml(k || '?')}`;
@@ -1004,8 +1022,8 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             if (!Number.isFinite(n) || n <= 1) return '';
             if (!Number.isFinite(density) || density <= 0 || density > 1) return '';
 
-            const isSubgraph = algoId === 'vf3' || algoId === 'glasgow';
-            const directed = algoId !== 'glasgow';
+            const isSubgraph = algoId === 'vf3' || algoId === 'glasgow' || algoId === 'subgraph';
+            const directed = algoId === 'vf3';
             const mTarget = estimateEdgeCount(n, density, directed);
             const avgDegTarget = estimateAvgDegree(n, mTarget, directed);
 
@@ -1018,7 +1036,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 const mPattern = estimateEdgeCount(k, density, directed);
                 const avgDegPattern = estimateAvgDegree(k, mPattern, directed);
 
-                const labelBuckets = algoId === 'vf3' ? 4 : 1;
+                const labelBuckets = (algoId === 'vf3' || algoId === 'subgraph') ? 4 : 1;
                 const candidateScale = Math.max(2, n / labelBuckets);
                 const branchFactor = Math.pow(candidateScale, Math.min(k, 10) / 6);
 
@@ -1048,7 +1066,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
         function getTestsPerIteration(algoId) {
             const algo = String(algoId || '');
             if (algo === 'dijkstra') return 2;
-            if (algo === 'glasgow' || algo === 'vf3') return 6;
+            if (algo === 'glasgow' || algo === 'vf3' || algo === 'subgraph') return 6;
             return 1;
         }
 
@@ -1161,7 +1179,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 const inputs = parseSummaryInputs(summary);
                 if (inputs.input_mode !== 'generate') continue;
                 if (!Number.isFinite(inputs.n) || !Number.isFinite(inputs.density)) continue;
-                if ((algoId === 'vf3' || algoId === 'glasgow') && !Number.isFinite(inputs.k)) continue;
+                if ((algoId === 'vf3' || algoId === 'glasgow' || algoId === 'subgraph') && !Number.isFinite(inputs.k)) continue;
                 const score = scoreHistoryMatch(target, inputs);
                 const perIter = extractPerIterationTotalMs(summary);
                 if (!Number.isFinite(perIter) || perIter <= 0) continue;
