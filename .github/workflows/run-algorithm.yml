@@ -366,12 +366,14 @@ jobs:
 
       - name: Run algorithm
         id: run
+        if: ${{ env.ALGORITHM_INPUT != 'subgraph' }}
         env:
           BINARIES_READY: ${{ steps.binaries.outputs.READY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
+        run: &run_algorithm_script |
           set -uo pipefail
           ALGORITHM="${ALGORITHM_INPUT:-}"
+          SUBGRAPH_PHASE="${SUBGRAPH_PHASE_INPUT:-}"
           ITERATIONS_RAW="${ITERATIONS_INPUT:-1}"
           WARMUP_RAW="${WARMUP_INPUT:-1}"
           INPUT_MODE="${INPUT_MODE_INPUT:-premade}"
@@ -491,25 +493,7 @@ jobs:
             # (Order of clicks in the UI should not matter.)
             if [ "$ALGORITHM" = "glasgow" ] || [ "$ALGORITHM" = "vf3" ] || [ "$ALGORITHM" = "subgraph" ]; then
               graph_nodes() {
-                python - <<'PY' "$1" 2>/dev/null || true
-          import re
-          import sys
-
-          path = sys.argv[1]
-          try:
-              with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                  for line in fh:
-                      s = line.strip()
-                      if not s or s.startswith("#"):
-                          continue
-                      m = re.match(r"^(-?\\d+)", s)
-                      if m:
-                          print(int(m.group(1)))
-                          raise SystemExit(0)
-          except OSError:
-              pass
-          print("")
-          PY
+                python -c "import re,sys,pathlib; path=pathlib.Path(sys.argv[1]); lines=path.read_text(encoding='utf-8',errors='ignore').splitlines() if path.exists() else []; num=next((m.group(1) for line in lines if (s:=line.strip()) and not s.startswith('#') and (m:=re.match(r'^(-?\\\\d+)', s))), ''); print(num)" "$1" 2>/dev/null || true
               }
 
               file0="${FILES[0]}"
@@ -1581,8 +1565,13 @@ jobs:
               progress_update_check_run "in_progress" || true
 
               # Phase 2: measured iterations (web UI resets the bar and fills again here)
-              PROGRESS_STAGE="tests"
-              PROGRESS_PHASE=""
+              if [ "${SUBGRAPH_PHASE:-}" = "glasgow" ]; then
+                PROGRESS_STAGE="glasgow"
+                PROGRESS_PHASE="Running Glasgow..."
+              else
+                PROGRESS_STAGE="tests"
+                PROGRESS_PHASE=""
+              fi
               PROGRESS_DONE_TICKS=0
               progress_update_check_run "in_progress" || true
               WARMUP=0
@@ -2669,17 +2658,30 @@ jobs:
 
               for ((i=1; i<=ITERATIONS; i++)); do
                 if [ "$INPUT_MODE" = "generate" ]; then
-                  if ! generate_graphs_for_run "subgraph_iter" "$i"; then
-                    EXIT_CODE=1
-                    break
+                  if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ]; then
+                    if ! generate_graphs_for_run "subgraph_iter" "$i"; then
+                      EXIT_CODE=1
+                      break
+                    fi
                   fi
                 fi
-                vf_pattern="${SUBGRAPH_VF_FILES[0]}"
-                vf_target="${SUBGRAPH_VF_FILES[1]}"
-                lad_pattern="${SUBGRAPH_LAD_FILES[0]}"
-                lad_target="${SUBGRAPH_LAD_FILES[1]}"
+                if [ "${SUBGRAPH_PHASE:-}" = "glasgow" ]; then
+                  lad_pattern="$(python -c "import sys; from pathlib import Path; iter_idx=sys.argv[1]; path=Path('outputs/subgraph_lad_files.csv'); lines=path.read_text(encoding='utf-8').splitlines() if path.exists() else []; matches=[p for p in ([s.strip() for s in line.split(',')] for line in lines) if len(p)>=3 and p[0]==str(iter_idx)]; print(matches[0][1] if matches else '')" "$i" 2>/dev/null)"
+                  lad_target="$(python -c "import sys; from pathlib import Path; iter_idx=sys.argv[1]; path=Path('outputs/subgraph_lad_files.csv'); lines=path.read_text(encoding='utf-8').splitlines() if path.exists() else []; matches=[p for p in ([s.strip() for s in line.split(',')] for line in lines) if len(p)>=3 and p[0]==str(iter_idx)]; print(matches[0][2] if matches else '')" "$i" 2>/dev/null)"
+                else
+                  vf_pattern="${SUBGRAPH_VF_FILES[0]}"
+                  vf_target="${SUBGRAPH_VF_FILES[1]}"
+                  lad_pattern="${SUBGRAPH_LAD_FILES[0]}"
+                  lad_target="${SUBGRAPH_LAD_FILES[1]}"
+                  if [ -n "${lad_pattern:-}" ] && [ -n "${lad_target:-}" ]; then
+                    echo "${i},${lad_pattern},${lad_target}" >> outputs/subgraph_lad_files.csv
+                  fi
+                fi
 
                 baseline_ok=1
+                if [ "${SUBGRAPH_PHASE:-}" = "glasgow" ]; then
+                  baseline_ok=0
+                fi
                 progress_set_phase "Subgraph VF3 baseline"
                 if ! run_capture_rss out dur rss ./baselines/vf3lib/bin/vf3 -u -r 0 "$vf_pattern" "$vf_target"; then
                   EXIT_CODE=1
@@ -2706,6 +2708,7 @@ jobs:
                 fi
 
                 vf3_success=$((vf3_success + 1))
+                echo "${i},${baseline_count}" >> outputs/subgraph_baseline_counts.csv
 
                 progress_set_phase "Subgraph VF3 ChatGPT"
                 vf3_chatgpt_total=$((vf3_chatgpt_total + 1))
@@ -2763,9 +2766,15 @@ jobs:
                   vf3_gemini_mismatch=$((vf3_gemini_mismatch + 1))
                 fi
 
+                if [ "${SUBGRAPH_PHASE:-}" = "vf3" ]; then
+                  continue
+                fi
                 progress_set_phase "Subgraph Glasgow baseline"
                 glasgow_baseline_total=$((glasgow_baseline_total + 1))
                 glasgow_ok=1
+                if [ -z "${baseline_count:-}" ]; then
+                  baseline_count="$(python -c "import sys; from pathlib import Path; iter_idx=sys.argv[1]; path=Path('outputs/subgraph_baseline_counts.csv'); lines=path.read_text(encoding='utf-8').splitlines() if path.exists() else []; matches=[p for p in ([s.strip() for s in line.split(',')] for line in lines) if len(p)>=2 and p[0]==str(iter_idx)]; print(matches[0][1] if matches else '')" "$i" 2>/dev/null)"
+                fi
                 if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "$lad_pattern" "$lad_target"; then
                   EXIT_CODE=1
                   echo "[Subgraph Glasgow] first-solution run failed." >> outputs/result.txt
@@ -2794,11 +2803,11 @@ jobs:
                 fi
                 if [ "$glasgow_ok" -eq 1 ]; then
                   glasgow_success=$((glasgow_success + 1))
-                  if [ -n "${glasgow_count:-}" ] && [ "$glasgow_count" = "$baseline_count" ]; then
-                    glasgow_baseline_match=$((glasgow_baseline_match + 1))
-                  else
-                    glasgow_baseline_mismatch=$((glasgow_baseline_mismatch + 1))
-                  fi
+                    if [ -n "${glasgow_count:-}" ] && [ "$glasgow_count" = "$baseline_count" ]; then
+                      glasgow_baseline_match=$((glasgow_baseline_match + 1))
+                    else
+                      glasgow_baseline_mismatch=$((glasgow_baseline_mismatch + 1))
+                    fi
                 else
                   glasgow_fail=$((glasgow_fail + 1))
                 fi
@@ -3126,7 +3135,7 @@ jobs:
 
           VISUALIZATION_FILE="outputs/visualization.json"
           rm -f "$VISUALIZATION_FILE"
-          if [ "$INPUT_MODE" = "generate" ] && [ -n "${SEED_USED:-}" ]; then
+          if [ "$INPUT_MODE" = "generate" ] && [ -n "${SEED_USED:-}" ] && [ "${SUBGRAPH_PHASE:-}" != "glasgow" ]; then
             if [ -z "${VIS_SEED:-}" ]; then
               VIS_SEED="$SEED_USED"
             fi
@@ -3633,94 +3642,106 @@ jobs:
           echo "VF3_GEMINI_MATCH=${vf3_gemini_match:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_GEMINI_TOTAL=${vf3_gemini_total:-}" >> "$GITHUB_OUTPUT"
           echo "VF3_GEMINI_MISMATCH=${vf3_gemini_mismatch:-}" >> "$GITHUB_OUTPUT"
+          echo "SUBGRAPH_PHASE=${SUBGRAPH_PHASE:-}" >> "$GITHUB_OUTPUT"
           echo "SEED_USED=${SEED_USED:-}" >> "$GITHUB_OUTPUT"
           # Always exit 0 so later steps run and results are committed
           exit 0
       
-      - name: Create result JSON
-        if: always()
+      - name: Run subgraph phase 1 (VF3)
+        id: run_subgraph_vf3
+        if: ${{ env.ALGORITHM_INPUT == 'subgraph' }}
         env:
-          EXIT_CODE: ${{ steps.run.outputs.EXIT_CODE }}
-          ITERATIONS: ${{ steps.run.outputs.ITERATIONS }}
-          WARMUP: ${{ steps.run.outputs.WARMUP }}
-          RUN_DURATION_MS: ${{ steps.run.outputs.RUN_DURATION_MS }}
-          SEED_USED: ${{ steps.run.outputs.SEED_USED }}
-          DIJKSTRA_BASELINE_MS: ${{ steps.run.outputs.DIJKSTRA_BASELINE_MS }}
-          DIJKSTRA_LLM_MS: ${{ steps.run.outputs.DIJKSTRA_LLM_MS }}
-          DIJKSTRA_BASELINE_MS_STDEV: ${{ steps.run.outputs.DIJKSTRA_BASELINE_MS_STDEV }}
-          DIJKSTRA_LLM_MS_STDEV: ${{ steps.run.outputs.DIJKSTRA_LLM_MS_STDEV }}
-          DIJKSTRA_BASELINE_RSS_KB: ${{ steps.run.outputs.DIJKSTRA_BASELINE_RSS_KB }}
-          DIJKSTRA_LLM_RSS_KB: ${{ steps.run.outputs.DIJKSTRA_LLM_RSS_KB }}
-          DIJKSTRA_BASELINE_RSS_KB_STDEV: ${{ steps.run.outputs.DIJKSTRA_BASELINE_RSS_KB_STDEV }}
-          DIJKSTRA_LLM_RSS_KB_STDEV: ${{ steps.run.outputs.DIJKSTRA_LLM_RSS_KB_STDEV }}
-          GLASGOW_FIRST_MS: ${{ steps.run.outputs.GLASGOW_FIRST_MS }}
-          GLASGOW_ALL_MS: ${{ steps.run.outputs.GLASGOW_ALL_MS }}
-          GLASGOW_FIRST_MS_STDEV: ${{ steps.run.outputs.GLASGOW_FIRST_MS_STDEV }}
-          GLASGOW_ALL_MS_STDEV: ${{ steps.run.outputs.GLASGOW_ALL_MS_STDEV }}
-          GLASGOW_FIRST_RSS_KB: ${{ steps.run.outputs.GLASGOW_FIRST_RSS_KB }}
-          GLASGOW_ALL_RSS_KB: ${{ steps.run.outputs.GLASGOW_ALL_RSS_KB }}
-          GLASGOW_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_FIRST_RSS_KB_STDEV }}
-          GLASGOW_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_ALL_RSS_KB_STDEV }}
-          GLASGOW_GEMINI_FIRST_MS: ${{ steps.run.outputs.GLASGOW_GEMINI_FIRST_MS }}
-          GLASGOW_GEMINI_ALL_MS: ${{ steps.run.outputs.GLASGOW_GEMINI_ALL_MS }}
-          GLASGOW_GEMINI_FIRST_MS_STDEV: ${{ steps.run.outputs.GLASGOW_GEMINI_FIRST_MS_STDEV }}
-          GLASGOW_GEMINI_ALL_MS_STDEV: ${{ steps.run.outputs.GLASGOW_GEMINI_ALL_MS_STDEV }}
-          GLASGOW_GEMINI_FIRST_RSS_KB: ${{ steps.run.outputs.GLASGOW_GEMINI_FIRST_RSS_KB }}
-          GLASGOW_GEMINI_ALL_RSS_KB: ${{ steps.run.outputs.GLASGOW_GEMINI_ALL_RSS_KB }}
-          GLASGOW_GEMINI_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_GEMINI_FIRST_RSS_KB_STDEV }}
-          GLASGOW_GEMINI_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_GEMINI_ALL_RSS_KB_STDEV }}
-          GLASGOW_CHATGPT_FIRST_MS: ${{ steps.run.outputs.GLASGOW_CHATGPT_FIRST_MS }}
-          GLASGOW_CHATGPT_ALL_MS: ${{ steps.run.outputs.GLASGOW_CHATGPT_ALL_MS }}
-          GLASGOW_CHATGPT_FIRST_MS_STDEV: ${{ steps.run.outputs.GLASGOW_CHATGPT_FIRST_MS_STDEV }}
-          GLASGOW_CHATGPT_ALL_MS_STDEV: ${{ steps.run.outputs.GLASGOW_CHATGPT_ALL_MS_STDEV }}
-          GLASGOW_CHATGPT_FIRST_RSS_KB: ${{ steps.run.outputs.GLASGOW_CHATGPT_FIRST_RSS_KB }}
-          GLASGOW_CHATGPT_ALL_RSS_KB: ${{ steps.run.outputs.GLASGOW_CHATGPT_ALL_RSS_KB }}
-          GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV }}
-          GLASGOW_CHATGPT_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_CHATGPT_ALL_RSS_KB_STDEV }}
-          GLASGOW_BASELINE_SUCCESS: ${{ steps.run.outputs.GLASGOW_BASELINE_SUCCESS }}
-          GLASGOW_BASELINE_FAILED: ${{ steps.run.outputs.GLASGOW_BASELINE_FAILED }}
-          GLASGOW_BASELINE_MATCH: ${{ steps.run.outputs.GLASGOW_BASELINE_MATCH }}
-          GLASGOW_BASELINE_TOTAL: ${{ steps.run.outputs.GLASGOW_BASELINE_TOTAL }}
-          GLASGOW_BASELINE_MISMATCH: ${{ steps.run.outputs.GLASGOW_BASELINE_MISMATCH }}
-          GLASGOW_CHATGPT_MATCH: ${{ steps.run.outputs.GLASGOW_CHATGPT_MATCH }}
-          GLASGOW_CHATGPT_TOTAL: ${{ steps.run.outputs.GLASGOW_CHATGPT_TOTAL }}
-          GLASGOW_CHATGPT_MISMATCH: ${{ steps.run.outputs.GLASGOW_CHATGPT_MISMATCH }}
-          GLASGOW_GEMINI_MATCH: ${{ steps.run.outputs.GLASGOW_GEMINI_MATCH }}
-          GLASGOW_GEMINI_TOTAL: ${{ steps.run.outputs.GLASGOW_GEMINI_TOTAL }}
-          GLASGOW_GEMINI_MISMATCH: ${{ steps.run.outputs.GLASGOW_GEMINI_MISMATCH }}
-          VF3_BASE_FIRST_MS: ${{ steps.run.outputs.VF3_BASE_FIRST_MS }}
-          VF3_BASE_ALL_MS: ${{ steps.run.outputs.VF3_BASE_ALL_MS }}
-          VF3_BASE_FIRST_MS_STDEV: ${{ steps.run.outputs.VF3_BASE_FIRST_MS_STDEV }}
-          VF3_BASE_ALL_MS_STDEV: ${{ steps.run.outputs.VF3_BASE_ALL_MS_STDEV }}
-          VF3_BASE_FIRST_RSS_KB: ${{ steps.run.outputs.VF3_BASE_FIRST_RSS_KB }}
-          VF3_BASE_ALL_RSS_KB: ${{ steps.run.outputs.VF3_BASE_ALL_RSS_KB }}
-          VF3_BASE_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_BASE_FIRST_RSS_KB_STDEV }}
-          VF3_BASE_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_BASE_ALL_RSS_KB_STDEV }}
-          VF3_GEMINI_FIRST_MS: ${{ steps.run.outputs.VF3_GEMINI_FIRST_MS }}
-          VF3_GEMINI_ALL_MS: ${{ steps.run.outputs.VF3_GEMINI_ALL_MS }}
-          VF3_GEMINI_FIRST_MS_STDEV: ${{ steps.run.outputs.VF3_GEMINI_FIRST_MS_STDEV }}
-          VF3_GEMINI_ALL_MS_STDEV: ${{ steps.run.outputs.VF3_GEMINI_ALL_MS_STDEV }}
-          VF3_GEMINI_FIRST_RSS_KB: ${{ steps.run.outputs.VF3_GEMINI_FIRST_RSS_KB }}
-          VF3_GEMINI_ALL_RSS_KB: ${{ steps.run.outputs.VF3_GEMINI_ALL_RSS_KB }}
-          VF3_GEMINI_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_GEMINI_FIRST_RSS_KB_STDEV }}
-          VF3_GEMINI_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_GEMINI_ALL_RSS_KB_STDEV }}
-          VF3_CHATGPT_FIRST_MS: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_MS }}
-          VF3_CHATGPT_ALL_MS: ${{ steps.run.outputs.VF3_CHATGPT_ALL_MS }}
-          VF3_CHATGPT_FIRST_MS_STDEV: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_MS_STDEV }}
-          VF3_CHATGPT_ALL_MS_STDEV: ${{ steps.run.outputs.VF3_CHATGPT_ALL_MS_STDEV }}
-          VF3_CHATGPT_FIRST_RSS_KB: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_RSS_KB }}
-          VF3_CHATGPT_ALL_RSS_KB: ${{ steps.run.outputs.VF3_CHATGPT_ALL_RSS_KB }}
-          VF3_CHATGPT_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_RSS_KB_STDEV }}
-          VF3_CHATGPT_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_CHATGPT_ALL_RSS_KB_STDEV }}
-          VF3_BASELINE_SUCCESS: ${{ steps.run.outputs.VF3_BASELINE_SUCCESS }}
-          VF3_BASELINE_FAILED: ${{ steps.run.outputs.VF3_BASELINE_FAILED }}
-          VF3_CHATGPT_MATCH: ${{ steps.run.outputs.VF3_CHATGPT_MATCH }}
-          VF3_CHATGPT_TOTAL: ${{ steps.run.outputs.VF3_CHATGPT_TOTAL }}
-          VF3_CHATGPT_MISMATCH: ${{ steps.run.outputs.VF3_CHATGPT_MISMATCH }}
-          VF3_GEMINI_MATCH: ${{ steps.run.outputs.VF3_GEMINI_MATCH }}
-          VF3_GEMINI_TOTAL: ${{ steps.run.outputs.VF3_GEMINI_TOTAL }}
-          VF3_GEMINI_MISMATCH: ${{ steps.run.outputs.VF3_GEMINI_MISMATCH }}
-        run: |
+          BINARIES_READY: ${{ steps.binaries.outputs.READY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUBGRAPH_PHASE_INPUT: vf3
+        run: *run_algorithm_script
+
+      - name: Create result JSON (VF3 phase)
+        if: ${{ always() && env.ALGORITHM_INPUT == 'subgraph' }}
+        env:
+          EXIT_CODE: ${{ steps.run_subgraph_vf3.outputs.EXIT_CODE }}
+          ITERATIONS: ${{ steps.run_subgraph_vf3.outputs.ITERATIONS }}
+          WARMUP: ${{ steps.run_subgraph_vf3.outputs.WARMUP }}
+          RUN_DURATION_MS: ${{ steps.run_subgraph_vf3.outputs.RUN_DURATION_MS }}
+          SEED_USED: ${{ steps.run_subgraph_vf3.outputs.SEED_USED }}
+          SUBGRAPH_PHASE: ${{ steps.run_subgraph_vf3.outputs.SUBGRAPH_PHASE }}
+          DIJKSTRA_BASELINE_MS: ${{ steps.run_subgraph_vf3.outputs.DIJKSTRA_BASELINE_MS }}
+          DIJKSTRA_LLM_MS: ${{ steps.run_subgraph_vf3.outputs.DIJKSTRA_LLM_MS }}
+          DIJKSTRA_BASELINE_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.DIJKSTRA_BASELINE_MS_STDEV }}
+          DIJKSTRA_LLM_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.DIJKSTRA_LLM_MS_STDEV }}
+          DIJKSTRA_BASELINE_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.DIJKSTRA_BASELINE_RSS_KB }}
+          DIJKSTRA_LLM_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.DIJKSTRA_LLM_RSS_KB }}
+          DIJKSTRA_BASELINE_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.DIJKSTRA_BASELINE_RSS_KB_STDEV }}
+          DIJKSTRA_LLM_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.DIJKSTRA_LLM_RSS_KB_STDEV }}
+          GLASGOW_FIRST_MS: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_FIRST_MS }}
+          GLASGOW_ALL_MS: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_ALL_MS }}
+          GLASGOW_FIRST_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_FIRST_MS_STDEV }}
+          GLASGOW_ALL_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_ALL_MS_STDEV }}
+          GLASGOW_FIRST_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_FIRST_RSS_KB }}
+          GLASGOW_ALL_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_ALL_RSS_KB }}
+          GLASGOW_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_FIRST_RSS_KB_STDEV }}
+          GLASGOW_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_ALL_RSS_KB_STDEV }}
+          GLASGOW_GEMINI_FIRST_MS: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_GEMINI_FIRST_MS }}
+          GLASGOW_GEMINI_ALL_MS: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_GEMINI_ALL_MS }}
+          GLASGOW_GEMINI_FIRST_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_GEMINI_FIRST_MS_STDEV }}
+          GLASGOW_GEMINI_ALL_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_GEMINI_ALL_MS_STDEV }}
+          GLASGOW_GEMINI_FIRST_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_GEMINI_FIRST_RSS_KB }}
+          GLASGOW_GEMINI_ALL_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_GEMINI_ALL_RSS_KB }}
+          GLASGOW_GEMINI_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_GEMINI_FIRST_RSS_KB_STDEV }}
+          GLASGOW_GEMINI_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_GEMINI_ALL_RSS_KB_STDEV }}
+          GLASGOW_CHATGPT_FIRST_MS: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_CHATGPT_FIRST_MS }}
+          GLASGOW_CHATGPT_ALL_MS: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_CHATGPT_ALL_MS }}
+          GLASGOW_CHATGPT_FIRST_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_CHATGPT_FIRST_MS_STDEV }}
+          GLASGOW_CHATGPT_ALL_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_CHATGPT_ALL_MS_STDEV }}
+          GLASGOW_CHATGPT_FIRST_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_CHATGPT_FIRST_RSS_KB }}
+          GLASGOW_CHATGPT_ALL_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_CHATGPT_ALL_RSS_KB }}
+          GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV }}
+          GLASGOW_CHATGPT_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_CHATGPT_ALL_RSS_KB_STDEV }}
+          GLASGOW_BASELINE_SUCCESS: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_BASELINE_SUCCESS }}
+          GLASGOW_BASELINE_FAILED: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_BASELINE_FAILED }}
+          GLASGOW_BASELINE_MATCH: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_BASELINE_MATCH }}
+          GLASGOW_BASELINE_TOTAL: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_BASELINE_TOTAL }}
+          GLASGOW_BASELINE_MISMATCH: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_BASELINE_MISMATCH }}
+          GLASGOW_CHATGPT_MATCH: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_CHATGPT_MATCH }}
+          GLASGOW_CHATGPT_TOTAL: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_CHATGPT_TOTAL }}
+          GLASGOW_CHATGPT_MISMATCH: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_CHATGPT_MISMATCH }}
+          GLASGOW_GEMINI_MATCH: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_GEMINI_MATCH }}
+          GLASGOW_GEMINI_TOTAL: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_GEMINI_TOTAL }}
+          GLASGOW_GEMINI_MISMATCH: ${{ steps.run_subgraph_vf3.outputs.GLASGOW_GEMINI_MISMATCH }}
+          VF3_BASE_FIRST_MS: ${{ steps.run_subgraph_vf3.outputs.VF3_BASE_FIRST_MS }}
+          VF3_BASE_ALL_MS: ${{ steps.run_subgraph_vf3.outputs.VF3_BASE_ALL_MS }}
+          VF3_BASE_FIRST_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_BASE_FIRST_MS_STDEV }}
+          VF3_BASE_ALL_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_BASE_ALL_MS_STDEV }}
+          VF3_BASE_FIRST_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.VF3_BASE_FIRST_RSS_KB }}
+          VF3_BASE_ALL_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.VF3_BASE_ALL_RSS_KB }}
+          VF3_BASE_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_BASE_FIRST_RSS_KB_STDEV }}
+          VF3_BASE_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_BASE_ALL_RSS_KB_STDEV }}
+          VF3_GEMINI_FIRST_MS: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_FIRST_MS }}
+          VF3_GEMINI_ALL_MS: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_ALL_MS }}
+          VF3_GEMINI_FIRST_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_FIRST_MS_STDEV }}
+          VF3_GEMINI_ALL_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_ALL_MS_STDEV }}
+          VF3_GEMINI_FIRST_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_FIRST_RSS_KB }}
+          VF3_GEMINI_ALL_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_ALL_RSS_KB }}
+          VF3_GEMINI_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_FIRST_RSS_KB_STDEV }}
+          VF3_GEMINI_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_ALL_RSS_KB_STDEV }}
+          VF3_CHATGPT_FIRST_MS: ${{ steps.run_subgraph_vf3.outputs.VF3_CHATGPT_FIRST_MS }}
+          VF3_CHATGPT_ALL_MS: ${{ steps.run_subgraph_vf3.outputs.VF3_CHATGPT_ALL_MS }}
+          VF3_CHATGPT_FIRST_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_CHATGPT_FIRST_MS_STDEV }}
+          VF3_CHATGPT_ALL_MS_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_CHATGPT_ALL_MS_STDEV }}
+          VF3_CHATGPT_FIRST_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.VF3_CHATGPT_FIRST_RSS_KB }}
+          VF3_CHATGPT_ALL_RSS_KB: ${{ steps.run_subgraph_vf3.outputs.VF3_CHATGPT_ALL_RSS_KB }}
+          VF3_CHATGPT_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_CHATGPT_FIRST_RSS_KB_STDEV }}
+          VF3_CHATGPT_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_vf3.outputs.VF3_CHATGPT_ALL_RSS_KB_STDEV }}
+          VF3_BASELINE_SUCCESS: ${{ steps.run_subgraph_vf3.outputs.VF3_BASELINE_SUCCESS }}
+          VF3_BASELINE_FAILED: ${{ steps.run_subgraph_vf3.outputs.VF3_BASELINE_FAILED }}
+          VF3_CHATGPT_MATCH: ${{ steps.run_subgraph_vf3.outputs.VF3_CHATGPT_MATCH }}
+          VF3_CHATGPT_TOTAL: ${{ steps.run_subgraph_vf3.outputs.VF3_CHATGPT_TOTAL }}
+          VF3_CHATGPT_MISMATCH: ${{ steps.run_subgraph_vf3.outputs.VF3_CHATGPT_MISMATCH }}
+          VF3_GEMINI_MATCH: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_MATCH }}
+          VF3_GEMINI_TOTAL: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_TOTAL }}
+          VF3_GEMINI_MISMATCH: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_MISMATCH }}
+
+        run: &create_result_json_script |
           python - <<'PY'
           import datetime
           import json
@@ -3875,6 +3896,9 @@ jobs:
               maybe_add("glasgow_gemini_all", "GLASGOW_GEMINI_ALL_MS")
               maybe_add("glasgow_chatgpt_first", "GLASGOW_CHATGPT_FIRST_MS")
               maybe_add("glasgow_chatgpt_all", "GLASGOW_CHATGPT_ALL_MS")
+          if algorithm == "subgraph":
+              phase = os.environ.get("SUBGRAPH_PHASE", "").strip().lower()
+              data["subgraph_phase"] = phase or "full"
           if timings_ms:
               data["timings_ms"] = timings_ms
 
@@ -4269,16 +4293,228 @@ jobs:
                           "mismatches": glasgow_gem_mismatch,
                       },
                   }
+          if algorithm == "subgraph" and os.environ.get("SUBGRAPH_PHASE", "").strip().lower() == "glasgow":
+              existing_path = Path("outputs/result.json")
+              if existing_path.exists():
+                  try:
+                      previous = json.loads(existing_path.read_text(encoding="utf-8"))
+                  except (OSError, json.JSONDecodeError):
+                      previous = None
+                  if isinstance(previous, dict):
+                      for key in ("timings_ms", "timings_ms_stdev", "memory_kb", "memory_kb_stdev", "match_counts"):
+                          if key in previous:
+                              merged = dict(previous.get(key, {}))
+                              merged.update(data.get(key, {}))
+                              data[key] = merged
+                      if "subgraph_phase" in previous and data.get("subgraph_phase") == "glasgow":
+                          data["subgraph_phase_prev"] = previous.get("subgraph_phase")
           Path("outputs/result.json").write_text(
               json.dumps(data, indent=2) + "\n", encoding="utf-8"
           )
           PY
 
+
+      - name: Upload algorithm result (VF3 phase)
+        if: ${{ always() && env.ALGORITHM_INPUT == 'subgraph' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: algorithm-result
+          path: outputs/result.json
+
+      - name: Run subgraph phase 2 (Glasgow)
+        id: run_subgraph_glasgow
+        if: ${{ env.ALGORITHM_INPUT == 'subgraph' }}
+        env:
+          BINARIES_READY: ${{ steps.binaries.outputs.READY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUBGRAPH_PHASE_INPUT: glasgow
+        run: *run_algorithm_script
+
+      - name: Create result JSON (Glasgow phase)
+        if: ${{ always() && env.ALGORITHM_INPUT == 'subgraph' }}
+        env:
+          EXIT_CODE: ${{ steps.run_subgraph_glasgow.outputs.EXIT_CODE }}
+          ITERATIONS: ${{ steps.run_subgraph_glasgow.outputs.ITERATIONS }}
+          WARMUP: ${{ steps.run_subgraph_glasgow.outputs.WARMUP }}
+          RUN_DURATION_MS: ${{ steps.run_subgraph_glasgow.outputs.RUN_DURATION_MS }}
+          SEED_USED: ${{ steps.run_subgraph_glasgow.outputs.SEED_USED }}
+          SUBGRAPH_PHASE: ${{ steps.run_subgraph_glasgow.outputs.SUBGRAPH_PHASE }}
+          DIJKSTRA_BASELINE_MS: ${{ steps.run_subgraph_glasgow.outputs.DIJKSTRA_BASELINE_MS }}
+          DIJKSTRA_LLM_MS: ${{ steps.run_subgraph_glasgow.outputs.DIJKSTRA_LLM_MS }}
+          DIJKSTRA_BASELINE_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.DIJKSTRA_BASELINE_MS_STDEV }}
+          DIJKSTRA_LLM_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.DIJKSTRA_LLM_MS_STDEV }}
+          DIJKSTRA_BASELINE_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.DIJKSTRA_BASELINE_RSS_KB }}
+          DIJKSTRA_LLM_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.DIJKSTRA_LLM_RSS_KB }}
+          DIJKSTRA_BASELINE_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.DIJKSTRA_BASELINE_RSS_KB_STDEV }}
+          DIJKSTRA_LLM_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.DIJKSTRA_LLM_RSS_KB_STDEV }}
+          GLASGOW_FIRST_MS: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_FIRST_MS }}
+          GLASGOW_ALL_MS: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_ALL_MS }}
+          GLASGOW_FIRST_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_FIRST_MS_STDEV }}
+          GLASGOW_ALL_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_ALL_MS_STDEV }}
+          GLASGOW_FIRST_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_FIRST_RSS_KB }}
+          GLASGOW_ALL_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_ALL_RSS_KB }}
+          GLASGOW_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_FIRST_RSS_KB_STDEV }}
+          GLASGOW_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_ALL_RSS_KB_STDEV }}
+          GLASGOW_GEMINI_FIRST_MS: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_GEMINI_FIRST_MS }}
+          GLASGOW_GEMINI_ALL_MS: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_GEMINI_ALL_MS }}
+          GLASGOW_GEMINI_FIRST_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_GEMINI_FIRST_MS_STDEV }}
+          GLASGOW_GEMINI_ALL_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_GEMINI_ALL_MS_STDEV }}
+          GLASGOW_GEMINI_FIRST_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_GEMINI_FIRST_RSS_KB }}
+          GLASGOW_GEMINI_ALL_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_GEMINI_ALL_RSS_KB }}
+          GLASGOW_GEMINI_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_GEMINI_FIRST_RSS_KB_STDEV }}
+          GLASGOW_GEMINI_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_GEMINI_ALL_RSS_KB_STDEV }}
+          GLASGOW_CHATGPT_FIRST_MS: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_CHATGPT_FIRST_MS }}
+          GLASGOW_CHATGPT_ALL_MS: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_CHATGPT_ALL_MS }}
+          GLASGOW_CHATGPT_FIRST_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_CHATGPT_FIRST_MS_STDEV }}
+          GLASGOW_CHATGPT_ALL_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_CHATGPT_ALL_MS_STDEV }}
+          GLASGOW_CHATGPT_FIRST_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_CHATGPT_FIRST_RSS_KB }}
+          GLASGOW_CHATGPT_ALL_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_CHATGPT_ALL_RSS_KB }}
+          GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV }}
+          GLASGOW_CHATGPT_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_CHATGPT_ALL_RSS_KB_STDEV }}
+          GLASGOW_BASELINE_SUCCESS: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_BASELINE_SUCCESS }}
+          GLASGOW_BASELINE_FAILED: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_BASELINE_FAILED }}
+          GLASGOW_BASELINE_MATCH: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_BASELINE_MATCH }}
+          GLASGOW_BASELINE_TOTAL: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_BASELINE_TOTAL }}
+          GLASGOW_BASELINE_MISMATCH: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_BASELINE_MISMATCH }}
+          GLASGOW_CHATGPT_MATCH: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_CHATGPT_MATCH }}
+          GLASGOW_CHATGPT_TOTAL: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_CHATGPT_TOTAL }}
+          GLASGOW_CHATGPT_MISMATCH: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_CHATGPT_MISMATCH }}
+          GLASGOW_GEMINI_MATCH: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_GEMINI_MATCH }}
+          GLASGOW_GEMINI_TOTAL: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_GEMINI_TOTAL }}
+          GLASGOW_GEMINI_MISMATCH: ${{ steps.run_subgraph_glasgow.outputs.GLASGOW_GEMINI_MISMATCH }}
+          VF3_BASE_FIRST_MS: ${{ steps.run_subgraph_glasgow.outputs.VF3_BASE_FIRST_MS }}
+          VF3_BASE_ALL_MS: ${{ steps.run_subgraph_glasgow.outputs.VF3_BASE_ALL_MS }}
+          VF3_BASE_FIRST_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_BASE_FIRST_MS_STDEV }}
+          VF3_BASE_ALL_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_BASE_ALL_MS_STDEV }}
+          VF3_BASE_FIRST_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.VF3_BASE_FIRST_RSS_KB }}
+          VF3_BASE_ALL_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.VF3_BASE_ALL_RSS_KB }}
+          VF3_BASE_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_BASE_FIRST_RSS_KB_STDEV }}
+          VF3_BASE_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_BASE_ALL_RSS_KB_STDEV }}
+          VF3_GEMINI_FIRST_MS: ${{ steps.run_subgraph_glasgow.outputs.VF3_GEMINI_FIRST_MS }}
+          VF3_GEMINI_ALL_MS: ${{ steps.run_subgraph_glasgow.outputs.VF3_GEMINI_ALL_MS }}
+          VF3_GEMINI_FIRST_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_GEMINI_FIRST_MS_STDEV }}
+          VF3_GEMINI_ALL_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_GEMINI_ALL_MS_STDEV }}
+          VF3_GEMINI_FIRST_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.VF3_GEMINI_FIRST_RSS_KB }}
+          VF3_GEMINI_ALL_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.VF3_GEMINI_ALL_RSS_KB }}
+          VF3_GEMINI_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_GEMINI_FIRST_RSS_KB_STDEV }}
+          VF3_GEMINI_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_GEMINI_ALL_RSS_KB_STDEV }}
+          VF3_CHATGPT_FIRST_MS: ${{ steps.run_subgraph_glasgow.outputs.VF3_CHATGPT_FIRST_MS }}
+          VF3_CHATGPT_ALL_MS: ${{ steps.run_subgraph_glasgow.outputs.VF3_CHATGPT_ALL_MS }}
+          VF3_CHATGPT_FIRST_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_CHATGPT_FIRST_MS_STDEV }}
+          VF3_CHATGPT_ALL_MS_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_CHATGPT_ALL_MS_STDEV }}
+          VF3_CHATGPT_FIRST_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.VF3_CHATGPT_FIRST_RSS_KB }}
+          VF3_CHATGPT_ALL_RSS_KB: ${{ steps.run_subgraph_glasgow.outputs.VF3_CHATGPT_ALL_RSS_KB }}
+          VF3_CHATGPT_FIRST_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_CHATGPT_FIRST_RSS_KB_STDEV }}
+          VF3_CHATGPT_ALL_RSS_KB_STDEV: ${{ steps.run_subgraph_glasgow.outputs.VF3_CHATGPT_ALL_RSS_KB_STDEV }}
+          VF3_BASELINE_SUCCESS: ${{ steps.run_subgraph_glasgow.outputs.VF3_BASELINE_SUCCESS }}
+          VF3_BASELINE_FAILED: ${{ steps.run_subgraph_glasgow.outputs.VF3_BASELINE_FAILED }}
+          VF3_CHATGPT_MATCH: ${{ steps.run_subgraph_glasgow.outputs.VF3_CHATGPT_MATCH }}
+          VF3_CHATGPT_TOTAL: ${{ steps.run_subgraph_glasgow.outputs.VF3_CHATGPT_TOTAL }}
+          VF3_CHATGPT_MISMATCH: ${{ steps.run_subgraph_glasgow.outputs.VF3_CHATGPT_MISMATCH }}
+          VF3_GEMINI_MATCH: ${{ steps.run_subgraph_glasgow.outputs.VF3_GEMINI_MATCH }}
+          VF3_GEMINI_TOTAL: ${{ steps.run_subgraph_glasgow.outputs.VF3_GEMINI_TOTAL }}
+          VF3_GEMINI_MISMATCH: ${{ steps.run_subgraph_glasgow.outputs.VF3_GEMINI_MISMATCH }}
+        run: *create_result_json_script
+
+
+      - name: Upload algorithm result (Glasgow phase)
+        if: ${{ always() && env.ALGORITHM_INPUT == 'subgraph' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: algorithm-result
+          path: outputs/result.json
+
+      - name: Create result JSON
+        if: ${{ always() && env.ALGORITHM_INPUT != 'subgraph' }}
+        env:
+          EXIT_CODE: ${{ steps.run.outputs.EXIT_CODE }}
+          ITERATIONS: ${{ steps.run.outputs.ITERATIONS }}
+          WARMUP: ${{ steps.run.outputs.WARMUP }}
+          RUN_DURATION_MS: ${{ steps.run.outputs.RUN_DURATION_MS }}
+          SUBGRAPH_PHASE: ${{ steps.run.outputs.SUBGRAPH_PHASE }}
+          SEED_USED: ${{ steps.run.outputs.SEED_USED }}
+          DIJKSTRA_BASELINE_MS: ${{ steps.run.outputs.DIJKSTRA_BASELINE_MS }}
+          DIJKSTRA_LLM_MS: ${{ steps.run.outputs.DIJKSTRA_LLM_MS }}
+          DIJKSTRA_BASELINE_MS_STDEV: ${{ steps.run.outputs.DIJKSTRA_BASELINE_MS_STDEV }}
+          DIJKSTRA_LLM_MS_STDEV: ${{ steps.run.outputs.DIJKSTRA_LLM_MS_STDEV }}
+          DIJKSTRA_BASELINE_RSS_KB: ${{ steps.run.outputs.DIJKSTRA_BASELINE_RSS_KB }}
+          DIJKSTRA_LLM_RSS_KB: ${{ steps.run.outputs.DIJKSTRA_LLM_RSS_KB }}
+          DIJKSTRA_BASELINE_RSS_KB_STDEV: ${{ steps.run.outputs.DIJKSTRA_BASELINE_RSS_KB_STDEV }}
+          DIJKSTRA_LLM_RSS_KB_STDEV: ${{ steps.run.outputs.DIJKSTRA_LLM_RSS_KB_STDEV }}
+          GLASGOW_FIRST_MS: ${{ steps.run.outputs.GLASGOW_FIRST_MS }}
+          GLASGOW_ALL_MS: ${{ steps.run.outputs.GLASGOW_ALL_MS }}
+          GLASGOW_FIRST_MS_STDEV: ${{ steps.run.outputs.GLASGOW_FIRST_MS_STDEV }}
+          GLASGOW_ALL_MS_STDEV: ${{ steps.run.outputs.GLASGOW_ALL_MS_STDEV }}
+          GLASGOW_FIRST_RSS_KB: ${{ steps.run.outputs.GLASGOW_FIRST_RSS_KB }}
+          GLASGOW_ALL_RSS_KB: ${{ steps.run.outputs.GLASGOW_ALL_RSS_KB }}
+          GLASGOW_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_FIRST_RSS_KB_STDEV }}
+          GLASGOW_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_ALL_RSS_KB_STDEV }}
+          GLASGOW_GEMINI_FIRST_MS: ${{ steps.run.outputs.GLASGOW_GEMINI_FIRST_MS }}
+          GLASGOW_GEMINI_ALL_MS: ${{ steps.run.outputs.GLASGOW_GEMINI_ALL_MS }}
+          GLASGOW_GEMINI_FIRST_MS_STDEV: ${{ steps.run.outputs.GLASGOW_GEMINI_FIRST_MS_STDEV }}
+          GLASGOW_GEMINI_ALL_MS_STDEV: ${{ steps.run.outputs.GLASGOW_GEMINI_ALL_MS_STDEV }}
+          GLASGOW_GEMINI_FIRST_RSS_KB: ${{ steps.run.outputs.GLASGOW_GEMINI_FIRST_RSS_KB }}
+          GLASGOW_GEMINI_ALL_RSS_KB: ${{ steps.run.outputs.GLASGOW_GEMINI_ALL_RSS_KB }}
+          GLASGOW_GEMINI_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_GEMINI_FIRST_RSS_KB_STDEV }}
+          GLASGOW_GEMINI_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_GEMINI_ALL_RSS_KB_STDEV }}
+          GLASGOW_CHATGPT_FIRST_MS: ${{ steps.run.outputs.GLASGOW_CHATGPT_FIRST_MS }}
+          GLASGOW_CHATGPT_ALL_MS: ${{ steps.run.outputs.GLASGOW_CHATGPT_ALL_MS }}
+          GLASGOW_CHATGPT_FIRST_MS_STDEV: ${{ steps.run.outputs.GLASGOW_CHATGPT_FIRST_MS_STDEV }}
+          GLASGOW_CHATGPT_ALL_MS_STDEV: ${{ steps.run.outputs.GLASGOW_CHATGPT_ALL_MS_STDEV }}
+          GLASGOW_CHATGPT_FIRST_RSS_KB: ${{ steps.run.outputs.GLASGOW_CHATGPT_FIRST_RSS_KB }}
+          GLASGOW_CHATGPT_ALL_RSS_KB: ${{ steps.run.outputs.GLASGOW_CHATGPT_ALL_RSS_KB }}
+          GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV }}
+          GLASGOW_CHATGPT_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.GLASGOW_CHATGPT_ALL_RSS_KB_STDEV }}
+          GLASGOW_BASELINE_SUCCESS: ${{ steps.run.outputs.GLASGOW_BASELINE_SUCCESS }}
+          GLASGOW_BASELINE_FAILED: ${{ steps.run.outputs.GLASGOW_BASELINE_FAILED }}
+          GLASGOW_BASELINE_MATCH: ${{ steps.run.outputs.GLASGOW_BASELINE_MATCH }}
+          GLASGOW_BASELINE_TOTAL: ${{ steps.run.outputs.GLASGOW_BASELINE_TOTAL }}
+          GLASGOW_BASELINE_MISMATCH: ${{ steps.run.outputs.GLASGOW_BASELINE_MISMATCH }}
+          GLASGOW_CHATGPT_MATCH: ${{ steps.run.outputs.GLASGOW_CHATGPT_MATCH }}
+          GLASGOW_CHATGPT_TOTAL: ${{ steps.run.outputs.GLASGOW_CHATGPT_TOTAL }}
+          GLASGOW_CHATGPT_MISMATCH: ${{ steps.run.outputs.GLASGOW_CHATGPT_MISMATCH }}
+          GLASGOW_GEMINI_MATCH: ${{ steps.run.outputs.GLASGOW_GEMINI_MATCH }}
+          GLASGOW_GEMINI_TOTAL: ${{ steps.run.outputs.GLASGOW_GEMINI_TOTAL }}
+          GLASGOW_GEMINI_MISMATCH: ${{ steps.run.outputs.GLASGOW_GEMINI_MISMATCH }}
+          VF3_BASE_FIRST_MS: ${{ steps.run.outputs.VF3_BASE_FIRST_MS }}
+          VF3_BASE_ALL_MS: ${{ steps.run.outputs.VF3_BASE_ALL_MS }}
+          VF3_BASE_FIRST_MS_STDEV: ${{ steps.run.outputs.VF3_BASE_FIRST_MS_STDEV }}
+          VF3_BASE_ALL_MS_STDEV: ${{ steps.run.outputs.VF3_BASE_ALL_MS_STDEV }}
+          VF3_BASE_FIRST_RSS_KB: ${{ steps.run.outputs.VF3_BASE_FIRST_RSS_KB }}
+          VF3_BASE_ALL_RSS_KB: ${{ steps.run.outputs.VF3_BASE_ALL_RSS_KB }}
+          VF3_BASE_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_BASE_FIRST_RSS_KB_STDEV }}
+          VF3_BASE_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_BASE_ALL_RSS_KB_STDEV }}
+          VF3_GEMINI_FIRST_MS: ${{ steps.run.outputs.VF3_GEMINI_FIRST_MS }}
+          VF3_GEMINI_ALL_MS: ${{ steps.run.outputs.VF3_GEMINI_ALL_MS }}
+          VF3_GEMINI_FIRST_MS_STDEV: ${{ steps.run.outputs.VF3_GEMINI_FIRST_MS_STDEV }}
+          VF3_GEMINI_ALL_MS_STDEV: ${{ steps.run.outputs.VF3_GEMINI_ALL_MS_STDEV }}
+          VF3_GEMINI_FIRST_RSS_KB: ${{ steps.run.outputs.VF3_GEMINI_FIRST_RSS_KB }}
+          VF3_GEMINI_ALL_RSS_KB: ${{ steps.run.outputs.VF3_GEMINI_ALL_RSS_KB }}
+          VF3_GEMINI_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_GEMINI_FIRST_RSS_KB_STDEV }}
+          VF3_GEMINI_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_GEMINI_ALL_RSS_KB_STDEV }}
+          VF3_CHATGPT_FIRST_MS: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_MS }}
+          VF3_CHATGPT_ALL_MS: ${{ steps.run.outputs.VF3_CHATGPT_ALL_MS }}
+          VF3_CHATGPT_FIRST_MS_STDEV: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_MS_STDEV }}
+          VF3_CHATGPT_ALL_MS_STDEV: ${{ steps.run.outputs.VF3_CHATGPT_ALL_MS_STDEV }}
+          VF3_CHATGPT_FIRST_RSS_KB: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_RSS_KB }}
+          VF3_CHATGPT_ALL_RSS_KB: ${{ steps.run.outputs.VF3_CHATGPT_ALL_RSS_KB }}
+          VF3_CHATGPT_FIRST_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_CHATGPT_FIRST_RSS_KB_STDEV }}
+          VF3_CHATGPT_ALL_RSS_KB_STDEV: ${{ steps.run.outputs.VF3_CHATGPT_ALL_RSS_KB_STDEV }}
+          VF3_BASELINE_SUCCESS: ${{ steps.run.outputs.VF3_BASELINE_SUCCESS }}
+          VF3_BASELINE_FAILED: ${{ steps.run.outputs.VF3_BASELINE_FAILED }}
+          VF3_CHATGPT_MATCH: ${{ steps.run.outputs.VF3_CHATGPT_MATCH }}
+          VF3_CHATGPT_TOTAL: ${{ steps.run.outputs.VF3_CHATGPT_TOTAL }}
+          VF3_CHATGPT_MISMATCH: ${{ steps.run.outputs.VF3_CHATGPT_MISMATCH }}
+          VF3_GEMINI_MATCH: ${{ steps.run.outputs.VF3_GEMINI_MATCH }}
+          VF3_GEMINI_TOTAL: ${{ steps.run.outputs.VF3_GEMINI_TOTAL }}
+          VF3_GEMINI_MISMATCH: ${{ steps.run.outputs.VF3_GEMINI_MISMATCH }}
+        run: *create_result_json_script
+
       - name: Upload generated graphs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: generated-graphs-${{ steps.run.outputs.REQUEST_ID || github.run_id }}
+          name: generated-graphs-${{ steps.run_subgraph_vf3.outputs.REQUEST_ID || steps.run.outputs.REQUEST_ID || github.run_id }}
           path: outputs/generated
           if-no-files-found: ignore
           retention-days: 30
@@ -4287,13 +4523,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: visualization-data-${{ steps.run.outputs.REQUEST_ID || github.run_id }}
+          name: visualization-data-${{ steps.run_subgraph_vf3.outputs.REQUEST_ID || steps.run.outputs.REQUEST_ID || github.run_id }}
           path: outputs/visualization.json
           if-no-files-found: ignore
           retention-days: 14
-
       - name: Upload results artifact
-        if: always()
+        if: ${{ always() && env.ALGORITHM_INPUT != 'subgraph' }}
         uses: actions/upload-artifact@v4
         with:
           name: algorithm-result
