@@ -4423,6 +4423,7 @@ jobs:
         with:
           name: algorithm-result
           path: outputs/result.json
+          overwrite: true
 
       - name: Create result JSON
         if: ${{ always() && env.ALGORITHM_INPUT != 'subgraph' }}
