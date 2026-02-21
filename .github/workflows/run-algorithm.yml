@@ -2678,96 +2678,95 @@ jobs:
                   fi
                 fi
 
-                baseline_ok=1
-                if [ "${SUBGRAPH_PHASE:-}" = "glasgow" ]; then
-                  baseline_ok=0
-                fi
-                progress_set_phase "Subgraph VF3 baseline"
-                if ! run_capture_rss out dur rss ./baselines/vf3lib/bin/vf3 -u -r 0 "$vf_pattern" "$vf_target"; then
+                if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ]; then
+                  baseline_ok=1
+                  progress_set_phase "Subgraph VF3 baseline"
+                  if ! run_capture_rss out dur rss ./baselines/vf3lib/bin/vf3 -u -r 0 "$vf_pattern" "$vf_target"; then
                   EXIT_CODE=1
                   echo "[Subgraph VF3 baseline] run failed." >> outputs/result.txt
                   baseline_ok=0
-                else
-                  read baseline_count base_first_ms base_all_ms <<< "$(extract_solution_times_ms "$out")"
-                  if [ -z "${baseline_count:-}" ] || [ -z "${base_first_ms:-}" ] || [ -z "${base_all_ms:-}" ]; then
-                    echo "[Subgraph VF3 baseline] could not parse solution timings." >> outputs/result.txt
-                    baseline_ok=0
-                    EXIT_CODE=1
                   else
-                    base_first_times+=("$base_first_ms")
-                    base_all_times+=("$base_all_ms")
-                    base_first_rsses+=("$rss")
-                    base_all_rsses+=("$rss")
-                    progress_tick
+                    read baseline_count base_first_ms base_all_ms <<< "$(extract_solution_times_ms "$out")"
+                    if [ -z "${baseline_count:-}" ] || [ -z "${base_first_ms:-}" ] || [ -z "${base_all_ms:-}" ]; then
+                      echo "[Subgraph VF3 baseline] could not parse solution timings." >> outputs/result.txt
+                      baseline_ok=0
+                      EXIT_CODE=1
+                    else
+                      base_first_times+=("$base_first_ms")
+                      base_all_times+=("$base_all_ms")
+                      base_first_rsses+=("$rss")
+                      base_all_rsses+=("$rss")
+                      progress_tick
+                    fi
                   fi
-                fi
 
-                if [ "$baseline_ok" -ne 1 ]; then
-                  vf3_fail=$((vf3_fail + 1))
-                  continue
-                fi
+                  if [ "$baseline_ok" -ne 1 ]; then
+                    vf3_fail=$((vf3_fail + 1))
+                    continue
+                  fi
 
-                vf3_success=$((vf3_success + 1))
-                echo "${i},${baseline_count}" >> outputs/subgraph_baseline_counts.csv
+                  vf3_success=$((vf3_success + 1))
+                  echo "${i},${baseline_count}" >> outputs/subgraph_baseline_counts.csv
 
-                progress_set_phase "Subgraph VF3 ChatGPT"
-                vf3_chatgpt_total=$((vf3_chatgpt_total + 1))
-                chat_ok=1
-                chat_count=""
-                if ! run_capture_rss out dur rss ./src/chatvf3 "$vf_pattern" "$vf_target"; then
-                  EXIT_CODE=1
-                  echo "[Subgraph VF3 ChatGPT] all-solutions run failed." >> outputs/result.txt
-                  chat_ok=0
-                else
-                  read chat_count chat_first_ms chat_all_ms <<< "$(extract_solution_times_ms "$out")"
-                  if [ -z "${chat_count:-}" ] || [ -z "${chat_first_ms:-}" ] || [ -z "${chat_all_ms:-}" ]; then
+                  progress_set_phase "Subgraph VF3 ChatGPT"
+                  vf3_chatgpt_total=$((vf3_chatgpt_total + 1))
+                  chat_ok=1
+                  chat_count=""
+                  if ! run_capture_rss out dur rss ./src/chatvf3 "$vf_pattern" "$vf_target"; then
                     EXIT_CODE=1
-                    echo "[Subgraph VF3 ChatGPT] could not parse solution timings." >> outputs/result.txt
+                    echo "[Subgraph VF3 ChatGPT] all-solutions run failed." >> outputs/result.txt
                     chat_ok=0
                   else
-                    chat_first_times+=("$chat_first_ms")
-                    chat_all_times+=("$chat_all_ms")
-                    chat_first_rsses+=("$rss")
-                    chat_all_rsses+=("$rss")
-                    progress_tick
+                    read chat_count chat_first_ms chat_all_ms <<< "$(extract_solution_times_ms "$out")"
+                    if [ -z "${chat_count:-}" ] || [ -z "${chat_first_ms:-}" ] || [ -z "${chat_all_ms:-}" ]; then
+                      EXIT_CODE=1
+                      echo "[Subgraph VF3 ChatGPT] could not parse solution timings." >> outputs/result.txt
+                      chat_ok=0
+                    else
+                      chat_first_times+=("$chat_first_ms")
+                      chat_all_times+=("$chat_all_ms")
+                      chat_first_rsses+=("$rss")
+                      chat_all_rsses+=("$rss")
+                      progress_tick
+                    fi
                   fi
-                fi
-                if [ "$chat_ok" -eq 1 ] && [ -n "${chat_count:-}" ] && [ "$chat_count" = "$baseline_count" ]; then
-                  vf3_chatgpt_match=$((vf3_chatgpt_match + 1))
-                else
-                  vf3_chatgpt_mismatch=$((vf3_chatgpt_mismatch + 1))
-                fi
+                  if [ "$chat_ok" -eq 1 ] && [ -n "${chat_count:-}" ] && [ "$chat_count" = "$baseline_count" ]; then
+                    vf3_chatgpt_match=$((vf3_chatgpt_match + 1))
+                  else
+                    vf3_chatgpt_mismatch=$((vf3_chatgpt_mismatch + 1))
+                  fi
 
-                progress_set_phase "Subgraph VF3 Gemini"
-                vf3_gemini_total=$((vf3_gemini_total + 1))
-                gem_ok=1
-                gem_count=""
-                if ! run_capture_rss out dur rss ./src/vf3 "$vf_pattern" "$vf_target"; then
-                  EXIT_CODE=1
-                  echo "[Subgraph VF3 Gemini] all-solutions run failed." >> outputs/result.txt
-                  gem_ok=0
-                else
-                  read gem_count gem_first_ms gem_all_ms <<< "$(extract_solution_times_ms "$out")"
-                  if [ -z "${gem_count:-}" ] || [ -z "${gem_first_ms:-}" ] || [ -z "${gem_all_ms:-}" ]; then
+                  progress_set_phase "Subgraph VF3 Gemini"
+                  vf3_gemini_total=$((vf3_gemini_total + 1))
+                  gem_ok=1
+                  gem_count=""
+                  if ! run_capture_rss out dur rss ./src/vf3 "$vf_pattern" "$vf_target"; then
                     EXIT_CODE=1
-                    echo "[Subgraph VF3 Gemini] could not parse solution timings." >> outputs/result.txt
+                    echo "[Subgraph VF3 Gemini] all-solutions run failed." >> outputs/result.txt
                     gem_ok=0
                   else
-                    gem_first_times+=("$gem_first_ms")
-                    gem_all_times+=("$gem_all_ms")
-                    gem_first_rsses+=("$rss")
-                    gem_all_rsses+=("$rss")
-                    progress_tick
+                    read gem_count gem_first_ms gem_all_ms <<< "$(extract_solution_times_ms "$out")"
+                    if [ -z "${gem_count:-}" ] || [ -z "${gem_first_ms:-}" ] || [ -z "${gem_all_ms:-}" ]; then
+                      EXIT_CODE=1
+                      echo "[Subgraph VF3 Gemini] could not parse solution timings." >> outputs/result.txt
+                      gem_ok=0
+                    else
+                      gem_first_times+=("$gem_first_ms")
+                      gem_all_times+=("$gem_all_ms")
+                      gem_first_rsses+=("$rss")
+                      gem_all_rsses+=("$rss")
+                      progress_tick
+                    fi
                   fi
-                fi
-                if [ "$gem_ok" -eq 1 ] && [ -n "${gem_count:-}" ] && [ "$gem_count" = "$baseline_count" ]; then
-                  vf3_gemini_match=$((vf3_gemini_match + 1))
-                else
-                  vf3_gemini_mismatch=$((vf3_gemini_mismatch + 1))
-                fi
+                  if [ "$gem_ok" -eq 1 ] && [ -n "${gem_count:-}" ] && [ "$gem_count" = "$baseline_count" ]; then
+                    vf3_gemini_match=$((vf3_gemini_match + 1))
+                  else
+                    vf3_gemini_mismatch=$((vf3_gemini_mismatch + 1))
+                  fi
 
-                if [ "${SUBGRAPH_PHASE:-}" = "vf3" ]; then
-                  continue
+                  if [ "${SUBGRAPH_PHASE:-}" = "vf3" ]; then
+                    continue
+                  fi
                 fi
                 progress_set_phase "Subgraph Glasgow baseline"
                 glasgow_baseline_total=$((glasgow_baseline_total + 1))
