@@ -4293,6 +4293,13 @@ jobs:
                       },
                   }
           if algorithm == "subgraph" and os.environ.get("SUBGRAPH_PHASE", "").strip().lower() == "glasgow":
+              for key in ("timings_ms", "timings_ms_stdev", "memory_kb", "memory_kb_stdev"):
+                  if key in data and isinstance(data[key], dict):
+                      data[key] = {k: v for k, v in data[key].items() if not k.startswith("vf3_")}
+              if "match_counts" in data and isinstance(data["match_counts"], dict):
+                  data["match_counts"] = {
+                      k: v for k, v in data["match_counts"].items() if not k.startswith("vf3_")
+                  }
               existing_path = Path("outputs/result.json")
               if existing_path.exists():
                   try:
