@@ -3048,7 +3048,7 @@ jobs:
                 read glasgow_all_rss_median glasgow_all_rss_mean glasgow_all_rss_stdev glasgow_all_rss_min glasgow_all_rss_max glasgow_all_rss_n <<< "$(calc_stats_kb $glasgow_all_rss_runs)"
                 glasgow_all_rss_kb="$glasgow_all_rss_median"
               fi
-              if [ "$ITERATIONS" -ge 1 ]; then
+              if [ "${SUBGRAPH_PHASE:-}" != "vf3" ] && [ "$ITERATIONS" -ge 1 ]; then
                 glasgow_failure_suffix=""
                 if [ "${glasgow_fail:-0}" -gt 0 ]; then
                   glasgow_failure_suffix=", ${glasgow_fail} failed"
@@ -3089,7 +3089,7 @@ jobs:
                 read glasgow_chatgpt_all_rss_median glasgow_chatgpt_all_rss_mean glasgow_chatgpt_all_rss_stdev glasgow_chatgpt_all_rss_min glasgow_chatgpt_all_rss_max glasgow_chatgpt_all_rss_n <<< "$(calc_stats_kb $glasgow_chatgpt_all_rss_runs)"
                 glasgow_chatgpt_all_rss_kb="$glasgow_chatgpt_all_rss_median"
               fi
-              if [ "$ITERATIONS" -ge 1 ]; then
+              if [ "${SUBGRAPH_PHASE:-}" != "vf3" ] && [ "$ITERATIONS" -ge 1 ]; then
                 {
                   echo "[Subgraph Glasgow ChatGPT]"
                   echo "Matches: ${glasgow_chatgpt_match}/${glasgow_chatgpt_total} (mismatches: ${glasgow_chatgpt_mismatch})"
@@ -3125,7 +3125,7 @@ jobs:
                 read glasgow_gemini_all_rss_median glasgow_gemini_all_rss_mean glasgow_gemini_all_rss_stdev glasgow_gemini_all_rss_min glasgow_gemini_all_rss_max glasgow_gemini_all_rss_n <<< "$(calc_stats_kb $glasgow_gemini_all_rss_runs)"
                 glasgow_gemini_all_rss_kb="$glasgow_gemini_all_rss_median"
               fi
-              if [ "$ITERATIONS" -ge 1 ]; then
+              if [ "${SUBGRAPH_PHASE:-}" != "vf3" ] && [ "$ITERATIONS" -ge 1 ]; then
                 {
                   echo "[Subgraph Glasgow Gemini]"
                   echo "Matches: ${glasgow_gemini_match}/${glasgow_gemini_total} (mismatches: ${glasgow_gemini_mismatch})"
