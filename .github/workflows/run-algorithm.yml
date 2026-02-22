@@ -1321,23 +1321,46 @@ jobs:
 
           text = sys.argv[1]
           lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+          if not lines:
+            # Glasgow ChatGPT prints nothing when no solution is found.
+            print("0 0 0")
+            raise SystemExit(0)
           count = None
+          # Prefer an explicit count line, but ignore obvious time lines.
           for ln in reversed(lines):
+            if re.search(r"\btime\b", ln, re.IGNORECASE):
+              continue
             if re.fullmatch(r"-?\d+", ln):
               count = int(ln)
               break
+            m = re.search(r"\b(?:count|solution_count|solutions?)\b[^0-9-]*(-?\d+)\b", ln, re.IGNORECASE)
+            if m:
+              count = int(m.group(1))
+              break
           if count is None:
             count = sum(1 for ln in lines if "Mapping:" in ln)
-          nums = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", text)
           time_ms = None
-          if nums:
-            try:
-              time_ms = float(nums[-1])
-            except ValueError:
-              time_ms = None
+          # Prefer an explicit "Time:" line to avoid accidentally grabbing node ids from mappings.
+          for ln in reversed(lines):
+            if "time" not in ln.lower():
+              continue
+            nums = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", ln)
+            if nums:
+              try:
+                time_ms = float(nums[-1])
+                break
+              except ValueError:
+                pass
           if time_ms is None:
-            print("")
-            raise SystemExit(0)
+            nums = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", text)
+            if nums:
+              try:
+                time_ms = float(nums[-1])
+              except ValueError:
+                time_ms = None
+          if time_ms is None:
+            # Timing for Glasgow LLMs is already captured externally; keep parser usable for count parsing.
+            time_ms = 0.0
           print(f"{count} {time_ms} {time_ms}")
           PY
           }
@@ -1953,7 +1976,7 @@ jobs:
                 read glasgow_all_rss_median glasgow_all_rss_mean glasgow_all_rss_stdev glasgow_all_rss_min glasgow_all_rss_max glasgow_all_rss_n <<< "$(calc_stats_kb $glasgow_all_rss_runs)"
                 glasgow_all_rss_kb="$glasgow_all_rss_median"
               fi
-              if [ "$ITERATIONS" -ge 1 ]; then
+              if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ] && [ "$ITERATIONS" -ge 1 ]; then
                 glasgow_failure_suffix=""
                 if [ "${glasgow_fail:-0}" -gt 0 ]; then
                   glasgow_failure_suffix=", ${glasgow_fail} failed"
@@ -1993,7 +2016,7 @@ jobs:
                 read glasgow_chatgpt_all_rss_median glasgow_chatgpt_all_rss_mean glasgow_chatgpt_all_rss_stdev glasgow_chatgpt_all_rss_min glasgow_chatgpt_all_rss_max glasgow_chatgpt_all_rss_n <<< "$(calc_stats_kb $glasgow_chatgpt_all_rss_runs)"
                 glasgow_chatgpt_all_rss_kb="$glasgow_chatgpt_all_rss_median"
               fi
-              if [ "$ITERATIONS" -ge 1 ]; then
+              if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ] && [ "$ITERATIONS" -ge 1 ]; then
                 {
                   echo "[Glasgow ChatGPT]"
                   echo "Matches: ${glasgow_chatgpt_match}/${glasgow_chatgpt_total} (mismatches: ${glasgow_chatgpt_mismatch})"
@@ -2039,7 +2062,7 @@ jobs:
                 read glasgow_gemini_all_rss_median glasgow_gemini_all_rss_mean glasgow_gemini_all_rss_stdev glasgow_gemini_all_rss_min glasgow_gemini_all_rss_max glasgow_gemini_all_rss_n <<< "$(calc_stats_kb $glasgow_gemini_all_rss_runs)"
                 glasgow_gemini_all_rss_kb="$glasgow_gemini_all_rss_median"
               fi
-              if [ "$ITERATIONS" -ge 1 ]; then
+              if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ] && [ "$ITERATIONS" -ge 1 ]; then
                 {
                   echo "[Glasgow Gemini]"
                   echo "Matches: ${glasgow_gemini_match}/${glasgow_gemini_total} (mismatches: ${glasgow_gemini_mismatch})"
@@ -2336,7 +2359,7 @@ jobs:
                 read vf3_base_all_rss_median vf3_base_all_rss_mean vf3_base_all_rss_stdev vf3_base_all_rss_min vf3_base_all_rss_max vf3_base_all_rss_n <<< "$(calc_stats_kb $vf3_base_all_rss_runs)"
                 vf3_base_all_rss_kb="$vf3_base_all_rss_median"
               fi
-              if [ "$ITERATIONS" -ge 1 ]; then
+              if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ] && [ "$ITERATIONS" -ge 1 ]; then
                 vf3_failure_suffix=""
                 if [ "${vf3_fail:-0}" -gt 0 ]; then
                   vf3_failure_suffix=", ${vf3_fail} failed"
@@ -2913,7 +2936,7 @@ jobs:
                 vf3_base_all_rss_kb="$vf3_base_all_rss_median"
               fi
 
-              if [ "$ITERATIONS" -ge 1 ]; then
+              if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ] && [ "$ITERATIONS" -ge 1 ]; then
                 vf3_failure_suffix=""
                 if [ "${vf3_fail:-0}" -gt 0 ]; then
                   vf3_failure_suffix=", ${vf3_fail} failed"
@@ -2953,7 +2976,7 @@ jobs:
                 read chatvf3_all_rss_median chatvf3_all_rss_mean chatvf3_all_rss_stdev chatvf3_all_rss_min chatvf3_all_rss_max chatvf3_all_rss_n <<< "$(calc_stats_kb $chatvf3_all_rss_runs)"
                 chatvf3_all_rss_kb="$chatvf3_all_rss_median"
               fi
-              if [ "$ITERATIONS" -ge 1 ]; then
+              if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ] && [ "$ITERATIONS" -ge 1 ]; then
                 {
                   echo "[Subgraph VF3 ChatGPT]"
                   echo "Matches: ${vf3_chatgpt_match}/${vf3_chatgpt_total} (mismatches: ${vf3_chatgpt_mismatch})"
@@ -2989,7 +3012,7 @@ jobs:
                 read vf3_all_rss_median vf3_all_rss_mean vf3_all_rss_stdev vf3_all_rss_min vf3_all_rss_max vf3_all_rss_n <<< "$(calc_stats_kb $vf3_all_rss_runs)"
                 vf3_all_rss_kb="$vf3_all_rss_median"
               fi
-              if [ "$ITERATIONS" -ge 1 ]; then
+              if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ] && [ "$ITERATIONS" -ge 1 ]; then
                 {
                   echo "[Subgraph VF3 Gemini]"
                   echo "Matches: ${vf3_gemini_match}/${vf3_gemini_total} (mismatches: ${vf3_gemini_mismatch})"
@@ -4307,6 +4330,19 @@ jobs:
                   except (OSError, json.JSONDecodeError):
                       previous = None
                   if isinstance(previous, dict):
+                      # Preserve phase-1 visualization and append text output for the combined UI.
+                      if "visualization" in previous and "visualization" not in data:
+                          data["visualization"] = previous["visualization"]
+                          data.pop("visualization_error", None)
+                      if previous.get("output") and data.get("output"):
+                          prev_out = str(previous.get("output", "")).rstrip()
+                          new_out = str(data.get("output", "")).lstrip()
+                          if prev_out and new_out:
+                              data["output"] = prev_out + "\n\n" + new_out
+                      elif previous.get("output") and not data.get("output"):
+                          data["output"] = previous.get("output")
+                      if previous.get("visualization_error") and "visualization" not in data and "visualization_error" not in data:
+                          data["visualization_error"] = previous.get("visualization_error")
                       for key in ("timings_ms", "timings_ms_stdev", "memory_kb", "memory_kb_stdev", "match_counts"):
                           if key in previous:
                               merged = dict(previous.get(key, {}))
