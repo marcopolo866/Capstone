@@ -171,6 +171,8 @@ int main(int argc, char **argv) {
                 int tt = map_p2t[pp];
                 if (has_edge(pattern, p, pp) && !has_edge(target, t, tt))
                     ok = false;
+                if (!has_edge(pattern, p, pp) && has_edge(target, t, tt))
+                    ok = false;
             }
             if (!ok) continue;
 

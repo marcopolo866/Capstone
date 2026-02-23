@@ -101,6 +101,8 @@ void backtrack(int p_idx, const Graph& p, const Graph& t) {
             for (int prev_p = 0; prev_p < p_idx; ++prev_p) {
                 if (p.matrix[p_idx][prev_p] && !t.matrix[v][mapping[prev_p]]) { ok = false; break; }
                 if (p.matrix[prev_p][p_idx] && !t.matrix[mapping[prev_p]][v]) { ok = false; break; }
+                if (!p.matrix[p_idx][prev_p] && t.matrix[v][mapping[prev_p]]) { ok = false; break; }
+                if (!p.matrix[prev_p][p_idx] && t.matrix[mapping[prev_p]][v]) { ok = false; break; }
             }
 
             if (ok) {
