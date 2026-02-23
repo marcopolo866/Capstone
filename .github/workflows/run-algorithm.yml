@@ -1957,7 +1957,7 @@ jobs:
                   chat_all_rsses+=("$rss")
                   progress_tick
                   progress_tick
-                  parsed="$(printf '%s' "$out" | extract_count_time_ms)"
+                  parsed="$(extract_count_time_ms <<< "$out")"
                   if [ -n "${parsed:-}" ]; then
                     read chat_count _ _ <<< "$parsed"
                   else
@@ -1986,7 +1986,7 @@ jobs:
                   gem_all_rsses+=("$rss")
                   progress_tick
                   progress_tick
-                  parsed="$(printf '%s' "$out" | extract_count_time_ms)"
+                  parsed="$(extract_count_time_ms <<< "$out")"
                   if [ -n "${parsed:-}" ]; then
                     read gem_count _ _ <<< "$parsed"
                   else
@@ -2903,7 +2903,7 @@ jobs:
                   g_chat_all_rsses+=("$rss")
                   progress_tick
                   progress_tick
-                  parsed="$(printf '%s' "$out" | extract_count_time_ms)"
+                  parsed="$(extract_count_time_ms <<< "$out")"
                   if [ -n "${parsed:-}" ]; then
                     read chat_count _ _ <<< "$parsed"
                   else
@@ -2932,7 +2932,7 @@ jobs:
                   g_gem_all_rsses+=("$rss")
                   progress_tick
                   progress_tick
-                  parsed="$(printf '%s' "$out" | extract_count_time_ms)"
+                  parsed="$(extract_count_time_ms <<< "$out")"
                   if [ -n "${parsed:-}" ]; then
                     read gem_count _ _ <<< "$parsed"
                   else
