@@ -63,7 +63,17 @@ Graph read_lad(const string &file) {
             continue;
         }
 
-        // Generator format: "<count> n1 n2 ...", zero-based neighbors.
+        // Vertex-labelled LAD: "<label> <count> n1 n2 ...", zero-based neighbors.
+        if (vals.size() >= 2 && vals[1] == static_cast<int>(vals.size()) - 2) {
+            g.label[i] = vals[0];
+            for (size_t j = 2; j < vals.size(); j++) {
+                int v = vals[j];
+                if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
+            }
+            continue;
+        }
+
+        // Unlabelled LAD: "<count> n1 n2 ...", zero-based neighbors.
         if (vals[0] >= 0 && vals[0] == static_cast<int>(vals.size()) - 1) {
             g.label[i] = 0;
             for (size_t j = 1; j < vals.size(); j++) {

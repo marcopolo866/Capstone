@@ -4,6 +4,7 @@
 #include <string>
 #include <algorithm>
 #include <chrono>
+#include <sstream>
 
 using namespace std;
 
@@ -12,6 +13,7 @@ struct Graph {
     int n;
     vector<vector<int>> adj;
     vector<vector<bool>> matrix;
+    vector<int> label;
 };
 
 // Parser for .lad format, skipping headers
@@ -23,13 +25,28 @@ bool read_lad(const string& filename, Graph& g) {
     if (!(in >> g.n)) return false;
     g.adj.resize(g.n);
     g.matrix.assign(g.n, vector<bool>(g.n, false));
+    g.label.assign(g.n, 0);
     for (int i = 0; i < g.n; ++i) {
-        int count;
-        if (!(in >> count)) break;
-        for (int j = 0; j < count; ++j) {
-            int neighbor;
-            in >> neighbor;
-            if (neighbor >= 0 && neighbor < g.n) {
+        string line;
+        if (!getline(in >> ws, line)) break;
+        if (line.empty()) continue;
+        istringstream iss(line);
+        vector<int> vals;
+        int x;
+        while (iss >> x) vals.push_back(x);
+        if (vals.empty()) continue;
+        int start = 1;
+        int count = 0;
+        if (vals.size() >= 2 && vals[1] == static_cast<int>(vals.size()) - 2) {
+            g.label[i] = vals[0];
+            count = vals[1];
+            start = 2;
+        } else {
+            count = vals[0];
+        }
+        for (int j = 0; j < count && start + j < static_cast<int>(vals.size()); ++j) {
+            int neighbor = vals[start + j];
+            if (neighbor >= 0 && neighbor < g.n && neighbor != i) {
                 g.adj[i].push_back(neighbor);
                 g.matrix[i][neighbor] = true;
             }
@@ -45,6 +62,7 @@ bool read_grf(const string& filename, Graph& g) {
     if (!(in >> g.n)) return false;
     g.adj.resize(g.n);
     g.matrix.assign(g.n, vector<bool>(g.n, false));
+    g.label.assign(g.n, 0);
     int u, v;
     while (in >> u >> v) {
         if (u < g.n && v < g.n) {
@@ -74,6 +92,7 @@ void backtrack(int p_idx, const Graph& p, const Graph& t) {
 
     for (int v = 0; v < t.n; ++v) {
         if (!used[v]) {
+            if (p.label[p_idx] != t.label[v]) continue;
             // Advanced Pruning: Degree constraint (pattern node degree <= target node degree)
             if (t.adj[v].size() < p.adj[p_idx].size()) continue;
 

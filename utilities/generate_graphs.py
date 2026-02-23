@@ -145,6 +145,17 @@ def write_lad(path: Path, adj: list[list[int]]) -> None:
             fh.write(line + "\n")
 
 
+def write_vertex_labelled_lad(path: Path, adj: list[list[int]], labels: list[int]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        fh.write(f"{len(adj)}\n")
+        for i, neighbors in enumerate(adj):
+            line = f"{labels[i]} {len(neighbors)}"
+            if neighbors:
+                line += " " + " ".join(str(v) for v in neighbors)
+            fh.write(line + "\n")
+
+
 def write_grf(path: Path, adj: list[list[int]], labels: list[int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
@@ -213,6 +224,7 @@ def main() -> None:
         write_dijkstra_csv(path, edges, labels)
         generated.append(path)
     else:
+        labels = None
         target_adj = generate_adjacency(n, rng, density)
         undirected_adj = build_undirected_adj(target_adj)
         if algorithm in {"glasgow", "vf3", "subgraph"}:
@@ -227,18 +239,23 @@ def main() -> None:
             neighbors = [pattern_map[v] for v in target_adj[node] if v in node_set]
             pattern_adj.append(sorted(neighbors))
 
+        if algorithm in {"vf3", "subgraph"}:
+            labels = [i % 4 for i in range(n)]
+
         if algorithm in {"glasgow", "subgraph"}:
             target_path = out_dir / "glasgow_target.lad"
             pattern_path = out_dir / "glasgow_pattern.lad"
-            write_lad(target_path, target_adj)
-            write_lad(pattern_path, pattern_adj)
+            if labels is None:
+                write_lad(target_path, target_adj)
+                write_lad(pattern_path, pattern_adj)
+            else:
+                pattern_labels = [labels[node] for node in nodes]
+                write_vertex_labelled_lad(target_path, target_adj, labels)
+                write_vertex_labelled_lad(pattern_path, pattern_adj, pattern_labels)
             generated.extend([pattern_path, target_path])
 
         if algorithm in {"vf3", "subgraph"}:
-            # In combined mode, keep VF3 unlabeled so it matches the Glasgow .lad instance semantics.
-            if algorithm == "subgraph":
-                labels = [0 for _ in range(n)]
-            else:
+            if labels is None:
                 labels = [i % 4 for i in range(n)]
             pattern_labels = [labels[node] for node in nodes]
             target_path = out_dir / "vf3_target.vf"

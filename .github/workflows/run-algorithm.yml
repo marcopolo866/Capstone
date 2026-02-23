@@ -542,6 +542,8 @@ jobs:
                 '            raise ValueError(\"Empty LAD file\")' \
                 '        n = int(first.strip())' \
                 '        adj = [set() for _ in range(n)]' \
+                '        labels = [0 for _ in range(n)]' \
+                '        labelled = False' \
                 '        for i in range(n):' \
                 '            line = fh.readline()' \
                 '            if not line:' \
@@ -549,15 +551,22 @@ jobs:
                 '            parts = line.strip().split()' \
                 '            if not parts:' \
                 '                continue' \
-                '            d = int(parts[0])' \
-                '            for v in parts[1:1 + d]:' \
-                '                j = int(v)' \
-                '                if 0 <= j < n and j != i:' \
-                '                    adj[i].add(j)' \
+                '            nums = [int(x) for x in parts]' \
+                '            if len(nums) >= 2 and nums[1] == len(nums) - 2:' \
+                '                labelled = True' \
+                '                labels[i] = nums[0]' \
+                '                d = nums[1]' \
+                '                start = 2' \
+                '            else:' \
+                '                d = nums[0]' \
+                '                start = 1' \
+                '            for v in nums[start:start + d]:' \
+                '                if 0 <= v < n and v != i:' \
+                '                    adj[i].add(v)' \
                 '    for i in range(n):' \
                 '        for j in list(adj[i]):' \
                 '            adj[j].add(i)' \
-                '    return [sorted(list(s)) for s in adj]' \
+                '    return [sorted(list(s)) for s in adj], (labels if labelled else None)' \
                 '' \
                 'def read_vf(path: Path):' \
                 '    def next_int_line(handle):' \
@@ -576,9 +585,13 @@ jobs:
                 '        if not header:' \
                 '            raise ValueError(\"Empty VF file\")' \
                 '        n = int(header[0])' \
-                '        for _ in range(n):' \
-                '            if next_int_line(fh) is None:' \
+                '        labels = [0 for _ in range(n)]' \
+                '        for i in range(n):' \
+                '            row = next_int_line(fh)' \
+                '            if row is None:' \
                 '                break' \
+                '            if len(row) >= 2:' \
+                '                labels[i] = row[1]' \
                 '        adj = [set() for _ in range(n)]' \
                 '        for i in range(n):' \
                 '            count_line = next_int_line(fh)' \
@@ -605,21 +618,20 @@ jobs:
                 '    for i in range(n):' \
                 '        for j in list(adj[i]):' \
                 '            adj[j].add(i)' \
-                '    return [sorted(list(s)) for s in adj]' \
+                '    return [sorted(list(s)) for s in adj], labels' \
                 '' \
-                'def write_lad(path: Path, adj):' \
+                'def write_lad(path: Path, adj, labels):' \
                 '    with path.open(\"w\", encoding=\"utf-8\") as fh:' \
                 '        fh.write(f\"{len(adj)}\\n\")' \
-                '        for neighbors in adj:' \
-                '            line = f\"{len(neighbors)}\"' \
+                '        for i, neighbors in enumerate(adj):' \
+                '            line = f\"{labels[i]} {len(neighbors)}\"' \
                 '            if neighbors:' \
                 '                line += \" \" + \" \".join(str(v) for v in neighbors)' \
                 '            fh.write(line + \"\\n\")' \
                 '' \
-                'def write_vf(path: Path, adj):' \
+                'def write_vf(path: Path, adj, labels):' \
                 '    with path.open(\"w\", encoding=\"utf-8\") as fh:' \
                 '        fh.write(f\"{len(adj)}\\n\")' \
-                '        labels = [i % 4 for i in range(len(adj))]' \
                 '        for i, label in enumerate(labels):' \
                 '            fh.write(f\"{i} {label}\\n\")' \
                 '        for i, neighbors in enumerate(adj):' \
@@ -639,22 +651,30 @@ jobs:
                 'if fmt_pattern != fmt_target or fmt_pattern == \"\":' \
                 '    raise SystemExit(\"Mixed or unsupported formats for subgraph premade input.\")' \
                 '' \
+                'def ensure_labels(labels, n):' \
+                '    if labels is None or len(labels) != n:' \
+                '        return [i % 4 for i in range(n)]' \
+                '    return labels' \
+                '' \
                 'if fmt_pattern == \"lad\":' \
-                '    pattern_adj = read_lad(pattern_path)' \
-                '    target_adj = read_lad(target_path)' \
+                '    pattern_adj, pattern_labels = read_lad(pattern_path)' \
+                '    target_adj, target_labels = read_lad(target_path)' \
                 'else:' \
-                '    pattern_adj = read_vf(pattern_path)' \
-                '    target_adj = read_vf(target_path)' \
+                '    pattern_adj, pattern_labels = read_vf(pattern_path)' \
+                '    target_adj, target_labels = read_vf(target_path)' \
+                '' \
+                'pattern_labels = ensure_labels(pattern_labels, len(pattern_adj))' \
+                'target_labels = ensure_labels(target_labels, len(target_adj))' \
                 '' \
                 'lad_pattern = out_dir / \"pattern.lad\"' \
                 'lad_target = out_dir / \"target.lad\"' \
                 'vf_pattern = out_dir / \"pattern.vf\"' \
                 'vf_target = out_dir / \"target.vf\"' \
                 '' \
-                'write_lad(lad_pattern, pattern_adj)' \
-                'write_lad(lad_target, target_adj)' \
-                'write_vf(vf_pattern, pattern_adj)' \
-                'write_vf(vf_target, target_adj)' \
+                'write_lad(lad_pattern, pattern_adj, pattern_labels)' \
+                'write_lad(lad_target, target_adj, target_labels)' \
+                'write_vf(vf_pattern, pattern_adj, pattern_labels)' \
+                'write_vf(vf_target, target_adj, target_labels)' \
                 '' \
                 'print(\",\".join([str(lad_pattern), str(lad_target), str(vf_pattern), str(vf_target)]))' \
                 | python - "${FILES[0]}" "${FILES[1]}")"
@@ -2588,13 +2608,13 @@ jobs:
                       break
                     fi
                     progress_setup_tick
-                    if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "$lad_pattern" "$lad_target"; then
+                    if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
                       echo "[Warmup] Subgraph Glasgow baseline first failed." >> outputs/result.txt
                       EXIT_CODE=1
                       break
                     fi
                     progress_setup_tick
-                    if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "$lad_pattern" "$lad_target"; then
+                    if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
                       echo "[Warmup] Subgraph Glasgow baseline all failed." >> outputs/result.txt
                       EXIT_CODE=1
                       break
@@ -2629,10 +2649,10 @@ jobs:
                   if ! warmup_only "Subgraph VF3 Gemini" ./src/vf3 "$vf_pattern" "$vf_target"; then
                     EXIT_CODE=1
                   fi
-                  if ! warmup_only "Subgraph Glasgow baseline first" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "$lad_pattern" "$lad_target"; then
+                  if ! warmup_only "Subgraph Glasgow baseline first" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
                     EXIT_CODE=1
                   fi
-                  if ! warmup_only "Subgraph Glasgow baseline all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "$lad_pattern" "$lad_target"; then
+                  if ! warmup_only "Subgraph Glasgow baseline all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
                     EXIT_CODE=1
                   fi
                   if ! warmup_only "Subgraph Glasgow ChatGPT" ./src/glasgow_chatgpt "$lad_pattern" "$lad_target"; then
@@ -2830,7 +2850,7 @@ jobs:
                 if [ -z "${baseline_count:-}" ]; then
                   baseline_count="$(python -c "import sys; from pathlib import Path; iter_idx=sys.argv[1]; path=Path('outputs/subgraph_baseline_counts.csv'); lines=path.read_text(encoding='utf-8').splitlines() if path.exists() else []; matches=[p for p in ([s.strip() for s in line.split(',')] for line in lines) if len(p)>=2 and p[0]==str(iter_idx)]; print(matches[0][1] if matches else '')" "$i" 2>/dev/null)"
                 fi
-                if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "$lad_pattern" "$lad_target"; then
+                if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
                   EXIT_CODE=1
                   echo "[Subgraph Glasgow] first-solution run failed." >> outputs/result.txt
                   glasgow_ok=0
@@ -2840,7 +2860,7 @@ jobs:
                   progress_tick
                 fi
                 if [ "$glasgow_ok" -eq 1 ]; then
-                  if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "$lad_pattern" "$lad_target"; then
+                  if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
                     EXIT_CODE=1
                     echo "[Subgraph Glasgow] all-solutions run failed." >> outputs/result.txt
                     glasgow_ok=0
@@ -3261,8 +3281,14 @@ jobs:
                       parts = line.strip().split()
                       if not parts:
                           continue
-                      d = int(parts[0])
-                      for v in parts[1:1 + d]:
+                      nums = [int(x) for x in parts]
+                      if len(nums) >= 2 and nums[1] == len(nums) - 2:
+                          d = nums[1]
+                          start = 2
+                      else:
+                          d = nums[0]
+                          start = 1
+                      for v in nums[start:start + d]:
                           try:
                               j = int(v)
                           except ValueError:
