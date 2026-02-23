@@ -1348,11 +1348,11 @@ jobs:
           }
 
           extract_count_time_ms() {
-            python - <<'PY' "$1"
+            python - <<'PY'
           import re
           import sys
 
-          text = sys.argv[1]
+          text = sys.stdin.read()
           lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
           if not lines:
             # Glasgow ChatGPT prints nothing when no solution is found.
@@ -1936,7 +1936,7 @@ jobs:
                   chat_all_rsses+=("$rss")
                   progress_tick
                   progress_tick
-                  parsed="$(extract_count_time_ms "$out")"
+                  parsed="$(printf '%s' "$out" | extract_count_time_ms)"
                   if [ -n "${parsed:-}" ]; then
                     read chat_count _ _ <<< "$parsed"
                   else
@@ -1965,7 +1965,7 @@ jobs:
                   gem_all_rsses+=("$rss")
                   progress_tick
                   progress_tick
-                  parsed="$(extract_count_time_ms "$out")"
+                  parsed="$(printf '%s' "$out" | extract_count_time_ms)"
                   if [ -n "${parsed:-}" ]; then
                     read gem_count _ _ <<< "$parsed"
                   else
@@ -2882,7 +2882,7 @@ jobs:
                   g_chat_all_rsses+=("$rss")
                   progress_tick
                   progress_tick
-                  parsed="$(extract_count_time_ms "$out")"
+                  parsed="$(printf '%s' "$out" | extract_count_time_ms)"
                   if [ -n "${parsed:-}" ]; then
                     read chat_count _ _ <<< "$parsed"
                   else
@@ -2911,7 +2911,7 @@ jobs:
                   g_gem_all_rsses+=("$rss")
                   progress_tick
                   progress_tick
-                  parsed="$(extract_count_time_ms "$out")"
+                  parsed="$(printf '%s' "$out" | extract_count_time_ms)"
                   if [ -n "${parsed:-}" ]; then
                     read gem_count _ _ <<< "$parsed"
                   else
