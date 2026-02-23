@@ -1283,14 +1283,47 @@ jobs:
           }
 
           extract_solution_count() {
-            local text="$1"
-            local count
-            count=$(echo "$text" | tr -d '\r' | awk -F= '/solution_count[[:space:]]*=/{gsub(/[^0-9-]/, "", $2); if ($2 != "") {print $2; exit}}')
-            if [ -n "$count" ]; then
-              echo "$count"
-              return 0
-            fi
-            echo "$text" | tr -d '\r' | awk 'match($0, /-?[0-9]+/) {print substr($0, RSTART, RLENGTH); exit}'
+            python - <<'PY' "$1"
+          import re
+          import sys
+
+          text = sys.argv[1].replace("\r", "")
+          lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+          # Strongest signal: explicit solution_count=... output.
+          m = re.search(r"solution_count\s*=\s*(-?\d+)", text, re.IGNORECASE)
+          if m:
+              print(m.group(1))
+              raise SystemExit(0)
+
+          # Next: lines that explicitly mention solutions/count.
+          for ln in reversed(lines):
+              if "time" in ln.lower():
+                  continue
+              m = re.search(r"\b(?:count|solution_count|solutions?)\b[^0-9-]*(-?\d+)\b", ln, re.IGNORECASE)
+              if m:
+                  print(m.group(1))
+                  raise SystemExit(0)
+
+          # Common solver behavior: final non-time line is the count.
+          for ln in reversed(lines):
+              if "time" in ln.lower():
+                  continue
+              if re.fullmatch(r"-?\d+", ln):
+                  print(ln)
+                  raise SystemExit(0)
+
+          # Last-resort fallback: final integer on a non-time line (still avoid mapping lines).
+          for ln in reversed(lines):
+              if "time" in ln.lower() or "mapping" in ln.lower():
+                  continue
+              nums = re.findall(r"-?\d+", ln)
+              if nums:
+                  print(nums[-1])
+                  raise SystemExit(0)
+
+          print("")
+          PY
           }
 
           extract_solution_times_ms() {

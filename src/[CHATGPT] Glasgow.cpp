@@ -23,6 +23,7 @@ printed on the final line.
 #include <string>
 #include <cstdlib>
 #include <functional>
+#include <sstream>
 
 using namespace std;
 
@@ -45,15 +46,46 @@ Graph read_lad(const string &file) {
     in >> g.n;
     g.label.resize(g.n);
     g.adj.assign(g.n, {});
+    string line;
+    getline(in, line); // consume remainder of first line
     for (int i = 0; i < g.n; i++) {
-        in >> g.label[i];
-        int v;
-        while (in >> v && v != 0)
-            g.adj[i].push_back(v - 1);
+        if (!getline(in, line)) break;
+        if (line.empty()) {
+            g.label[i] = 0;
+            continue;
+        }
+        istringstream iss(line);
+        vector<int> vals;
+        int x;
+        while (iss >> x) vals.push_back(x);
+        if (vals.empty()) {
+            g.label[i] = 0;
+            continue;
+        }
+
+        // Generator format: "<count> n1 n2 ...", zero-based neighbors.
+        if (vals[0] >= 0 && vals[0] == static_cast<int>(vals.size()) - 1) {
+            g.label[i] = 0;
+            for (size_t j = 1; j < vals.size(); j++) {
+                int v = vals[j];
+                if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
+            }
+            continue;
+        }
+
+        // Fallback legacy format: "<label> v1 v2 ... 0", one-based neighbors.
+        g.label[i] = vals[0];
+        for (size_t j = 1; j < vals.size(); j++) {
+            int v = vals[j];
+            if (v == 0) break;
+            v -= 1;
+            if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
+        }
     }
     g.deg.resize(g.n);
     for (int i = 0; i < g.n; i++) {
         sort(g.adj[i].begin(), g.adj[i].end());
+        g.adj[i].erase(unique(g.adj[i].begin(), g.adj[i].end()), g.adj[i].end());
         g.deg[i] = g.adj[i].size();
     }
     return g;
@@ -64,10 +96,12 @@ Graph read_graph(const string &file) {
 }
 
 int main(int argc, char **argv) {
+    if (argc < 3) return 1;
     auto start = chrono::high_resolution_clock::now();
 
-    Graph target  = read_graph(argv[1]);
-    Graph pattern = read_graph(argv[2]);
+    // Match the workflow and the other solvers: pattern first, target second.
+    Graph pattern = read_graph(argv[1]);
+    Graph target  = read_graph(argv[2]);
 
     int pn = pattern.n, tn = target.n;
 
@@ -80,21 +114,23 @@ int main(int argc, char **argv) {
     vector<int> map_p2t(pn, -1);
     vector<char> used(tn, 0);
 
-    bool found = false;
-    vector<int> solution;
+    long long total_instances = 0;
+    vector<int> solution(pn, -1);
 
     function<void(int)> dfs = [&](int depth) {
-        if (found) return;
-
         if (depth == pn) {
-            solution.resize(pn);
             for (int i = 0; i < pn; i++) {
                 int p = order[i];
                 solution[p] = map_p2t[p];
             }
-            found = true;
+            total_instances++;
+            cout << "Mapping: ";
+            for (int p = 0; p < pn; p++) {
+                cout << "(" << p << " -> " << solution[p] << ")";
+                if (p + 1 < pn) cout << " ";
+            }
+            cout << "\n";
             return;
-
         }
 
         int p = order[depth];
@@ -142,13 +178,8 @@ int main(int argc, char **argv) {
     long long ms =
         chrono::duration_cast<chrono::milliseconds>(end - start).count();
 
-    if (found) {
-    cout << "Mapping: ";
-    for (int p = 0; p < pn; p++) {
-        cout << "(" << p << " -> " << solution[p] << ") ";
-    }
-    cout << "\nTime: " << ms << "\n";
-    }
+    cout << total_instances << "\n";
+    cout << "Time: " << ms << "\n";
 
 
     return 0;

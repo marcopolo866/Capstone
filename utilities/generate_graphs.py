@@ -235,7 +235,11 @@ def main() -> None:
             generated.extend([pattern_path, target_path])
 
         if algorithm in {"vf3", "subgraph"}:
-            labels = [i % 4 for i in range(n)]
+            # In combined mode, keep VF3 unlabeled so it matches the Glasgow .lad instance semantics.
+            if algorithm == "subgraph":
+                labels = [0 for _ in range(n)]
+            else:
+                labels = [i % 4 for i in range(n)]
             pattern_labels = [labels[node] for node in nodes]
             target_path = out_dir / "vf3_target.vf"
             pattern_path = out_dir / "vf3_pattern.vf"
