@@ -1419,6 +1419,57 @@ jobs:
           PY
           }
 
+          normalize_dijkstra_answer() {
+            python - <<'PY'
+          import re
+          import sys
+
+          text = sys.stdin.read().replace("\r", "")
+          lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+          answer = ""
+          for ln in lines:
+              low = ln.lower()
+              if low.startswith("runtime:"):
+                  continue
+              answer = ln
+              break
+
+          if not answer:
+              print("")
+              raise SystemExit(0)
+
+          m = re.match(r"^\s*([^;]+?)\s*;\s*(.*?)\s*$", answer)
+          if not m:
+              print(re.sub(r"\s+", " ", answer).strip())
+              raise SystemExit(0)
+
+          dist_raw = m.group(1).strip()
+          path_raw = m.group(2).strip()
+          path_low = path_raw.lower()
+
+          # Treat no-path sentinels consistently across baseline/LLM implementations.
+          if dist_raw.strip().lower() in {"inf", "infinity", "-1"} or "no path" in path_low:
+              print("INF|")
+              raise SystemExit(0)
+
+          try:
+              dist_num = float(dist_raw)
+              if dist_num.is_integer():
+                  dist_key = str(int(dist_num))
+              else:
+                  dist_key = f"{dist_num:.12g}"
+          except ValueError:
+              dist_key = re.sub(r"\s+", "", dist_raw).upper()
+
+          normalized_path = path_raw.replace("->", " ")
+          normalized_path = re.sub(r"[\[\]\(\),]", " ", normalized_path)
+          path_tokens = [tok for tok in normalized_path.split() if tok]
+
+          print(dist_key + "|" + ",".join(path_tokens))
+          PY
+          }
+
           sum_ms_runs() {
             python - <<'PY' "$@"
           import sys
@@ -1597,6 +1648,13 @@ jobs:
               dijkstra_llm_out=""
               dijkstra_llm_ms_runs=""
               dijkstra_llm_rss_runs=""
+              dijkstra_match=0
+              dijkstra_total=0
+              dijkstra_mismatch=0
+              dijkstra_first_mismatch_baseline=""
+              dijkstra_first_mismatch_llm=""
+              dijkstra_first_mismatch_baseline_norm=""
+              dijkstra_first_mismatch_llm_norm=""
 
               # Phase 1: setup + warmup (web UI fills the progress bar once here)
               PROGRESS_STAGE="setup"
@@ -1658,6 +1716,9 @@ jobs:
                 dijkstra_baseline_out=""
                 dijkstra_baseline_ms_runs=""
                 dijkstra_baseline_rss_runs=""
+                declare -a dijkstra_generated_files
+                declare -a dijkstra_baseline_norm_by_iter
+                declare -a dijkstra_baseline_raw_by_iter
                 out=""
                 dur=""
                 rss=""
@@ -1674,6 +1735,9 @@ jobs:
                     echo "[Dijkstra Baseline] failed to run." >> outputs/result.txt
                     break
                   fi
+                  dijkstra_generated_files[$i]="${FILES[0]}"
+                  dijkstra_baseline_raw_by_iter[$i]="$out"
+                  dijkstra_baseline_norm_by_iter[$i]="$(normalize_dijkstra_answer <<<"$out")"
                   if [ $i -eq 1 ]; then
                     out_first="$out"
                   fi
@@ -1723,14 +1787,32 @@ jobs:
                 rsses=()
                 out_first=""
                 for ((i=1; i<=ITERATIONS; i++)); do
-                  if ! generate_graphs_for_run "dijkstra_llm" "$i"; then
+                  dijkstra_input_file="${dijkstra_generated_files[$i]-}"
+                  if [ -z "$dijkstra_input_file" ] || [ ! -f "$dijkstra_input_file" ]; then
                     EXIT_CODE=1
+                    echo "[Dijkstra LLM] missing generated input for iteration ${i}." >> outputs/result.txt
                     break
                   fi
-                  if ! run_capture_rss out dur rss ./src/dijkstra_llm "${FILES[0]}"; then
+                  if ! run_capture_rss out dur rss ./src/dijkstra_llm "$dijkstra_input_file"; then
                     EXIT_CODE=1
                     echo "[Dijkstra LLM] failed to run." >> outputs/result.txt
                     break
+                  fi
+                  baseline_norm="${dijkstra_baseline_norm_by_iter[$i]-}"
+                  llm_norm="$(normalize_dijkstra_answer <<<"$out")"
+                  if [ -n "$baseline_norm" ] || [ -n "$llm_norm" ]; then
+                    dijkstra_total=$((dijkstra_total + 1))
+                    if [ -n "$baseline_norm" ] && [ "$baseline_norm" = "$llm_norm" ]; then
+                      dijkstra_match=$((dijkstra_match + 1))
+                    else
+                      dijkstra_mismatch=$((dijkstra_mismatch + 1))
+                      if [ -z "${dijkstra_first_mismatch_baseline_norm:-}" ] && [ -z "${dijkstra_first_mismatch_llm_norm:-}" ]; then
+                        dijkstra_first_mismatch_baseline="${dijkstra_baseline_raw_by_iter[$i]-}"
+                        dijkstra_first_mismatch_llm="$out"
+                        dijkstra_first_mismatch_baseline_norm="$baseline_norm"
+                        dijkstra_first_mismatch_llm_norm="$llm_norm"
+                      fi
+                    fi
                   fi
                   if [ $i -eq 1 ]; then
                     out_first="$out"
@@ -1770,6 +1852,37 @@ jobs:
                     t_test_line "runtime ms baseline vs LLM" \
                       "$dijkstra_baseline_ms_mean" "$dijkstra_baseline_ms_stdev" "$dijkstra_baseline_ms_n" \
                       "$dijkstra_llm_ms_mean" "$dijkstra_llm_ms_stdev" "$dijkstra_llm_ms_n"
+                  fi
+                  echo
+                } >> outputs/result.txt
+              fi
+              if [ "${dijkstra_total:-0}" -eq 0 ]; then
+                dijkstra_baseline_norm="$(normalize_dijkstra_answer <<<"${dijkstra_baseline_out:-}")"
+                dijkstra_llm_norm="$(normalize_dijkstra_answer <<<"${dijkstra_llm_out:-}")"
+                if [ -n "$dijkstra_baseline_norm" ] || [ -n "$dijkstra_llm_norm" ]; then
+                  dijkstra_total=1
+                  if [ -n "$dijkstra_baseline_norm" ] && [ "$dijkstra_baseline_norm" = "$dijkstra_llm_norm" ]; then
+                    dijkstra_match=1
+                    dijkstra_mismatch=0
+                  else
+                    dijkstra_match=0
+                    dijkstra_mismatch=1
+                    dijkstra_first_mismatch_baseline="${dijkstra_baseline_out:-}"
+                    dijkstra_first_mismatch_llm="${dijkstra_llm_out:-}"
+                    dijkstra_first_mismatch_baseline_norm="$dijkstra_baseline_norm"
+                    dijkstra_first_mismatch_llm_norm="$dijkstra_llm_norm"
+                  fi
+                fi
+              fi
+              if [ "${dijkstra_total:-0}" -gt 0 ]; then
+                {
+                  echo "[Dijkstra Comparison]"
+                  echo "Matches: ${dijkstra_match}/${dijkstra_total} (mismatches: ${dijkstra_mismatch})"
+                  if [ "${dijkstra_mismatch:-0}" -gt 0 ]; then
+                    if [ -n "${dijkstra_first_mismatch_baseline_norm:-}" ] || [ -n "${dijkstra_first_mismatch_llm_norm:-}" ]; then
+                      echo "Baseline (normalized): ${dijkstra_first_mismatch_baseline_norm:-<empty>}"
+                      echo "LLM (normalized): ${dijkstra_first_mismatch_llm_norm:-<empty>}"
+                    fi
                   fi
                   echo
                 } >> outputs/result.txt
@@ -3223,6 +3336,7 @@ jobs:
             export ITERATIONS
             python - <<'PY'
           import csv
+          import heapq
           import json
           import os
           import re
@@ -3246,6 +3360,15 @@ jobs:
               iterations = 1
 
           def load_metadata(iter_idx: int):
+              if algo == "dijkstra":
+                  for candidate in (
+                      Path(f"outputs/generated/dijkstra/dijkstra_baseline/iter_{iter_idx}/metadata.json"),
+                      Path(f"outputs/generated/dijkstra/dijkstra_iter/iter_{iter_idx}/metadata.json"),
+                      Path(f"outputs/generated/dijkstra/dijkstra_llm/iter_{iter_idx}/metadata.json"),
+                  ):
+                      if candidate.exists():
+                          return candidate
+                  return None
               if algo == "glasgow":
                   base = Path(f"outputs/generated/glasgow/glasgow_iter/iter_{iter_idx}/metadata.json")
                   if base.exists():
@@ -3353,14 +3476,26 @@ jobs:
           def parse_dijkstra(path: Path):
               edges = []
               nodes = set()
+              start_label = None
+              target_label = None
               with path.open("r", encoding="utf-8") as fh:
                   reader = csv.reader(fh)
                   for row in reader:
                       if not row:
                           continue
-                      if row[0].startswith("#"):
+                      first = row[0].strip() if row else ""
+                      if not first:
                           continue
-                      if row[0] == "source":
+                      if first.startswith("#"):
+                          meta = first[1:]
+                          m_start = re.search(r"\bstart\s*=\s*([^\s,]+)", meta, re.IGNORECASE)
+                          m_target = re.search(r"\b(?:target|end)\s*=\s*([^\s,]+)", meta, re.IGNORECASE)
+                          if m_start:
+                              start_label = m_start.group(1).strip()
+                          if m_target:
+                              target_label = m_target.group(1).strip()
+                          continue
+                      if first.lower() in {"source", "src", "from"}:
                           continue
                       if len(row) < 2:
                           continue
@@ -3368,25 +3503,174 @@ jobs:
                       tgt = row[1].strip()
                       if not src or not tgt:
                           continue
+                      weight = 1.0
+                      if len(row) >= 3 and str(row[2]).strip():
+                          try:
+                              weight = float(str(row[2]).strip())
+                          except ValueError:
+                              weight = 1.0
                       nodes.add(src)
                       nodes.add(tgt)
-                      edges.append((src, tgt))
+                      edges.append((src, tgt, weight))
+
               node_list = sorted(nodes)
               node_index = {name: idx for idx, name in enumerate(node_list)}
-              adj = [set() for _ in range(len(node_list))]
-              for src, tgt in edges:
+              undirected_adj = [set() for _ in range(len(node_list))]
+              directed_adj = [[] for _ in range(len(node_list))]
+
+              for src, tgt, weight in edges:
                   i = node_index.get(src)
                   j = node_index.get(tgt)
                   if i is None or j is None or i == j:
                       continue
-                  adj[i].add(j)
-                  adj[j].add(i)
-              return adj, node_list
+                  undirected_adj[i].add(j)
+                  undirected_adj[j].add(i)
+                  directed_adj[i].append((j, weight))
+
+              start_idx = node_index.get(start_label) if start_label else None
+              target_idx = node_index.get(target_label) if target_label else None
+              path_nodes = []
+              path_distance = None
+
+              if (
+                  start_idx is not None
+                  and target_idx is not None
+                  and 0 <= start_idx < len(node_list)
+                  and 0 <= target_idx < len(node_list)
+              ):
+                  dist = [float("inf")] * len(node_list)
+                  parent = [-1] * len(node_list)
+                  dist[start_idx] = 0.0
+                  pq = [(0.0, start_idx)]
+                  while pq:
+                      d, u = heapq.heappop(pq)
+                      if d != dist[u]:
+                          continue
+                      if u == target_idx:
+                          break
+                      for v, w in directed_adj[u]:
+                          nd = d + w
+                          if nd < dist[v]:
+                              dist[v] = nd
+                              parent[v] = u
+                              heapq.heappush(pq, (nd, v))
+                  if dist[target_idx] != float("inf"):
+                      path_distance = dist[target_idx]
+                      cur = target_idx
+                      while cur != -1:
+                          path_nodes.append(cur)
+                          if cur == start_idx:
+                              break
+                          cur = parent[cur]
+                      if not path_nodes or path_nodes[-1] != start_idx:
+                          path_nodes = []
+                          path_distance = None
+                      else:
+                          path_nodes.reverse()
+
+              return {
+                  "adj": undirected_adj,
+                  "node_list": node_list,
+                  "start_label": start_label,
+                  "target_label": target_label,
+                  "start_idx": start_idx,
+                  "target_idx": target_idx,
+                  "path_nodes": path_nodes,
+                  "path_distance": path_distance,
+              }
 
           def edge_key(a, b):
               return (a, b) if a <= b else (b, a)
 
           def build_visualization(pattern_path, target_path, pattern_nodes, iteration_index, seed_value):
+              if algo == "dijkstra":
+                  parsed = parse_dijkstra(target_path)
+                  adj_target = parsed.get("adj") or []
+                  node_labels = parsed.get("node_list") or []
+                  start_idx = parsed.get("start_idx")
+                  target_idx = parsed.get("target_idx")
+                  path_nodes = parsed.get("path_nodes") or []
+                  path_distance = parsed.get("path_distance")
+
+                  target_edges = set()
+                  for i, nbrs in enumerate(adj_target):
+                      for j in nbrs:
+                          if i == j:
+                              continue
+                          target_edges.add(edge_key(i, j))
+
+                  max_nodes = 4000
+                  max_edges = 4000
+                  truncated = False
+                  total_nodes = len(adj_target)
+                  total_edges = len(target_edges)
+
+                  allowed_nodes = set(range(min(total_nodes, max_nodes)))
+                  if total_nodes > max_nodes:
+                      truncated = True
+
+                  edges_sorted = sorted(target_edges)
+                  filtered_edges = [e for e in edges_sorted if e[0] in allowed_nodes and e[1] in allowed_nodes]
+                  if len(filtered_edges) > max_edges:
+                      filtered_edges = filtered_edges[:max_edges]
+                      truncated = True
+                  filtered_edge_set = set(filtered_edges)
+
+                  nodes = []
+                  for i in range(min(total_nodes, max_nodes)):
+                      label = node_labels[i] if i < len(node_labels) else str(i)
+                      nodes.append({"data": {"id": str(i), "label": str(label)}})
+
+                  edges = []
+                  for a, b in filtered_edges:
+                      edges.append({"data": {"id": f"{a}-{b}", "source": str(a), "target": str(b)}})
+
+                  highlight_nodes = []
+                  if start_idx is not None:
+                      highlight_nodes.append(start_idx)
+                  if target_idx is not None and target_idx != start_idx:
+                      highlight_nodes.append(target_idx)
+                  if path_nodes:
+                      for node in path_nodes:
+                          if node not in highlight_nodes:
+                              highlight_nodes.append(node)
+
+                  highlight_edge_ids = []
+                  for a, b in zip(path_nodes, path_nodes[1:]):
+                      ek = edge_key(a, b)
+                      if ek in filtered_edge_set:
+                          highlight_edge_ids.append(f"{ek[0]}-{ek[1]}")
+
+                  payload = {
+                      "algorithm": algo,
+                      "seed": seed_value,
+                      "iteration": iteration_index,
+                      "node_count": total_nodes,
+                      "edge_count": total_edges,
+                      "nodes": nodes,
+                      "edges": edges,
+                      "highlight_nodes": [str(n) for n in highlight_nodes if n in allowed_nodes],
+                      "highlight_edges": highlight_edge_ids,
+                      "pattern_node_count": 0,
+                      "pattern_nodes": [],
+                      "pattern_edges": [],
+                      "solutions": [],
+                      "no_solutions": len(path_nodes) == 0,
+                      "truncated": truncated,
+                  }
+                  if parsed.get("start_label"):
+                      payload["start_label"] = parsed.get("start_label")
+                  if parsed.get("target_label"):
+                      payload["target_label"] = parsed.get("target_label")
+                  if path_nodes:
+                      payload["shortest_path"] = [
+                          node_labels[i] if 0 <= i < len(node_labels) else str(i)
+                          for i in path_nodes
+                      ]
+                  if path_distance is not None:
+                      payload["shortest_path_distance"] = path_distance
+                  return payload
+
               adj_pattern = parse_lad(pattern_path) if algo == "glasgow" else parse_vf(pattern_path)
               adj_target = parse_lad(target_path) if algo == "glasgow" else parse_vf(target_path)
 
@@ -3657,6 +3941,9 @@ jobs:
           echo "DIJKSTRA_LLM_RSS_KB=${dijkstra_llm_rss_kb:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_BASELINE_RSS_KB_STDEV=${dijkstra_baseline_rss_stdev:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_LLM_RSS_KB_STDEV=${dijkstra_llm_rss_stdev:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_MATCH=${dijkstra_match:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_TOTAL=${dijkstra_total:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_MISMATCH=${dijkstra_mismatch:-}" >> "$GITHUB_OUTPUT"
           echo "GLASGOW_FIRST_MS=${glasgow_first_ms:-}" >> "$GITHUB_OUTPUT"
           echo "GLASGOW_ALL_MS=${glasgow_all_ms:-}" >> "$GITHUB_OUTPUT"
           echo "GLASGOW_FIRST_MS_STDEV=${glasgow_first_ms_stdev:-}" >> "$GITHUB_OUTPUT"
@@ -4221,6 +4508,19 @@ jobs:
               except ValueError:
                   return None
 
+          if algorithm == "dijkstra":
+              llm_match = maybe_int_env("DIJKSTRA_MATCH")
+              llm_total = maybe_int_env("DIJKSTRA_TOTAL")
+              llm_mismatch = maybe_int_env("DIJKSTRA_MISMATCH")
+              if any(v is not None for v in (llm_match, llm_total, llm_mismatch)):
+                  data["match_counts"] = {
+                      "llm": {
+                          "matches": llm_match,
+                          "total": llm_total,
+                          "mismatches": llm_mismatch,
+                      }
+                  }
+
           if algorithm == "glasgow":
               baseline_success = maybe_int_env("GLASGOW_BASELINE_SUCCESS")
               baseline_failed = maybe_int_env("GLASGOW_BASELINE_FAILED")
@@ -4544,6 +4844,9 @@ jobs:
           DIJKSTRA_LLM_RSS_KB: ${{ steps.run.outputs.DIJKSTRA_LLM_RSS_KB }}
           DIJKSTRA_BASELINE_RSS_KB_STDEV: ${{ steps.run.outputs.DIJKSTRA_BASELINE_RSS_KB_STDEV }}
           DIJKSTRA_LLM_RSS_KB_STDEV: ${{ steps.run.outputs.DIJKSTRA_LLM_RSS_KB_STDEV }}
+          DIJKSTRA_MATCH: ${{ steps.run.outputs.DIJKSTRA_MATCH }}
+          DIJKSTRA_TOTAL: ${{ steps.run.outputs.DIJKSTRA_TOTAL }}
+          DIJKSTRA_MISMATCH: ${{ steps.run.outputs.DIJKSTRA_MISMATCH }}
           GLASGOW_FIRST_MS: ${{ steps.run.outputs.GLASGOW_FIRST_MS }}
           GLASGOW_ALL_MS: ${{ steps.run.outputs.GLASGOW_ALL_MS }}
           GLASGOW_FIRST_MS_STDEV: ${{ steps.run.outputs.GLASGOW_FIRST_MS_STDEV }}
