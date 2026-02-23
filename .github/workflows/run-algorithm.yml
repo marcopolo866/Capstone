@@ -190,6 +190,7 @@ jobs:
           path: |
             baselines/dijkstra
             src/dijkstra_llm
+            src/dijkstra_gemini
             src/vf3
             src/chatvf3
             src/glasgow_chatgpt
@@ -213,6 +214,7 @@ jobs:
           expected=(
             "baselines/dijkstra"
             "src/dijkstra_llm"
+            "src/dijkstra_gemini"
             "src/vf3"
             "src/chatvf3"
             "src/glasgow_chatgpt"
@@ -328,6 +330,7 @@ jobs:
           expected = [
               "baselines/dijkstra",
               "src/dijkstra_llm",
+              "src/dijkstra_gemini",
               "src/vf3",
               "src/chatvf3",
               "src/glasgow_chatgpt",
@@ -735,8 +738,8 @@ jobs:
           TICKS_PER_UNIT=1
           case "$ALGORITHM" in
             dijkstra)
-              UNITS_PER_ITER=2   # baseline + llm
-              TICKS_PER_ITER=2   # both are directly ticked
+              UNITS_PER_ITER=3   # baseline + gemini + chatgpt
+              TICKS_PER_ITER=3   # all are directly ticked
               ;;
             glasgow)
               UNITS_PER_ITER=3   # baseline + gemini + chatgpt
@@ -1645,9 +1648,19 @@ jobs:
               dijkstra_baseline_out=""
               dijkstra_baseline_ms_runs=""
               dijkstra_baseline_rss_runs=""
+              dijkstra_gemini_out=""
+              dijkstra_gemini_ms_runs=""
+              dijkstra_gemini_rss_runs=""
               dijkstra_llm_out=""
               dijkstra_llm_ms_runs=""
               dijkstra_llm_rss_runs=""
+              dijkstra_gemini_match=0
+              dijkstra_gemini_total=0
+              dijkstra_gemini_mismatch=0
+              dijkstra_first_gemini_mismatch_baseline=""
+              dijkstra_first_gemini_mismatch_gemini=""
+              dijkstra_first_gemini_mismatch_baseline_norm=""
+              dijkstra_first_gemini_mismatch_gemini_norm=""
               dijkstra_match=0
               dijkstra_total=0
               dijkstra_mismatch=0
@@ -1679,7 +1692,19 @@ jobs:
                       break
                     fi
                     if ! run_capture out dur ./src/dijkstra_llm "${FILES[0]}"; then
-                      echo "[Warmup] Dijkstra llm failed." >> outputs/result.txt
+                      echo "[Warmup] Dijkstra ChatGPT failed." >> outputs/result.txt
+                      EXIT_CODE=1
+                      break
+                    fi
+                    progress_setup_tick
+                  done
+                  for ((i=1; i<=WARMUP_REQUESTED; i++)); do
+                    if ! generate_graphs_for_run "dijkstra_gemini_warmup" "w${i}"; then
+                      EXIT_CODE=1
+                      break
+                    fi
+                    if ! run_capture out dur ./src/dijkstra_gemini "${FILES[0]}"; then
+                      echo "[Warmup] Dijkstra gemini failed." >> outputs/result.txt
                       EXIT_CODE=1
                       break
                     fi
@@ -1689,7 +1714,10 @@ jobs:
                   if ! warmup_only "Dijkstra baseline" ./baselines/dijkstra "${FILES[0]}"; then
                     EXIT_CODE=1
                   fi
-                  if ! warmup_only "Dijkstra llm" ./src/dijkstra_llm "${FILES[0]}"; then
+                  if ! warmup_only "Dijkstra ChatGPT" ./src/dijkstra_llm "${FILES[0]}"; then
+                    EXIT_CODE=1
+                  fi
+                  if ! warmup_only "Dijkstra gemini" ./src/dijkstra_gemini "${FILES[0]}"; then
                     EXIT_CODE=1
                   fi
                 fi
@@ -1775,7 +1803,7 @@ jobs:
                   echo
                 } >> outputs/result.txt
               fi
-              progress_set_phase "Dijkstra llm"
+              progress_set_phase "Dijkstra ChatGPT"
               if [ "$INPUT_MODE" = "generate" ]; then
                 dijkstra_llm_out=""
                 dijkstra_llm_ms_runs=""
@@ -1790,12 +1818,12 @@ jobs:
                   dijkstra_input_file="${dijkstra_generated_files[$i]-}"
                   if [ -z "$dijkstra_input_file" ] || [ ! -f "$dijkstra_input_file" ]; then
                     EXIT_CODE=1
-                    echo "[Dijkstra LLM] missing generated input for iteration ${i}." >> outputs/result.txt
+                    echo "[Dijkstra ChatGPT] missing generated input for iteration ${i}." >> outputs/result.txt
                     break
                   fi
                   if ! run_capture_rss out dur rss ./src/dijkstra_llm "$dijkstra_input_file"; then
                     EXIT_CODE=1
-                    echo "[Dijkstra LLM] failed to run." >> outputs/result.txt
+                    echo "[Dijkstra ChatGPT] failed to run." >> outputs/result.txt
                     break
                   fi
                   baseline_norm="${dijkstra_baseline_norm_by_iter[$i]-}"
@@ -1827,7 +1855,7 @@ jobs:
               else
                 if ! bench_capture_rss_n dijkstra_llm_out dijkstra_llm_ms_runs dijkstra_llm_rss_runs "$ITERATIONS" ./src/dijkstra_llm "${FILES[0]}"; then
                   EXIT_CODE=1
-                  echo "[Dijkstra LLM] failed to run." >> outputs/result.txt
+                  echo "[Dijkstra ChatGPT] failed to run." >> outputs/result.txt
                 fi
               fi
               if [ -n "${dijkstra_llm_ms_runs:-}" ]; then
@@ -1838,7 +1866,7 @@ jobs:
                   dijkstra_llm_rss_kb="$dijkstra_llm_rss_median"
                 fi
                 {
-                  echo "[Dijkstra LLM]"
+                  echo "[Dijkstra ChatGPT]"
                   echo "$dijkstra_llm_out"
                   echo "Warmup: $WARMUP_REQUESTED"
                   echo "Iterations: $ITERATIONS"
@@ -1849,9 +1877,90 @@ jobs:
                     echo "Max RSS (kB): median=$dijkstra_llm_rss_median mean=$dijkstra_llm_rss_mean stdev=$dijkstra_llm_rss_stdev min=$dijkstra_llm_rss_min max=$dijkstra_llm_rss_max"
                   fi
                   if [ -n "${dijkstra_baseline_ms_mean:-}" ] && [ -n "${dijkstra_llm_ms_mean:-}" ]; then
-                    t_test_line "runtime ms baseline vs LLM" \
+                    t_test_line "runtime ms baseline vs ChatGPT" \
                       "$dijkstra_baseline_ms_mean" "$dijkstra_baseline_ms_stdev" "$dijkstra_baseline_ms_n" \
                       "$dijkstra_llm_ms_mean" "$dijkstra_llm_ms_stdev" "$dijkstra_llm_ms_n"
+                  fi
+                  echo
+                } >> outputs/result.txt
+              fi
+              progress_set_phase "Dijkstra gemini"
+              if [ "$INPUT_MODE" = "generate" ]; then
+                dijkstra_gemini_out=""
+                dijkstra_gemini_ms_runs=""
+                dijkstra_gemini_rss_runs=""
+                out=""
+                dur=""
+                rss=""
+                times=()
+                rsses=()
+                out_first=""
+                for ((i=1; i<=ITERATIONS; i++)); do
+                  dijkstra_input_file="${dijkstra_generated_files[$i]-}"
+                  if [ -z "$dijkstra_input_file" ] || [ ! -f "$dijkstra_input_file" ]; then
+                    EXIT_CODE=1
+                    echo "[Dijkstra Gemini] missing generated input for iteration ${i}." >> outputs/result.txt
+                    break
+                  fi
+                  if ! run_capture_rss out dur rss ./src/dijkstra_gemini "$dijkstra_input_file"; then
+                    EXIT_CODE=1
+                    echo "[Dijkstra Gemini] failed to run." >> outputs/result.txt
+                    break
+                  fi
+                  baseline_norm="${dijkstra_baseline_norm_by_iter[$i]-}"
+                  gemini_norm="$(normalize_dijkstra_answer <<<"$out")"
+                  if [ -n "$baseline_norm" ] || [ -n "$gemini_norm" ]; then
+                    dijkstra_gemini_total=$((dijkstra_gemini_total + 1))
+                    if [ -n "$baseline_norm" ] && [ "$baseline_norm" = "$gemini_norm" ]; then
+                      dijkstra_gemini_match=$((dijkstra_gemini_match + 1))
+                    else
+                      dijkstra_gemini_mismatch=$((dijkstra_gemini_mismatch + 1))
+                      if [ -z "${dijkstra_first_gemini_mismatch_baseline_norm:-}" ] && [ -z "${dijkstra_first_gemini_mismatch_gemini_norm:-}" ]; then
+                        dijkstra_first_gemini_mismatch_baseline="${dijkstra_baseline_raw_by_iter[$i]-}"
+                        dijkstra_first_gemini_mismatch_gemini="$out"
+                        dijkstra_first_gemini_mismatch_baseline_norm="$baseline_norm"
+                        dijkstra_first_gemini_mismatch_gemini_norm="$gemini_norm"
+                      fi
+                    fi
+                  fi
+                  if [ $i -eq 1 ]; then
+                    out_first="$out"
+                  fi
+                  times+=("$dur")
+                  rsses+=("$rss")
+                  progress_tick
+                done
+                dijkstra_gemini_out="$out_first"
+                dijkstra_gemini_ms_runs="${times[*]}"
+                dijkstra_gemini_rss_runs="${rsses[*]}"
+              else
+                if ! bench_capture_rss_n dijkstra_gemini_out dijkstra_gemini_ms_runs dijkstra_gemini_rss_runs "$ITERATIONS" ./src/dijkstra_gemini "${FILES[0]}"; then
+                  EXIT_CODE=1
+                  echo "[Dijkstra Gemini] failed to run." >> outputs/result.txt
+                fi
+              fi
+              if [ -n "${dijkstra_gemini_ms_runs:-}" ]; then
+                read dijkstra_gemini_ms_median dijkstra_gemini_ms_mean dijkstra_gemini_ms_stdev dijkstra_gemini_ms_min dijkstra_gemini_ms_max dijkstra_gemini_ms_n <<< "$(calc_stats_ms $dijkstra_gemini_ms_runs)"
+                dijkstra_gemini_ms="$dijkstra_gemini_ms_median"
+                if [ -n "${dijkstra_gemini_rss_runs:-}" ]; then
+                  read dijkstra_gemini_rss_median dijkstra_gemini_rss_mean dijkstra_gemini_rss_stdev dijkstra_gemini_rss_min dijkstra_gemini_rss_max dijkstra_gemini_rss_n <<< "$(calc_stats_kb $dijkstra_gemini_rss_runs)"
+                  dijkstra_gemini_rss_kb="$dijkstra_gemini_rss_median"
+                fi
+                {
+                  echo "[Dijkstra Gemini]"
+                  echo "$dijkstra_gemini_out"
+                  echo "Warmup: $WARMUP_REQUESTED"
+                  echo "Iterations: $ITERATIONS"
+                  if [ -n "${dijkstra_gemini_ms_median:-}" ]; then
+                    echo "Runtime (ms): median=$dijkstra_gemini_ms_median mean=$dijkstra_gemini_ms_mean stdev=$dijkstra_gemini_ms_stdev min=$dijkstra_gemini_ms_min max=$dijkstra_gemini_ms_max"
+                  fi
+                  if [ -n "${dijkstra_gemini_rss_median:-}" ]; then
+                    echo "Max RSS (kB): median=$dijkstra_gemini_rss_median mean=$dijkstra_gemini_rss_mean stdev=$dijkstra_gemini_rss_stdev min=$dijkstra_gemini_rss_min max=$dijkstra_gemini_rss_max"
+                  fi
+                  if [ -n "${dijkstra_baseline_ms_mean:-}" ] && [ -n "${dijkstra_gemini_ms_mean:-}" ]; then
+                    t_test_line "runtime ms baseline vs Gemini" \
+                      "$dijkstra_baseline_ms_mean" "$dijkstra_baseline_ms_stdev" "$dijkstra_baseline_ms_n" \
+                      "$dijkstra_gemini_ms_mean" "$dijkstra_gemini_ms_stdev" "$dijkstra_gemini_ms_n"
                   fi
                   echo
                 } >> outputs/result.txt
@@ -1874,9 +1983,27 @@ jobs:
                   fi
                 fi
               fi
+              if [ "${dijkstra_gemini_total:-0}" -eq 0 ]; then
+                dijkstra_baseline_norm="$(normalize_dijkstra_answer <<<"${dijkstra_baseline_out:-}")"
+                dijkstra_gemini_norm="$(normalize_dijkstra_answer <<<"${dijkstra_gemini_out:-}")"
+                if [ -n "$dijkstra_baseline_norm" ] || [ -n "$dijkstra_gemini_norm" ]; then
+                  dijkstra_gemini_total=1
+                  if [ -n "$dijkstra_baseline_norm" ] && [ "$dijkstra_baseline_norm" = "$dijkstra_gemini_norm" ]; then
+                    dijkstra_gemini_match=1
+                    dijkstra_gemini_mismatch=0
+                  else
+                    dijkstra_gemini_match=0
+                    dijkstra_gemini_mismatch=1
+                    dijkstra_first_gemini_mismatch_baseline="${dijkstra_baseline_out:-}"
+                    dijkstra_first_gemini_mismatch_gemini="${dijkstra_gemini_out:-}"
+                    dijkstra_first_gemini_mismatch_baseline_norm="$dijkstra_baseline_norm"
+                    dijkstra_first_gemini_mismatch_gemini_norm="$dijkstra_gemini_norm"
+                  fi
+                fi
+              fi
               if [ "${dijkstra_total:-0}" -gt 0 ]; then
                 {
-                  echo "[Dijkstra Comparison]"
+                  echo "[Dijkstra ChatGPT Comparison]"
                   echo "Matches: ${dijkstra_match}/${dijkstra_total} (mismatches: ${dijkstra_mismatch})"
                   if [ "${dijkstra_mismatch:-0}" -gt 0 ]; then
                     if [ -n "${dijkstra_first_mismatch_baseline_norm:-}" ] || [ -n "${dijkstra_first_mismatch_llm_norm:-}" ]; then
@@ -1887,8 +2014,21 @@ jobs:
                   echo
                 } >> outputs/result.txt
               fi
-              if [ -n "${dijkstra_baseline_ms_runs:-}" ] || [ -n "${dijkstra_llm_ms_runs:-}" ]; then
-                SOLVER_TIME_MS_TOTAL="$(sum_ms_runs $dijkstra_baseline_ms_runs $dijkstra_llm_ms_runs)"
+              if [ "${dijkstra_gemini_total:-0}" -gt 0 ]; then
+                {
+                  echo "[Dijkstra Gemini Comparison]"
+                  echo "Matches: ${dijkstra_gemini_match}/${dijkstra_gemini_total} (mismatches: ${dijkstra_gemini_mismatch})"
+                  if [ "${dijkstra_gemini_mismatch:-0}" -gt 0 ]; then
+                    if [ -n "${dijkstra_first_gemini_mismatch_baseline_norm:-}" ] || [ -n "${dijkstra_first_gemini_mismatch_gemini_norm:-}" ]; then
+                      echo "Baseline (normalized): ${dijkstra_first_gemini_mismatch_baseline_norm:-<empty>}"
+                      echo "Gemini (normalized): ${dijkstra_first_gemini_mismatch_gemini_norm:-<empty>}"
+                    fi
+                  fi
+                  echo
+                } >> outputs/result.txt
+              fi
+              if [ -n "${dijkstra_baseline_ms_runs:-}" ] || [ -n "${dijkstra_llm_ms_runs:-}" ] || [ -n "${dijkstra_gemini_ms_runs:-}" ]; then
+                SOLVER_TIME_MS_TOTAL="$(sum_ms_runs $dijkstra_baseline_ms_runs $dijkstra_llm_ms_runs $dijkstra_gemini_ms_runs)"
               fi
               ;;
             glasgow)
@@ -3935,15 +4075,25 @@ jobs:
           echo "WARMUP=${WARMUP_REQUESTED}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_BASELINE_MS=${dijkstra_baseline_ms:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_LLM_MS=${dijkstra_llm_ms:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_GEMINI_MS=${dijkstra_gemini_ms:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_BASELINE_MS_STDEV=${dijkstra_baseline_ms_stdev:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_LLM_MS_STDEV=${dijkstra_llm_ms_stdev:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_GEMINI_MS_STDEV=${dijkstra_gemini_ms_stdev:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_BASELINE_RSS_KB=${dijkstra_baseline_rss_kb:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_LLM_RSS_KB=${dijkstra_llm_rss_kb:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_GEMINI_RSS_KB=${dijkstra_gemini_rss_kb:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_BASELINE_RSS_KB_STDEV=${dijkstra_baseline_rss_stdev:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_LLM_RSS_KB_STDEV=${dijkstra_llm_rss_stdev:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_GEMINI_RSS_KB_STDEV=${dijkstra_gemini_rss_stdev:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_CHATGPT_MATCH=${dijkstra_match:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_CHATGPT_TOTAL=${dijkstra_total:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_CHATGPT_MISMATCH=${dijkstra_mismatch:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_MATCH=${dijkstra_match:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_TOTAL=${dijkstra_total:-}" >> "$GITHUB_OUTPUT"
           echo "DIJKSTRA_MISMATCH=${dijkstra_mismatch:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_GEMINI_MATCH=${dijkstra_gemini_match:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_GEMINI_TOTAL=${dijkstra_gemini_total:-}" >> "$GITHUB_OUTPUT"
+          echo "DIJKSTRA_GEMINI_MISMATCH=${dijkstra_gemini_mismatch:-}" >> "$GITHUB_OUTPUT"
           echo "GLASGOW_FIRST_MS=${glasgow_first_ms:-}" >> "$GITHUB_OUTPUT"
           echo "GLASGOW_ALL_MS=${glasgow_all_ms:-}" >> "$GITHUB_OUTPUT"
           echo "GLASGOW_FIRST_MS_STDEV=${glasgow_first_ms_stdev:-}" >> "$GITHUB_OUTPUT"
@@ -4212,10 +4362,14 @@ jobs:
           if algorithm == "dijkstra":
               baseline = os.environ.get("DIJKSTRA_BASELINE_MS", "")
               llm = os.environ.get("DIJKSTRA_LLM_MS", "")
+              gemini = os.environ.get("DIJKSTRA_GEMINI_MS", "")
               if baseline:
                   timings_ms["baseline"] = float(baseline)
               if llm:
                   timings_ms["llm"] = float(llm)
+                  timings_ms["chatgpt"] = float(llm)
+              if gemini:
+                  timings_ms["gemini"] = float(gemini)
           elif algorithm == "glasgow":
               first = os.environ.get("GLASGOW_FIRST_MS", "")
               all_ms = os.environ.get("GLASGOW_ALL_MS", "")
@@ -4275,10 +4429,14 @@ jobs:
           if algorithm == "dijkstra":
               baseline = os.environ.get("DIJKSTRA_BASELINE_MS_STDEV", "")
               llm = os.environ.get("DIJKSTRA_LLM_MS_STDEV", "")
+              gemini = os.environ.get("DIJKSTRA_GEMINI_MS_STDEV", "")
               if baseline:
                   timings_ms_stdev["baseline"] = float(baseline)
               if llm:
                   timings_ms_stdev["llm"] = float(llm)
+                  timings_ms_stdev["chatgpt"] = float(llm)
+              if gemini:
+                  timings_ms_stdev["gemini"] = float(gemini)
           elif algorithm == "glasgow":
               first = os.environ.get("GLASGOW_FIRST_MS_STDEV", "")
               all_ms = os.environ.get("GLASGOW_ALL_MS_STDEV", "")
@@ -4335,6 +4493,7 @@ jobs:
           if algorithm == "dijkstra":
               baseline = os.environ.get("DIJKSTRA_BASELINE_RSS_KB", "")
               llm = os.environ.get("DIJKSTRA_LLM_RSS_KB", "")
+              gemini = os.environ.get("DIJKSTRA_GEMINI_RSS_KB", "")
               if baseline:
                   try:
                       memory_kb["baseline"] = int(baseline)
@@ -4343,6 +4502,12 @@ jobs:
               if llm:
                   try:
                       memory_kb["llm"] = int(llm)
+                      memory_kb["chatgpt"] = int(llm)
+                  except ValueError:
+                      pass
+              if gemini:
+                  try:
+                      memory_kb["gemini"] = int(gemini)
                   except ValueError:
                       pass
           elif algorithm == "glasgow":
@@ -4419,6 +4584,7 @@ jobs:
           if algorithm == "dijkstra":
               baseline = os.environ.get("DIJKSTRA_BASELINE_RSS_KB_STDEV", "")
               llm = os.environ.get("DIJKSTRA_LLM_RSS_KB_STDEV", "")
+              gemini = os.environ.get("DIJKSTRA_GEMINI_RSS_KB_STDEV", "")
               if baseline:
                   try:
                       memory_kb_stdev["baseline"] = int(baseline)
@@ -4427,6 +4593,12 @@ jobs:
               if llm:
                   try:
                       memory_kb_stdev["llm"] = int(llm)
+                      memory_kb_stdev["chatgpt"] = int(llm)
+                  except ValueError:
+                      pass
+              if gemini:
+                  try:
+                      memory_kb_stdev["gemini"] = int(gemini)
                   except ValueError:
                       pass
           elif algorithm == "glasgow":
@@ -4509,16 +4681,28 @@ jobs:
                   return None
 
           if algorithm == "dijkstra":
-              llm_match = maybe_int_env("DIJKSTRA_MATCH")
-              llm_total = maybe_int_env("DIJKSTRA_TOTAL")
-              llm_mismatch = maybe_int_env("DIJKSTRA_MISMATCH")
-              if any(v is not None for v in (llm_match, llm_total, llm_mismatch)):
+              chat_match = maybe_int_env("DIJKSTRA_CHATGPT_MATCH")
+              chat_total = maybe_int_env("DIJKSTRA_CHATGPT_TOTAL")
+              chat_mismatch = maybe_int_env("DIJKSTRA_CHATGPT_MISMATCH")
+              if chat_match is None and chat_total is None and chat_mismatch is None:
+                  chat_match = maybe_int_env("DIJKSTRA_MATCH")
+                  chat_total = maybe_int_env("DIJKSTRA_TOTAL")
+                  chat_mismatch = maybe_int_env("DIJKSTRA_MISMATCH")
+              gem_match = maybe_int_env("DIJKSTRA_GEMINI_MATCH")
+              gem_total = maybe_int_env("DIJKSTRA_GEMINI_TOTAL")
+              gem_mismatch = maybe_int_env("DIJKSTRA_GEMINI_MISMATCH")
+              if any(v is not None for v in (chat_match, chat_total, chat_mismatch, gem_match, gem_total, gem_mismatch)):
                   data["match_counts"] = {
-                      "llm": {
-                          "matches": llm_match,
-                          "total": llm_total,
-                          "mismatches": llm_mismatch,
-                      }
+                      "chatgpt": {
+                          "matches": chat_match,
+                          "total": chat_total,
+                          "mismatches": chat_mismatch,
+                      },
+                      "gemini": {
+                          "matches": gem_match,
+                          "total": gem_total,
+                          "mismatches": gem_mismatch,
+                      },
                   }
 
           if algorithm == "glasgow":
@@ -4838,15 +5022,25 @@ jobs:
           SEED_USED: ${{ steps.run.outputs.SEED_USED }}
           DIJKSTRA_BASELINE_MS: ${{ steps.run.outputs.DIJKSTRA_BASELINE_MS }}
           DIJKSTRA_LLM_MS: ${{ steps.run.outputs.DIJKSTRA_LLM_MS }}
+          DIJKSTRA_GEMINI_MS: ${{ steps.run.outputs.DIJKSTRA_GEMINI_MS }}
           DIJKSTRA_BASELINE_MS_STDEV: ${{ steps.run.outputs.DIJKSTRA_BASELINE_MS_STDEV }}
           DIJKSTRA_LLM_MS_STDEV: ${{ steps.run.outputs.DIJKSTRA_LLM_MS_STDEV }}
+          DIJKSTRA_GEMINI_MS_STDEV: ${{ steps.run.outputs.DIJKSTRA_GEMINI_MS_STDEV }}
           DIJKSTRA_BASELINE_RSS_KB: ${{ steps.run.outputs.DIJKSTRA_BASELINE_RSS_KB }}
           DIJKSTRA_LLM_RSS_KB: ${{ steps.run.outputs.DIJKSTRA_LLM_RSS_KB }}
+          DIJKSTRA_GEMINI_RSS_KB: ${{ steps.run.outputs.DIJKSTRA_GEMINI_RSS_KB }}
           DIJKSTRA_BASELINE_RSS_KB_STDEV: ${{ steps.run.outputs.DIJKSTRA_BASELINE_RSS_KB_STDEV }}
           DIJKSTRA_LLM_RSS_KB_STDEV: ${{ steps.run.outputs.DIJKSTRA_LLM_RSS_KB_STDEV }}
+          DIJKSTRA_GEMINI_RSS_KB_STDEV: ${{ steps.run.outputs.DIJKSTRA_GEMINI_RSS_KB_STDEV }}
+          DIJKSTRA_CHATGPT_MATCH: ${{ steps.run.outputs.DIJKSTRA_CHATGPT_MATCH }}
+          DIJKSTRA_CHATGPT_TOTAL: ${{ steps.run.outputs.DIJKSTRA_CHATGPT_TOTAL }}
+          DIJKSTRA_CHATGPT_MISMATCH: ${{ steps.run.outputs.DIJKSTRA_CHATGPT_MISMATCH }}
           DIJKSTRA_MATCH: ${{ steps.run.outputs.DIJKSTRA_MATCH }}
           DIJKSTRA_TOTAL: ${{ steps.run.outputs.DIJKSTRA_TOTAL }}
           DIJKSTRA_MISMATCH: ${{ steps.run.outputs.DIJKSTRA_MISMATCH }}
+          DIJKSTRA_GEMINI_MATCH: ${{ steps.run.outputs.DIJKSTRA_GEMINI_MATCH }}
+          DIJKSTRA_GEMINI_TOTAL: ${{ steps.run.outputs.DIJKSTRA_GEMINI_TOTAL }}
+          DIJKSTRA_GEMINI_MISMATCH: ${{ steps.run.outputs.DIJKSTRA_GEMINI_MISMATCH }}
           GLASGOW_FIRST_MS: ${{ steps.run.outputs.GLASGOW_FIRST_MS }}
           GLASGOW_ALL_MS: ${{ steps.run.outputs.GLASGOW_ALL_MS }}
           GLASGOW_FIRST_MS_STDEV: ${{ steps.run.outputs.GLASGOW_FIRST_MS_STDEV }}

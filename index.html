@@ -1587,7 +1587,7 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 throw new Error('Dijkstra requires one input file');
             }
 
-            const ticksPerIter = 2; // baseline + llm
+            const ticksPerIter = 3; // baseline + chatgpt + gemini
             const setupTotal = Math.max(1, safeWarmup * ticksPerIter);
             const testsTotal = safeIterations * ticksPerIter;
 
@@ -1613,6 +1613,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 scriptPath: 'wasm/dijkstra_llm.js',
                 wasmPath: 'wasm/dijkstra_llm.wasm',
                 factoryName: 'createDijkstraLlmModule'
+            };
+            const geminiSpec = {
+                id: 'dijkstra_gemini',
+                scriptPath: 'wasm/dijkstra_gemini.js',
+                wasmPath: 'wasm/dijkstra_gemini.wasm',
+                factoryName: 'createDijkstraGeminiModule'
             };
 
             const abortSignal = runCtx && runCtx.abortController ? runCtx.abortController.signal : null;
@@ -1680,6 +1686,27 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         mod = null;
                         unloadModule(llmSpec);
                     }
+
+                    // Gemini warmups
+                    mod = await loadFreshModule(geminiSpec);
+                    try {
+                        for (let i = 0; i < safeWarmup; i++) {
+                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                            progressSetDeterminate('Warming up: Dijkstra gemini', setupDone, setupTotal, { stage: 'setup' });
+                            try {
+                                await runEmscriptenMain(mod, [inputFsPath]);
+                            } catch (error) {
+                                const msg = error && error.message ? error.message : String(error);
+                                throw new Error(`Warmup ${i + 1}/${safeWarmup} - Dijkstra gemini: ${msg}`);
+                            }
+                            setupDone++;
+                            progressSetDeterminate('Warming up: Dijkstra gemini', setupDone, setupTotal, { stage: 'setup' });
+                            await delay(0, abortSignal);
+                        }
+                    } finally {
+                        mod = null;
+                        unloadModule(geminiSpec);
+                    }
                 } else {
                     // Still complete the setup phase so the bar fills once.
                     progressSetDeterminate('Setting up Testing Environment', setupTotal, setupTotal, { stage: 'setup' });
@@ -1692,8 +1719,10 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
                 const baselineTimes = [];
                 const llmTimes = [];
+                const geminiTimes = [];
                 let baselineResult = '';
                 let llmResult = '';
+                let geminiResult = '';
 
                 // Baseline chunk
                 let mod = await loadFreshModule(baselineSpec);
@@ -1749,10 +1778,38 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                     unloadModule(llmSpec);
                 }
 
+                // Gemini chunk
+                mod = await loadFreshModule(geminiSpec);
+                try {
+                    for (let iter = 0; iter < safeIterations; iter++) {
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                        progressSetDeterminate('Dijkstra gemini', ticksDone, testsTotal, { stage: 'tests' });
+                        const t0 = runTimerNowMs();
+                        let stdout = '';
+                        try {
+                            const res = await runEmscriptenMain(mod, [inputFsPath]);
+                            stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
+                        } catch (error) {
+                            const msg = error && error.message ? error.message : String(error);
+                            throw new Error(`Iteration ${iter + 1}/${safeIterations} - Dijkstra gemini: ${msg}`);
+                        }
+                        const t1 = runTimerNowMs();
+                        geminiTimes.push(Math.max(0, t1 - t0));
+                        geminiResult = parseFirstLine(stdout) || stdout.trim();
+                        ticksDone++;
+                        progressSetDeterminate('Dijkstra gemini', ticksDone, testsTotal, { stage: 'tests' });
+                        await delay(0, abortSignal);
+                    }
+                } finally {
+                    mod = null;
+                    unloadModule(geminiSpec);
+                }
+
                 progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
 
                 const sBaseline = calcStatsMs(baselineTimes);
                 const sLlm = calcStatsMs(llmTimes);
+                const sGemini = calcStatsMs(geminiTimes);
 
                 const lines = [];
                 const addSection = (title, result, stats) => {
@@ -1767,12 +1824,14 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 };
 
                 addSection('Dijkstra Baseline', baselineResult, sBaseline);
-                addSection('Dijkstra LLM', llmResult, sLlm);
+                addSection('Dijkstra ChatGPT', llmResult, sLlm);
+                addSection('Dijkstra Gemini', geminiResult, sGemini);
 
                 return { status: 'success', output: lines.join('\n') };
             } finally {
                 unloadModule(baselineSpec);
                 unloadModule(llmSpec);
+                unloadModule(geminiSpec);
             }
         }
 
@@ -3028,9 +3087,12 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
             };
 
             if (result && result.algorithm === 'dijkstra') {
-                mem.benchmark = pickPair(['baseline'], memory, memoryStdev);
-                mem.chatgpt = pickPair(['llm'], memory, memoryStdev);
-                mem.gemini = { value: null, stdev: null };
+                runtime.benchmark.all = pickPair(['baseline', 'baseline_all', 'all'], timings, timingsStdev);
+                runtime.chatgpt.all = pickPair(['chatgpt', 'llm', 'chatgpt_all'], timings, timingsStdev);
+                runtime.gemini.all = pickPair(['gemini', 'gemini_all'], timings, timingsStdev);
+                mem.benchmark = pickPair(['baseline', 'baseline_all', 'all'], memory, memoryStdev);
+                mem.chatgpt = pickPair(['chatgpt', 'llm', 'chatgpt_all'], memory, memoryStdev);
+                mem.gemini = pickPair(['gemini', 'gemini_all'], memory, memoryStdev);
             }
 
             return { runtime, memory: mem };
@@ -3339,6 +3401,41 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
 
             if (!hasRuntime && !hasMemory) {
                 clearCharts();
+                return;
+            }
+
+            if (result && result.algorithm === 'dijkstra') {
+                const pickSingle = (pairAll, pairFirst) => {
+                    if (pairAll && Number.isFinite(Number(pairAll.value))) {
+                        return { value: pairAll.value, stdev: pairAll.stdev };
+                    }
+                    if (pairFirst && Number.isFinite(Number(pairFirst.value))) {
+                        return { value: pairFirst.value, stdev: pairFirst.stdev };
+                    }
+                    return { value: null, stdev: null };
+                };
+
+                const runtimeData = [
+                    { label: 'Benchmark', ...pickSingle(metrics.runtime.benchmark.all, metrics.runtime.benchmark.first) },
+                    { label: 'ChatGPT', ...pickSingle(metrics.runtime.chatgpt.all, metrics.runtime.chatgpt.first) },
+                    { label: 'Gemini', ...pickSingle(metrics.runtime.gemini.all, metrics.runtime.gemini.first) }
+                ].filter(item => Number.isFinite(Number(item.value)));
+
+                const memoryData = [
+                    { label: 'Benchmark', value: metrics.memory.benchmark.value, stdev: metrics.memory.benchmark.stdev },
+                    { label: 'ChatGPT', value: metrics.memory.chatgpt.value, stdev: metrics.memory.chatgpt.stdev },
+                    { label: 'Gemini', value: metrics.memory.gemini.value, stdev: metrics.memory.gemini.stdev }
+                ].filter(item => Number.isFinite(Number(item.value)));
+
+                if (runtimeChartInstance) runtimeChartInstance.destroy();
+                if (memoryChartInstance) memoryChartInstance.destroy();
+                runtimeChartInstance = runtimeData.length
+                    ? renderBarChart('runtime-chart', runtimeData, 'ms', 'Runtime')
+                    : null;
+                memoryChartInstance = memoryData.length
+                    ? renderBarChart('memory-chart', memoryData, 'kB', 'Memory')
+                    : null;
+                charts.hidden = false;
                 return;
             }
 

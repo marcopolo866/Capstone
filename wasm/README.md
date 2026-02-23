@@ -9,5 +9,8 @@ Run the GitHub Actions workflow **Build WASM Modules** (`.github/workflows/build
 - `wasm/vf3_baseline.js` + `wasm/vf3_baseline.wasm`
 - `wasm/vf3_gemini.js` + `wasm/vf3_gemini.wasm`
 - `wasm/vf3_chatgpt.js` + `wasm/vf3_chatgpt.wasm`
+- `wasm/dijkstra_baseline.js` + `wasm/dijkstra_baseline.wasm`
+- `wasm/dijkstra_llm.js` + `wasm/dijkstra_llm.wasm`
+- `wasm/dijkstra_gemini.js` + `wasm/dijkstra_gemini.wasm`
 
 These files are committed back into the repository so the static site can fetch them.

@@ -169,7 +169,7 @@ jobs:
             -s EXPORT_NAME=createDijkstraBaselineModule \
             -o "wasm/dijkstra_baseline.js"
 
-          echo "Building Dijkstra LLM..."
+          echo "Building Dijkstra ChatGPT..."
           em++ -std=c++17 \
             "${common_flags[@]}" \
             -fexceptions \
@@ -177,6 +177,15 @@ jobs:
             "src/[CHATGPT] Shortest Path.cpp" \
             -s EXPORT_NAME=createDijkstraLlmModule \
             -o "wasm/dijkstra_llm.js"
+
+          echo "Building Dijkstra Gemini..."
+          em++ -std=c++17 \
+            "${common_flags[@]}" \
+            -fexceptions \
+            -s DISABLE_EXCEPTION_CATCHING=0 \
+            "src/[GEMINI] Shortest Path.cpp" \
+            -s EXPORT_NAME=createDijkstraGeminiModule \
+            -o "wasm/dijkstra_gemini.js"
 
       - name: Commit updated WASM artifacts
         run: |
