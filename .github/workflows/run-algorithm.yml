@@ -1372,45 +1372,46 @@ jobs:
           import re
           import sys
 
-          text = sys.stdin.read()
-          lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-          if not lines:
+          count = None
+          time_ms = None
+          mapping_count = 0
+          saw_any = False
+
+          for raw in sys.stdin:
+            line = raw.strip()
+            if not line:
+              continue
+            saw_any = True
+            if "Mapping:" in line:
+              mapping_count += 1
+              continue
+            if re.search(r"\btime\b", line, re.IGNORECASE):
+              nums = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", line)
+              if nums:
+                try:
+                  time_ms = float(nums[-1])
+                except ValueError:
+                  pass
+              continue
+            if re.fullmatch(r"-?\d+", line):
+              try:
+                count = int(line)
+              except ValueError:
+                pass
+              continue
+            m = re.search(r"\b(?:count|solution_count|solutions?)\b[^0-9-]*(-?\d+)\b", line, re.IGNORECASE)
+            if m:
+              try:
+                count = int(m.group(1))
+              except ValueError:
+                pass
+
+          if not saw_any:
             # Glasgow ChatGPT prints nothing when no solution is found.
             print("0 0 0")
             raise SystemExit(0)
-          count = None
-          # Prefer an explicit count line, but ignore obvious time lines.
-          for ln in reversed(lines):
-            if re.search(r"\btime\b", ln, re.IGNORECASE):
-              continue
-            if re.fullmatch(r"-?\d+", ln):
-              count = int(ln)
-              break
-            m = re.search(r"\b(?:count|solution_count|solutions?)\b[^0-9-]*(-?\d+)\b", ln, re.IGNORECASE)
-            if m:
-              count = int(m.group(1))
-              break
           if count is None:
-            count = sum(1 for ln in lines if "Mapping:" in ln)
-          time_ms = None
-          # Prefer an explicit "Time:" line to avoid accidentally grabbing node ids from mappings.
-          for ln in reversed(lines):
-            if "time" not in ln.lower():
-              continue
-            nums = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", ln)
-            if nums:
-              try:
-                time_ms = float(nums[-1])
-                break
-              except ValueError:
-                pass
-          if time_ms is None:
-            nums = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", text)
-            if nums:
-              try:
-                time_ms = float(nums[-1])
-              except ValueError:
-                time_ms = None
+            count = mapping_count
           if time_ms is None:
             # Timing for Glasgow LLMs is already captured externally; keep parser usable for count parsing.
             time_ms = 0.0
