@@ -3,8 +3,14 @@ build/
 *.o
 *.a
 *.so
+*.out
 *.exe
 *.dll
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
 
 # User-specific files
 *.user

@@ -10,7 +10,7 @@ This document describes the behavior-preserving split of previously monolithic f
 
 ## What Changed
 
-- Frontend UI script logic was split from the former monolithic `app.js` into ordered runtime chunks under `js/app/`.
+- Frontend UI script logic was split from a former monolithic file (previously `app.js`, now removed) into ordered runtime chunks under `js/app/`.
 - `index.html` now loads the frontend chunks directly in a fixed order.
 - `.github/scripts/run-algorithm-step.sh` is now a thin wrapper that sources ordered chunks from `.github/scripts/run-algorithm-step.d/`.
 - `.github/scripts/create-result-json-step.sh` is now a thin wrapper around `.github/scripts/create-result-json-step.py`.
@@ -72,6 +72,6 @@ Repeat for each `js/app/*.js` file.
 
 ## Editing Guidance
 
-- Prefer editing the chunk files, not the deprecated `app.js` compatibility note.
+- Prefer editing the chunk files; the old top-level `app.js` file is no longer part of the repo.
 - Keep wrappers thin and avoid moving logic back into wrappers.
 - If you refactor chunk boundaries, rerun syntax checks and a GitHub Actions smoke run.

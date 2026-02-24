@@ -1,6 +1,6 @@
 # Frontend Runtime Chunks
 
-These files are an ordered split of the original monolithic frontend runtime script.
+These files are an ordered split of the original monolithic frontend runtime script (the old top-level `app.js` file has been removed).
 
 ## Load Order (required)
 

@@ -1,8 +1,9 @@
 {
   "version": 1,
   "frontend": {
-    "original_file": "app.js",
-    "original_backup_for_generation": "app.js.phase2.bak",
+    "historical_original_file": "app.js",
+    "historical_backup_for_generation": "app.js.phase2.bak",
+    "original_file_removed": true,
     "expected_reconstructed_sha256_norm": "47634ecce0da60cd10a8783c7359e53b804da7e5cda66ebf60e4191da9283e86",
     "chunk_dir": "js/app",
     "chunks": [
