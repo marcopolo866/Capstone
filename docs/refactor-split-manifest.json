@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "frontend": {
+    "original_file": "app.js",
+    "original_backup_for_generation": "app.js.phase2.bak",
+    "expected_reconstructed_sha256_norm": "47634ecce0da60cd10a8783c7359e53b804da7e5cda66ebf60e4191da9283e86",
+    "chunk_dir": "js/app",
+    "chunks": [
+      "01-state-progress-checks.js",
+      "02-inputs-generator-ui.js",
+      "03-generator-estimation.js",
+      "04-local-wasm-and-local-runner.js",
+      "05-github-workflow-runner.js",
+      "06-results-and-charts.js",
+      "07-visualization-api-bootstrap.js"
+    ]
+  },
+  "run_algorithm_step": {
+    "original_file": ".github/scripts/run-algorithm-step.sh",
+    "original_backup_for_generation": "run-algorithm-step.sh.phase2.bak",
+    "expected_reconstructed_sha256_norm": "ab998e85460b7ddce47a92f2007c64c2940bc05904db44b4b40b52d5d093d2b8",
+    "chunk_dir": ".github/scripts/run-algorithm-step.d",
+    "chunks": [
+      "01-init-inputs-and-conversion.sh",
+      "02-progress-reporting.sh",
+      "03-benchmark-and-metrics-helpers.sh",
+      "04-main-dispatch-and-output.sh"
+    ]
+  },
+  "create_result_json_step": {
+    "wrapper_file": ".github/scripts/create-result-json-step.sh",
+    "python_file": ".github/scripts/create-result-json-step.py",
+    "expected_python_body_sha256_norm": "b273fd7d0b559b1928bb67f870795719180918aeb7a40f3b9e2031481571e58c"
+  }
+}
