@@ -1,4 +1,4 @@
-        function getTestsPerIteration(algoId) {
+        function getEstimateTestsPerIteration(algoId) {
             const algo = String(algoId || '');
             if (algo === 'dijkstra') return 2;
             if (algo === 'glasgow' || algo === 'vf3' || algo === 'subgraph') return 6;
@@ -72,33 +72,82 @@
             return dn + dk + dd;
         }
 
+        const generatorHistorySummaryCache = new Map();
+        const GENERATOR_HISTORY_SUMMARY_CACHE_TTL_MS = 2 * 60 * 1000;
+
+        function getGeneratorHistoryCacheKey(limit) {
+            const owner = String((config && config.owner) || '').trim();
+            const repo = String((config && config.repo) || '').trim();
+            const ref = String((config && config.ref) || 'main').trim() || 'main';
+            const safeLimit = Math.max(1, Math.min(100, Number(limit) || 30));
+            return `${owner}/${repo}@${ref}::${safeLimit}`;
+        }
+
         async function fetchHistoricalSummaries(limit = 30) {
-            const workflowId = await getRunAlgorithmWorkflowId();
-            if (!workflowId) return [];
-            let runs = [];
-            try {
-                runs = await listWorkflowRuns(workflowId, config.ref || 'main', limit);
-            } catch (_) {
-                return [];
-            }
-            const summaries = [];
-            for (const run of runs) {
-                if (!run || !run.id || run.status !== 'completed') continue;
-                try {
-                    const data = await apiRequest(`/actions/runs/${run.id}/artifacts`);
-                    const artifactsRaw = (data && Array.isArray(data.artifacts)) ? data.artifacts : [];
-                    const artifacts = artifactsRaw.filter(item => item && !item.expired);
-                    const match = artifacts.find(item => item.name === 'algorithm-result');
-                    if (!match) continue;
-                    const buffer = await downloadArtifactZip(match);
-                    const json = await extractResultJsonFromZip(buffer);
-                    if (json) summaries.push(json);
-                } catch (_) {
-                    continue;
+            const safeLimit = Math.max(1, Math.min(100, Number(limit) || 30));
+            const cacheKey = getGeneratorHistoryCacheKey(safeLimit);
+            const now = Date.now();
+            const cached = generatorHistorySummaryCache.get(cacheKey);
+            if (cached) {
+                if (cached.promise) {
+                    try {
+                        return await cached.promise;
+                    } catch (_) {
+                        generatorHistorySummaryCache.delete(cacheKey);
+                    }
                 }
-                if (summaries.length >= limit) break;
+                if (Array.isArray(cached.data) && Number.isFinite(Number(cached.expiresAt)) && cached.expiresAt > now) {
+                    return cached.data;
+                }
             }
-            return summaries;
+
+            const fetchPromise = (async () => {
+                const workflowId = await getRunAlgorithmWorkflowId();
+                if (!workflowId) return [];
+                let runs = [];
+                try {
+                    runs = await listWorkflowRuns(workflowId, config.ref || 'main', safeLimit);
+                } catch (_) {
+                    return [];
+                }
+                const summaries = [];
+                for (const run of runs) {
+                    if (!run || !run.id || run.status !== 'completed') continue;
+                    try {
+                        const data = await apiRequest(`/actions/runs/${run.id}/artifacts`);
+                        const artifactsRaw = (data && Array.isArray(data.artifacts)) ? data.artifacts : [];
+                        const artifacts = artifactsRaw.filter(item => item && !item.expired);
+                        const match = artifacts.find(item => item.name === 'algorithm-result');
+                        if (!match) continue;
+                        const buffer = await downloadArtifactZip(match);
+                        const json = await extractResultJsonFromZip(buffer);
+                        if (json) summaries.push(json);
+                    } catch (_) {
+                        continue;
+                    }
+                    if (summaries.length >= safeLimit) break;
+                }
+                return summaries;
+            })();
+
+            generatorHistorySummaryCache.set(cacheKey, {
+                data: null,
+                promise: fetchPromise,
+                expiresAt: now + GENERATOR_HISTORY_SUMMARY_CACHE_TTL_MS
+            });
+
+            try {
+                const summaries = await fetchPromise;
+                generatorHistorySummaryCache.set(cacheKey, {
+                    data: summaries,
+                    promise: null,
+                    expiresAt: Date.now() + GENERATOR_HISTORY_SUMMARY_CACHE_TTL_MS
+                });
+                return summaries;
+            } catch (error) {
+                generatorHistorySummaryCache.delete(cacheKey);
+                throw error;
+            }
         }
 
         async function estimateFromHistory(algoId, nVal, kVal, densityVal) {
@@ -137,11 +186,47 @@
         }
 
         let generatorEstimateRequestId = 0;
+        let generatorEstimateHistoryDebounceTimerId = null;
+        let generatorEstimateHistoryDebounceResolve = null;
+
+        function cancelDebouncedEstimateFromHistory() {
+            if (generatorEstimateHistoryDebounceTimerId) {
+                clearTimeout(generatorEstimateHistoryDebounceTimerId);
+                generatorEstimateHistoryDebounceTimerId = null;
+            }
+            if (generatorEstimateHistoryDebounceResolve) {
+                try {
+                    generatorEstimateHistoryDebounceResolve(null);
+                } catch (_) {}
+                generatorEstimateHistoryDebounceResolve = null;
+            }
+        }
+
+        function debouncedEstimateFromHistory(algoId, nVal, kVal, densityVal, delayMs = 400) {
+            cancelDebouncedEstimateFromHistory();
+            const safeDelayMs = Math.max(0, Number(delayMs) || 0);
+            return new Promise((resolve) => {
+                generatorEstimateHistoryDebounceResolve = resolve;
+                generatorEstimateHistoryDebounceTimerId = window.setTimeout(async () => {
+                    generatorEstimateHistoryDebounceTimerId = null;
+                    if (generatorEstimateHistoryDebounceResolve === resolve) {
+                        generatorEstimateHistoryDebounceResolve = null;
+                    }
+                    try {
+                        resolve(await estimateFromHistory(algoId, nVal, kVal, densityVal));
+                    } catch (_) {
+                        resolve(null);
+                    }
+                }, safeDelayMs);
+            });
+        }
 
         async function updateGeneratorEstimate() {
             const estimateEl = document.getElementById('generator-estimate');
             if (!estimateEl) return;
+            const requestId = ++generatorEstimateRequestId;
             if (getInputMode() !== 'generate') {
+                cancelDebouncedEstimateFromHistory();
                 estimateEl.hidden = true;
                 estimateEl.textContent = '';
                 return;
@@ -153,6 +238,7 @@
 
             const hasAnyInput = nRaw !== '' || (needsK && kRaw !== '');
             if (!hasAnyInput) {
+                cancelDebouncedEstimateFromHistory();
                 estimateEl.hidden = true;
                 estimateEl.textContent = '';
                 return;
@@ -186,6 +272,7 @@
             }
 
             if (reasons.length > 0) {
+                cancelDebouncedEstimateFromHistory();
                 const reason = reasons[0];
                 const perRunLine = `Estimated time per run: N/A (${reason})`;
                 const totalLine = `Estimated end-to-end time: N/A (${reason})`;
@@ -194,14 +281,14 @@
                 return;
             }
 
-            const requestId = ++generatorEstimateRequestId;
             const densityVal = dVal;
             const iterations = readIterationsInput();
             const warmup = readWarmupInput();
-            const testsPerIter = getTestsPerIteration(config.selectedAlgorithm);
+            const testsPerIter = getEstimateTestsPerIteration(config.selectedAlgorithm);
 
             const heuristicPerRun = estimateHeuristicPerRunMs(config.selectedAlgorithm, nRaw, kRaw, densityRaw);
             if (!Number.isFinite(heuristicPerRun) || heuristicPerRun <= 0) {
+                cancelDebouncedEstimateFromHistory();
                 estimateEl.textContent = '';
                 estimateEl.hidden = true;
                 return;
@@ -218,12 +305,10 @@
             if (!config.token) return;
 
             let perIterMs = null;
-            try {
-                const history = await estimateFromHistory(config.selectedAlgorithm, nVal, kVal, densityVal);
-                if (history && Number.isFinite(history.perIterMs)) {
-                    perIterMs = history.perIterMs;
-                }
-            } catch (_) {}
+            const history = await debouncedEstimateFromHistory(config.selectedAlgorithm, nVal, kVal, densityVal, 400);
+            if (history && Number.isFinite(history.perIterMs)) {
+                perIterMs = history.perIterMs;
+            }
 
             if (requestId !== generatorEstimateRequestId) return;
             if (!Number.isFinite(perIterMs) || perIterMs <= 0) return;
@@ -238,4 +323,3 @@
             estimateEl.innerHTML = `${escapeHtml(perRunLine)}<br>${escapeHtml(totalLine)}`;
             estimateEl.hidden = false;
         }
-

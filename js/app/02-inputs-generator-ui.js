@@ -135,8 +135,6 @@
                     }
                 }
                 
-                let html = '<ul class="file-list">';
-                
                 const files = Array.isArray(contents) ? contents : [contents];
 
                 dataFileMeta = {};
@@ -150,20 +148,48 @@
                     }
                 });
                 
+                const list = document.createElement('ul');
+                list.className = 'file-list';
+                const selectedPaths = new Set(
+                    (Array.isArray(config.selectedFiles) ? config.selectedFiles : [])
+                        .map(file => (file && file.path) ? String(file.path) : '')
+                );
+
                 files.forEach(item => {
-                    if (item.type === 'file') {
-                        const icon = '📄';
-                        html += `
-                            <li class="file-item" onclick="toggleFileSelection(event, '${item.path}', '${item.name}')">
-                                <span class="file-icon">${icon}</span>
-                                <span>${item.name}</span>
-                            </li>
-                        `;
+                    if (!item || item.type !== 'file') return;
+
+                    const filePath = String(item.path || '');
+                    const fileName = String(item.name || filePath.split('/').pop() || '');
+                    const row = document.createElement('li');
+                    row.className = 'file-item';
+                    row.setAttribute('role', 'button');
+                    row.tabIndex = 0;
+                    if (selectedPaths.has(filePath)) {
+                        row.classList.add('selected');
                     }
+
+                    row.addEventListener('click', (event) => {
+                        toggleFileSelection(event, filePath, fileName);
+                    });
+                    row.addEventListener('keydown', (event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
+                        row.click();
+                    });
+
+                    const iconSpan = document.createElement('span');
+                    iconSpan.className = 'file-icon';
+                    iconSpan.textContent = '📄';
+
+                    const nameSpan = document.createElement('span');
+                    nameSpan.textContent = fileName;
+
+                    row.appendChild(iconSpan);
+                    row.appendChild(nameSpan);
+                    list.appendChild(row);
                 });
-                
-                html += '</ul>';
-                container.innerHTML = html;
+
+                container.replaceChildren(list);
                 
             } catch (error) {
                     reportDebugError('loadDataFiles', error, {
@@ -428,7 +454,7 @@
                 html += '<div class="selected-files"><strong>Selected:</strong> ';
                 html += config.selectedFiles.map((f, i) => {
                     const label = algo.fileLabels ? algo.fileLabels[i] : `File ${i+1}`;
-                    return `${label}: ${f.name}`;
+                    return `${escapeHtml(label)}: ${escapeHtml(f && f.name ? f.name : '')}`;
                 }).join(', ');
                 html += '</div>';
             }

@@ -409,12 +409,18 @@
                 r.display_title.includes(request) &&
                 r.id
             );
-            if (byTitle && byTitle.id) return String(byTitle.id);
+            if (byTitle && byTitle.id) {
+                progressState.workflowRunId = String(byTitle.id);
+                return progressState.workflowRunId;
+            }
 
             const bySha = sha
                 ? runs.find(r => r && r.head_sha === sha && r.id && r.status !== 'completed')
                 : null;
-            if (bySha && bySha.id) return String(bySha.id);
+            if (bySha && bySha.id) {
+                progressState.workflowRunId = String(bySha.id);
+                return progressState.workflowRunId;
+            }
 
             return '';
         }
@@ -425,6 +431,27 @@
                 throw new Error('Missing workflow run id');
             }
             await apiRequest(`/actions/runs/${id}/cancel`, 'POST');
+        }
+
+        async function getWorkflowRunState(runId) {
+            const id = String(runId || '').trim();
+            if (!id || !/^[0-9]+$/.test(id)) return null;
+            try {
+                const data = await apiRequest(`/actions/runs/${id}`);
+                if (!data || typeof data !== 'object') return null;
+                return {
+                    id,
+                    status: typeof data.status === 'string' ? data.status.toLowerCase() : '',
+                    conclusion: typeof data.conclusion === 'string' ? data.conclusion.toLowerCase() : '',
+                    htmlUrl: typeof data.html_url === 'string' ? data.html_url : ''
+                };
+            } catch (error) {
+                const msg = error && error.message ? error.message : '';
+                if (msg.includes('401') || msg.includes('403')) {
+                    return null;
+                }
+                throw error;
+            }
         }
 
         async function abortRun() {
@@ -575,6 +602,12 @@
             const estimateMaxAttempts = 720; // UI-only fallback when Checks can't be read
             let lastError = null;
             let sha = runSha || '';
+            const waitStartedMs = runTimerNowMs();
+            const maxWaitMsRaw = options && options.maxWaitMs !== undefined ? Number(options.maxWaitMs) : NaN;
+            const maxWaitMs = Number.isFinite(maxWaitMsRaw) && maxWaitMsRaw > 0
+                ? maxWaitMsRaw
+                : 30 * 60 * 1000;
+            let completedSuccessNoArtifactSinceMs = 0;
             const skipSubgraphPhases = Array.isArray(options.skipSubgraphPhases)
                 ? options.skipSubgraphPhases.map(phase => String(phase || '').toLowerCase())
                 : [];
@@ -623,6 +656,7 @@
                         progressUpdateEstimated(attempt, estimateMaxAttempts, phase);
                     }
                 }
+                let sawSkippedPhaseArtifact = false;
                 try {
                     const result = await fetchResultFromArtifact(requestId, branchRef, sha);
                     if (result) {
@@ -631,10 +665,10 @@
                             skipSubgraphPhases.length > 0 &&
                             skipSubgraphPhases.includes(String(result.subgraph_phase || '').toLowerCase())
                         ) {
-                            await delay(waitMs, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
-                            continue;
+                            sawSkippedPhaseArtifact = true;
+                        } else {
+                            return result;
                         }
-                        return result;
                     }
                 } catch (error) {
                     lastError = error;
@@ -643,7 +677,50 @@
                         throw error;
                     }
                 }
-                await delay(waitMs, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
+
+                const workflowRunId = (progressState.workflowRunId && /^[0-9]+$/.test(progressState.workflowRunId))
+                    ? String(progressState.workflowRunId)
+                    : '';
+                if (workflowRunId) {
+                    let runState = null;
+                    try {
+                        runState = await getWorkflowRunState(workflowRunId);
+                    } catch (error) {
+                        lastError = error;
+                        runState = null;
+                    }
+                    if (runState && runState.status === 'completed') {
+                        const conclusion = runState.conclusion || 'unknown';
+                        if (conclusion !== 'success') {
+                            const runUrlNote = runState.htmlUrl ? ` Run: ${runState.htmlUrl}` : '';
+                            throw new Error(`Workflow run ${workflowRunId} completed with conclusion '${conclusion}'.${runUrlNote}`);
+                        }
+
+                        const nowMs = runTimerNowMs();
+                        if (!completedSuccessNoArtifactSinceMs) {
+                            completedSuccessNoArtifactSinceMs = nowMs;
+                        } else if ((nowMs - completedSuccessNoArtifactSinceMs) >= 15000) {
+                            const expectedArtifact = sawSkippedPhaseArtifact
+                                ? 'updated result artifact for the next subgraph phase'
+                                : 'result artifact';
+                            const runUrlNote = runState.htmlUrl ? ` Run: ${runState.htmlUrl}` : '';
+                            throw new Error(`Workflow run ${workflowRunId} completed successfully, but no ${expectedArtifact} was found.${runUrlNote}`);
+                        }
+                    } else if (runState) {
+                        completedSuccessNoArtifactSinceMs = 0;
+                    }
+                } else {
+                    completedSuccessNoArtifactSinceMs = 0;
+                }
+
+                const elapsedWaitMs = runTimerNowMs() - waitStartedMs;
+                if (elapsedWaitMs >= maxWaitMs) {
+                    const runSuffix = workflowRunId ? ` (workflow run ${workflowRunId})` : '';
+                    const lastErrorText = lastError && lastError.message ? ` Last error: ${lastError.message}` : '';
+                    throw new Error(`Timed out after ${Math.round(elapsedWaitMs / 1000)}s waiting for workflow result${runSuffix}.${lastErrorText}`);
+                }
+
+                const backoffWaitMs = attempt > 96 ? 12000 : (attempt > 24 ? 8000 : waitMs);
+                await delay(backoffWaitMs, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
             }
         }
-

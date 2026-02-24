@@ -497,12 +497,20 @@
                 console.error(debugMsg, error);
             }
         }
-        
+
+        let statusClearTimerId = null;
+
         function showStatus(message, type) {
             const container = document.getElementById('status-message');
+            if (!container) return;
+            if (statusClearTimerId) {
+                clearTimeout(statusClearTimerId);
+                statusClearTimerId = null;
+            }
             container.innerHTML = `<div class="${type}">${escapeHtml(message)}</div>`;
-            setTimeout(() => {
+            statusClearTimerId = setTimeout(() => {
                 container.innerHTML = '';
+                statusClearTimerId = null;
             }, 5000);
         }
         
