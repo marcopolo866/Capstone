@@ -331,6 +331,11 @@ jobs:
               "        if (options_vars.count(\"delay-thread-creation\") || options_vars.count(\"parallel\"))\n            params.delay_thread_creation = true;\n",
               "        if (options_vars.count(\"delay-thread-creation\") || options_vars.count(\"parallel\"))\n            params.delay_thread_creation = true;\n#ifdef __EMSCRIPTEN__\n        params.n_threads = 1;\n        params.delay_thread_creation = false;\n#endif\n",
           )
+          replace_once(
+              "baselines/glasgow-subgraph-solver/gss/homomorphism.cc",
+              "            barrier wait_for_new_nogoods_barrier{n_threads}, synced_nogoods_barrier{n_threads};\n",
+              "            barrier wait_for_new_nogoods_barrier{static_cast<ptrdiff_t>(n_threads)}, synced_nogoods_barrier{static_cast<ptrdiff_t>(n_threads)};\n",
+          )
           PY
 
           rm -rf baselines/glasgow-subgraph-solver/build-wasm
