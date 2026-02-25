@@ -217,15 +217,35 @@ jobs:
 
           GMP_VERSION=6.3.0
           GMP_TAR="gmp-${GMP_VERSION}.tar.xz"
-          GMP_URL="https://gmplib.org/download/gmp/${GMP_TAR}"
+          GMP_URL_PRIMARY="https://gmplib.org/download/gmp/${GMP_TAR}"
+          GMP_URL_GNU_MIRROR="https://ftpmirror.gnu.org/gmp/${GMP_TAR}"
+          GMP_URL_GNU_FTP="https://ftp.gnu.org/gnu/gmp/${GMP_TAR}"
+          GMP_ARCHIVE="$PWD/.tmp/${GMP_TAR}"
           GMP_SRC_DIR="$PWD/.tmp/gmp-${GMP_VERSION}"
           GMP_BUILD_DIR="$PWD/.tmp/gmp-build-emscripten"
           GMP_PREFIX="$PWD/.tmp/gmp-wasm-prefix"
 
           if [ ! -d "$GMP_SRC_DIR" ]; then
             echo "Downloading GMP ${GMP_VERSION}..." | tee -a "$LOG"
-            curl -L "$GMP_URL" -o "$PWD/.tmp/${GMP_TAR}" >>"$LOG" 2>&1
-            tar -xJf "$PWD/.tmp/${GMP_TAR}" -C "$PWD/.tmp" >>"$LOG" 2>&1
+            rm -f "$GMP_ARCHIVE"
+            download_ok=0
+            for url in "$GMP_URL_PRIMARY" "$GMP_URL_GNU_MIRROR" "$GMP_URL_GNU_FTP"; do
+              echo "Trying $url" | tee -a "$LOG"
+              if curl -fL \
+                --retry 5 \
+                --retry-all-errors \
+                --connect-timeout 20 \
+                --max-time 600 \
+                "$url" -o "$GMP_ARCHIVE" >>"$LOG" 2>&1; then
+                download_ok=1
+                break
+              fi
+            done
+            if [ "$download_ok" -ne 1 ]; then
+              echo "Failed to download GMP archive from all configured URLs." | tee -a "$LOG"
+              exit 1
+            fi
+            tar -xJf "$GMP_ARCHIVE" -C "$PWD/.tmp" >>"$LOG" 2>&1
           fi
 
           rm -rf "$GMP_BUILD_DIR" "$GMP_PREFIX"
