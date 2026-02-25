@@ -313,6 +313,12 @@
         function renderCharts(result) {
             const charts = document.getElementById('charts');
             if (!charts) return;
+            const memoryUnit = (result && typeof result.memory_metric_unit === 'string' && result.memory_metric_unit.trim())
+                ? result.memory_metric_unit.trim()
+                : 'kB';
+            const memoryTitle = (result && typeof result.memory_metric_label === 'string' && result.memory_metric_label.trim())
+                ? result.memory_metric_label.trim()
+                : 'Memory';
 
             if (result && result.algorithm === 'subgraph') {
                 const timings = result.timings_ms || {};
@@ -403,7 +409,9 @@
                 if (runtimeChartInstance) runtimeChartInstance.destroy();
                 if (memoryChartInstance) memoryChartInstance.destroy();
                 runtimeChartInstance = renderGroupedBarChart('runtime-chart', runtimeLabels, runtimeDataSets, 'ms');
-                memoryChartInstance = renderBarChart('memory-chart', memoryData, 'kB', 'Memory');
+                memoryChartInstance = hasMemory
+                    ? renderBarChart('memory-chart', memoryData, memoryUnit, memoryTitle)
+                    : null;
                 charts.hidden = false;
                 return;
             }
@@ -454,7 +462,7 @@
                     ? renderBarChart('runtime-chart', runtimeData, 'ms', 'Runtime')
                     : null;
                 memoryChartInstance = memoryData.length
-                    ? renderBarChart('memory-chart', memoryData, 'kB', 'Memory')
+                    ? renderBarChart('memory-chart', memoryData, memoryUnit, memoryTitle)
                     : null;
                 charts.hidden = false;
                 return;
@@ -504,7 +512,8 @@
             if (runtimeChartInstance) runtimeChartInstance.destroy();
             if (memoryChartInstance) memoryChartInstance.destroy();
             runtimeChartInstance = renderGroupedBarChart('runtime-chart', runtimeLabels, runtimeDataSets, 'ms');
-            memoryChartInstance = renderBarChart('memory-chart', memoryData, 'kB', 'Memory');
+            memoryChartInstance = hasMemory
+                ? renderBarChart('memory-chart', memoryData, memoryUnit, memoryTitle)
+                : null;
             charts.hidden = false;
         }
-

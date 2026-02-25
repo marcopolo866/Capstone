@@ -124,6 +124,10 @@
                     throw new Error(`WASM factory not found: ${factoryName} (did ${scriptPath} load?)`);
                 }
 
+                const moduleCaptureState = {
+                    wasmMemory: null
+                };
+
                 const capture = {
                     out: [],
                     err: [],
@@ -133,19 +137,70 @@
                     }
                 };
 
-                const module = await factory({
-                    noInitialRun: true,
-                    // We call callMain() many times per run; keep the runtime alive between invocations.
-                    noExitRuntime: true,
-                    locateFile: (path, prefix) => {
-                        if (typeof path === 'string' && path.endsWith('.wasm')) {
-                            return wasmPath;
+                const wasmObj = (typeof WebAssembly === 'object' && WebAssembly) ? WebAssembly : null;
+                const origInstantiate = wasmObj && typeof wasmObj.instantiate === 'function' ? wasmObj.instantiate : null;
+                const origInstantiateStreaming = wasmObj && typeof wasmObj.instantiateStreaming === 'function' ? wasmObj.instantiateStreaming : null;
+                const attachWasmMemoryFromResult = (result) => {
+                    try {
+                        const instance = result && result.instance ? result.instance : result;
+                        const exportsObj = instance && instance.exports ? instance.exports : null;
+                        if (!exportsObj || typeof exportsObj !== 'object') return result;
+                        let mem = null;
+                        if (exportsObj.memory instanceof WebAssembly.Memory) {
+                            mem = exportsObj.memory;
+                        } else {
+                            for (const value of Object.values(exportsObj)) {
+                                if (value instanceof WebAssembly.Memory) {
+                                    mem = value;
+                                    break;
+                                }
+                            }
                         }
-                        return (prefix || '') + path;
-                    },
-                    print: (text) => capture.out.push(String(text)),
-                    printErr: (text) => capture.err.push(String(text))
-                });
+                        if (mem) moduleCaptureState.wasmMemory = mem;
+                    } catch (_) {}
+                    return result;
+                };
+
+                if (wasmObj && origInstantiate) {
+                    wasmObj.instantiate = function(...args) {
+                        const out = origInstantiate.apply(this, args);
+                        if (!out || typeof out.then !== 'function') {
+                            return attachWasmMemoryFromResult(out);
+                        }
+                        return out.then((result) => attachWasmMemoryFromResult(result));
+                    };
+                }
+                if (wasmObj && origInstantiateStreaming) {
+                    wasmObj.instantiateStreaming = function(...args) {
+                        const out = origInstantiateStreaming.apply(this, args);
+                        if (!out || typeof out.then !== 'function') {
+                            return attachWasmMemoryFromResult(out);
+                        }
+                        return out.then((result) => attachWasmMemoryFromResult(result));
+                    };
+                }
+
+                let module;
+                try {
+                    module = await factory({
+                        noInitialRun: true,
+                        // We call callMain() many times per run; keep the runtime alive between invocations.
+                        noExitRuntime: true,
+                        locateFile: (path, prefix) => {
+                            if (typeof path === 'string' && path.endsWith('.wasm')) {
+                                return wasmPath;
+                            }
+                            return (prefix || '') + path;
+                        },
+                        print: (text) => capture.out.push(String(text)),
+                        printErr: (text) => capture.err.push(String(text))
+                    });
+                } finally {
+                    try {
+                        if (wasmObj && origInstantiate) wasmObj.instantiate = origInstantiate;
+                        if (wasmObj && origInstantiateStreaming) wasmObj.instantiateStreaming = origInstantiateStreaming;
+                    } catch (_) {}
+                }
 
                 if (!module || !module.FS || typeof module.callMain !== 'function') {
                     throw new Error(`WASM module missing FS/callMain: ${id}`);
@@ -153,6 +208,7 @@
 
                 module.__capstoneCapture = capture;
                 module.__capstoneId = id;
+                module.__capstoneWasmMemory = moduleCaptureState.wasmMemory || null;
                 return module;
             })();
 
@@ -179,6 +235,17 @@
             mod.FS.writeFile(path, String(text || ''), { encoding: 'utf8' });
         }
 
+        function getEmscriptenHeapPeakKiB(mod) {
+            try {
+                const mem = mod && mod.__capstoneWasmMemory;
+                const bytes = mem && mem.buffer ? mem.buffer.byteLength : 0;
+                if (!Number.isFinite(bytes) || bytes <= 0) return null;
+                return bytes / 1024;
+            } catch (_) {
+                return null;
+            }
+        }
+
         function parseFirstLine(text) {
             const raw = String(text || '').replace(/\r/g, '');
             const line = raw.split('\n')[0] || '';
@@ -191,11 +258,27 @@
             return l.split(/\s+/)[0] || '';
         }
 
-        async function runEmscriptenMain(mod, args) {
+        async function runEmscriptenMain(mod, args, options = {}) {
             const argv = Array.isArray(args) ? args.map(a => String(a)) : [];
             const capture = mod.__capstoneCapture;
             if (!capture) throw new Error('Missing wasm capture');
             capture.reset();
+
+            const hasStdinText = Object.prototype.hasOwnProperty.call(options || {}, 'stdinText');
+            const stdinText = hasStdinText ? String(options && options.stdinText !== undefined && options.stdinText !== null ? options.stdinText : '') : null;
+            let restorePrompt = null;
+            if (hasStdinText && typeof window !== 'undefined' && typeof window.prompt === 'function') {
+                const originalPrompt = window.prompt;
+                let served = false;
+                window.prompt = function(..._args) {
+                    if (served) return null;
+                    served = true;
+                    return stdinText;
+                };
+                restorePrompt = () => {
+                    try { window.prompt = originalPrompt; } catch (_) {}
+                };
+            }
 
             try {
                 mod.callMain(argv);
@@ -205,6 +288,7 @@
                 const stdout = capture.out.join('\n');
                 const stderr = capture.err.join('\n');
                 if (status === 0) {
+                    if (restorePrompt) restorePrompt();
                     return {
                         stdout: stdout.trimEnd(),
                         stderr: stderr.trimEnd()
@@ -212,6 +296,7 @@
                 }
                 const msg = stderr || stdout || (error && error.message ? error.message : String(error));
                 if (status !== null) {
+                    if (restorePrompt) restorePrompt();
                     throw new Error(`WASM program exited with status ${status}: ${msg}`);
                 }
 
@@ -220,9 +305,11 @@
                 try {
                     if (mod && mod.__capstoneId) invalidateEmscriptenModule(mod.__capstoneId);
                 } catch (_) {}
+                if (restorePrompt) restorePrompt();
                 throw error;
             }
 
+            if (restorePrompt) restorePrompt();
             return {
                 stdout: capture.out.join('\n').trimEnd(),
                 stderr: capture.err.join('\n').trimEnd()
@@ -1105,6 +1192,12 @@ def capstone_run_local_generator(args, out_dir):
                 writeEmscriptenTextFile(mod, inputFsPath, inputText);
             };
 
+            const runDijkstraGeminiWasm = async (mod) => {
+                // The current Gemini Dijkstra implementation reads CSV from stdin (argc-less main()).
+                // Provide stdin text to avoid the browser prompt fallback used by Emscripten TTY.
+                return await runEmscriptenMain(mod, [], { stdinText: inputText });
+            };
+
             const unloadModule = (spec) => {
                 try {
                     invalidateEmscriptenModule(spec && spec.id ? spec.id : '');
@@ -1115,6 +1208,12 @@ def capstone_run_local_generator(args, out_dir):
                 const mod = await getFreshEmscriptenModule(spec);
                 writeInput(mod);
                 return mod;
+            };
+            const loadFreshModuleMeasured = async (spec) => {
+                const t0 = runTimerNowMs();
+                const mod = await loadFreshModule(spec);
+                const t1 = runTimerNowMs();
+                return { mod, refreshMs: Math.max(0, t1 - t0) };
             };
 
             try {
@@ -1171,7 +1270,7 @@ def capstone_run_local_generator(args, out_dir):
                             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                             progressSetDeterminate('Warming up: Dijkstra gemini', setupDone, setupTotal, { stage: 'setup' });
                             try {
-                                await runEmscriptenMain(mod, [inputFsPath]);
+                                await runDijkstraGeminiWasm(mod);
                             } catch (error) {
                                 const msg = error && error.message ? error.message : String(error);
                                 throw new Error(`Warmup ${i + 1}/${safeWarmup} - Dijkstra gemini: ${msg}`);
@@ -1197,16 +1296,24 @@ def capstone_run_local_generator(args, out_dir):
                 const baselineTimes = [];
                 const llmTimes = [];
                 const geminiTimes = [];
+                const baselineHeapKiB = [];
+                const llmHeapKiB = [];
+                const geminiHeapKiB = [];
+                const baselineRefreshMs = [];
+                const llmRefreshMs = [];
+                const geminiRefreshMs = [];
                 let baselineResult = '';
                 let llmResult = '';
                 let geminiResult = '';
 
                 // Baseline chunk
-                let mod = await loadFreshModule(baselineSpec);
-                try {
-                    for (let iter = 0; iter < safeIterations; iter++) {
-                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                        progressSetDeterminate('Dijkstra baseline', ticksDone, testsTotal, { stage: 'tests' });
+                for (let iter = 0; iter < safeIterations; iter++) {
+                    if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                    progressSetDeterminate('Dijkstra baseline', ticksDone, testsTotal, { stage: 'tests' });
+                    const loaded = await loadFreshModuleMeasured(baselineSpec);
+                    let mod = loaded.mod;
+                    baselineRefreshMs.push(loaded.refreshMs);
+                    try {
                         const t0 = runTimerNowMs();
                         let stdout = '';
                         try {
@@ -1218,22 +1325,26 @@ def capstone_run_local_generator(args, out_dir):
                         }
                         const t1 = runTimerNowMs();
                         baselineTimes.push(Math.max(0, t1 - t0));
+                        const heapKiB = getEmscriptenHeapPeakKiB(mod);
+                        if (Number.isFinite(Number(heapKiB))) baselineHeapKiB.push(Number(heapKiB));
                         baselineResult = parseFirstLine(stdout) || stdout.trim();
-                        ticksDone++;
-                        progressSetDeterminate('Dijkstra baseline', ticksDone, testsTotal, { stage: 'tests' });
-                        await delay(0, abortSignal);
+                    } finally {
+                        mod = null;
+                        unloadModule(baselineSpec);
                     }
-                } finally {
-                    mod = null;
-                    unloadModule(baselineSpec);
+                    ticksDone++;
+                    progressSetDeterminate('Dijkstra baseline', ticksDone, testsTotal, { stage: 'tests' });
+                    await delay(0, abortSignal);
                 }
 
                 // LLM chunk
-                mod = await loadFreshModule(llmSpec);
-                try {
-                    for (let iter = 0; iter < safeIterations; iter++) {
-                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                        progressSetDeterminate('Dijkstra llm', ticksDone, testsTotal, { stage: 'tests' });
+                for (let iter = 0; iter < safeIterations; iter++) {
+                    if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                    progressSetDeterminate('Dijkstra llm', ticksDone, testsTotal, { stage: 'tests' });
+                    const loaded = await loadFreshModuleMeasured(llmSpec);
+                    let mod = loaded.mod;
+                    llmRefreshMs.push(loaded.refreshMs);
+                    try {
                         const t0 = runTimerNowMs();
                         let stdout = '';
                         try {
@@ -1245,26 +1356,30 @@ def capstone_run_local_generator(args, out_dir):
                         }
                         const t1 = runTimerNowMs();
                         llmTimes.push(Math.max(0, t1 - t0));
+                        const heapKiB = getEmscriptenHeapPeakKiB(mod);
+                        if (Number.isFinite(Number(heapKiB))) llmHeapKiB.push(Number(heapKiB));
                         llmResult = parseFirstLine(stdout) || stdout.trim();
-                        ticksDone++;
-                        progressSetDeterminate('Dijkstra llm', ticksDone, testsTotal, { stage: 'tests' });
-                        await delay(0, abortSignal);
+                    } finally {
+                        mod = null;
+                        unloadModule(llmSpec);
                     }
-                } finally {
-                    mod = null;
-                    unloadModule(llmSpec);
+                    ticksDone++;
+                    progressSetDeterminate('Dijkstra llm', ticksDone, testsTotal, { stage: 'tests' });
+                    await delay(0, abortSignal);
                 }
 
                 // Gemini chunk
-                mod = await loadFreshModule(geminiSpec);
-                try {
-                    for (let iter = 0; iter < safeIterations; iter++) {
-                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                        progressSetDeterminate('Dijkstra gemini', ticksDone, testsTotal, { stage: 'tests' });
+                for (let iter = 0; iter < safeIterations; iter++) {
+                    if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                    progressSetDeterminate('Dijkstra gemini', ticksDone, testsTotal, { stage: 'tests' });
+                    const loaded = await loadFreshModuleMeasured(geminiSpec);
+                    let mod = loaded.mod;
+                    geminiRefreshMs.push(loaded.refreshMs);
+                    try {
                         const t0 = runTimerNowMs();
                         let stdout = '';
                         try {
-                            const res = await runEmscriptenMain(mod, [inputFsPath]);
+                            const res = await runDijkstraGeminiWasm(mod);
                             stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
                         } catch (error) {
                             const msg = error && error.message ? error.message : String(error);
@@ -1272,14 +1387,16 @@ def capstone_run_local_generator(args, out_dir):
                         }
                         const t1 = runTimerNowMs();
                         geminiTimes.push(Math.max(0, t1 - t0));
+                        const heapKiB = getEmscriptenHeapPeakKiB(mod);
+                        if (Number.isFinite(Number(heapKiB))) geminiHeapKiB.push(Number(heapKiB));
                         geminiResult = parseFirstLine(stdout) || stdout.trim();
-                        ticksDone++;
-                        progressSetDeterminate('Dijkstra gemini', ticksDone, testsTotal, { stage: 'tests' });
-                        await delay(0, abortSignal);
+                    } finally {
+                        mod = null;
+                        unloadModule(geminiSpec);
                     }
-                } finally {
-                    mod = null;
-                    unloadModule(geminiSpec);
+                    ticksDone++;
+                    progressSetDeterminate('Dijkstra gemini', ticksDone, testsTotal, { stage: 'tests' });
+                    await delay(0, abortSignal);
                 }
 
                 progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
@@ -1287,6 +1404,12 @@ def capstone_run_local_generator(args, out_dir):
                 const sBaseline = calcStatsMs(baselineTimes);
                 const sLlm = calcStatsMs(llmTimes);
                 const sGemini = calcStatsMs(geminiTimes);
+                const mBaseline = calcStatsMs(baselineHeapKiB);
+                const mLlm = calcStatsMs(llmHeapKiB);
+                const mGemini = calcStatsMs(geminiHeapKiB);
+                const rBaseline = calcStatsMs(baselineRefreshMs);
+                const rLlm = calcStatsMs(llmRefreshMs);
+                const rGemini = calcStatsMs(geminiRefreshMs);
 
                 const lines = [];
                 const addSection = (title, result, stats) => {
@@ -1303,6 +1426,12 @@ def capstone_run_local_generator(args, out_dir):
                 addSection('Dijkstra Baseline', baselineResult, sBaseline);
                 addSection('Dijkstra ChatGPT', llmResult, sLlm);
                 addSection('Dijkstra Gemini', geminiResult, sGemini);
+                lines.push('[Local WASM Notes]');
+                lines.push('Memory metric: WASM heap peak (KiB), measured with a fresh module instance per measured solver run.');
+                if (rBaseline) lines.push(formatStatsMsSummary('Module refresh baseline (ms): ', rBaseline));
+                if (rLlm) lines.push(formatStatsMsSummary('Module refresh ChatGPT (ms): ', rLlm));
+                if (rGemini) lines.push(formatStatsMsSummary('Module refresh Gemini (ms): ', rGemini));
+                lines.push('');
 
                 let visualization = null;
                 try {
@@ -1324,7 +1453,14 @@ def capstone_run_local_generator(args, out_dir):
                     iterations: safeIterations,
                     warmup: safeWarmup,
                     timings_ms: {},
-                    timings_ms_stdev: {}
+                    timings_ms_stdev: {},
+                    memory_kb: {},
+                    memory_kb_stdev: {},
+                    memory_metric_kind: 'wasm_heap_peak_kib',
+                    memory_metric_label: 'WASM Heap Peak',
+                    memory_metric_unit: 'KiB',
+                    local_wasm_module_refresh_ms: {},
+                    local_wasm_module_refresh_ms_stdev: {}
                 };
                 if (sBaseline) {
                     result.timings_ms.baseline = sBaseline.median;
@@ -1340,6 +1476,38 @@ def capstone_run_local_generator(args, out_dir):
                     result.timings_ms.gemini = sGemini.median;
                     result.timings_ms_stdev.gemini = sGemini.stdev;
                 }
+                if (mBaseline) {
+                    result.memory_kb.baseline = mBaseline.median;
+                    result.memory_kb_stdev.baseline = mBaseline.stdev;
+                }
+                if (mLlm) {
+                    result.memory_kb.llm = mLlm.median;
+                    result.memory_kb.chatgpt = mLlm.median;
+                    result.memory_kb_stdev.llm = mLlm.stdev;
+                    result.memory_kb_stdev.chatgpt = mLlm.stdev;
+                }
+                if (mGemini) {
+                    result.memory_kb.gemini = mGemini.median;
+                    result.memory_kb_stdev.gemini = mGemini.stdev;
+                }
+                if (rBaseline) {
+                    result.local_wasm_module_refresh_ms.baseline = rBaseline.median;
+                    result.local_wasm_module_refresh_ms_stdev.baseline = rBaseline.stdev;
+                }
+                if (rLlm) {
+                    result.local_wasm_module_refresh_ms.llm = rLlm.median;
+                    result.local_wasm_module_refresh_ms.chatgpt = rLlm.median;
+                    result.local_wasm_module_refresh_ms_stdev.llm = rLlm.stdev;
+                    result.local_wasm_module_refresh_ms_stdev.chatgpt = rLlm.stdev;
+                }
+                if (rGemini) {
+                    result.local_wasm_module_refresh_ms.gemini = rGemini.median;
+                    result.local_wasm_module_refresh_ms_stdev.gemini = rGemini.stdev;
+                }
+                if (!Object.keys(result.memory_kb).length) delete result.memory_kb;
+                if (!Object.keys(result.memory_kb_stdev).length) delete result.memory_kb_stdev;
+                if (!Object.keys(result.local_wasm_module_refresh_ms).length) delete result.local_wasm_module_refresh_ms;
+                if (!Object.keys(result.local_wasm_module_refresh_ms_stdev).length) delete result.local_wasm_module_refresh_ms_stdev;
                 if (visualization) {
                     result.visualization = visualization;
                 }
@@ -1439,6 +1607,12 @@ def capstone_run_local_generator(args, out_dir):
                 writeInputs(mod);
                 return mod;
             };
+            const loadFreshModuleMeasured = async (spec, label, done, total, stage) => {
+                const t0 = runTimerNowMs();
+                const mod = await loadFreshModule(spec, label, done, total, stage);
+                const t1 = runTimerNowMs();
+                return { mod, refreshMs: Math.max(0, t1 - t0) };
+            };
 
             try {
                 const warmupSolver = async (title, spec, labelFirst, argsFirst, labelAll, argsAll, setupDoneRef) => {
@@ -1514,6 +1688,18 @@ def capstone_run_local_generator(args, out_dir):
                 const gemAll = [];
                 const chatFirst = [];
                 const chatAll = [];
+                const baseFirstHeapKiB = [];
+                const baseAllHeapKiB = [];
+                const gemFirstHeapKiB = [];
+                const gemAllHeapKiB = [];
+                const chatFirstHeapKiB = [];
+                const chatAllHeapKiB = [];
+                const baseFirstRefreshMs = [];
+                const baseAllRefreshMs = [];
+                const gemFirstRefreshMs = [];
+                const gemAllRefreshMs = [];
+                const chatFirstRefreshMs = [];
+                const chatAllRefreshMs = [];
                 let baseResult = '';
                 let gemResult = '';
                 let chatResult = '';
@@ -1529,13 +1715,14 @@ def capstone_run_local_generator(args, out_dir):
                     const argsAll = Array.isArray(opts && opts.argsAll ? opts.argsAll : null) ? opts.argsAll : [];
                     const timesFirst = Array.isArray(opts && opts.timesFirst ? opts.timesFirst : null) ? opts.timesFirst : null;
                     const timesAll = Array.isArray(opts && opts.timesAll ? opts.timesAll : null) ? opts.timesAll : null;
+                    const heapsFirst = Array.isArray(opts && opts.heapsFirst ? opts.heapsFirst : null) ? opts.heapsFirst : null;
+                    const heapsAll = Array.isArray(opts && opts.heapsAll ? opts.heapsAll : null) ? opts.heapsAll : null;
+                    const refreshFirst = Array.isArray(opts && opts.refreshFirst ? opts.refreshFirst : null) ? opts.refreshFirst : null;
+                    const refreshAll = Array.isArray(opts && opts.refreshAll ? opts.refreshAll : null) ? opts.refreshAll : null;
                     const captureAll = typeof (opts && opts.captureAll) === 'function' ? opts.captureAll : null;
-                    const recycleEvery = Math.max(0, Math.floor(Number(opts && opts.recycleEveryIterations ? opts.recycleEveryIterations : 0)));
 
                     if (!spec || !spec.id) throw new Error(`Invalid wasm spec for ${title}`);
                     if (!timesFirst || !timesAll) throw new Error(`Invalid timing arrays for ${title}`);
-
-                    let mod = await loadFreshModule(spec, `Loading ${title} WASM...`, ticksDone, testsTotal, 'tests');
 
                     const isTrapError = (error) => {
                         const msg = error && error.message ? String(error.message) : String(error);
@@ -1546,14 +1733,21 @@ def capstone_run_local_generator(args, out_dir):
                             lower.includes('unreachable');
                     };
 
-                    const runStepMeasured = async (iter, stepLabel, args, times, captureStdout = null) => {
+                    const runStepMeasuredFresh = async (iter, stepLabel, args, times, captureStdout = null, heapArr = null, refreshArr = null) => {
                         for (let attempt = 0; attempt < 2; attempt++) {
                             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                            const t0 = runTimerNowMs();
+                            const loaded = await loadFreshModuleMeasured(spec, `Loading ${title} WASM...`, ticksDone, testsTotal, 'tests');
+                            let mod = loaded.mod;
+                            if (refreshArr) refreshArr.push(loaded.refreshMs);
                             try {
+                                const t0 = runTimerNowMs();
                                 const res = await runEmscriptenMain(mod, args);
                                 const t1 = runTimerNowMs();
                                 times.push(Math.max(0, t1 - t0));
+                                if (heapArr) {
+                                    const heapKiB = getEmscriptenHeapPeakKiB(mod);
+                                    if (Number.isFinite(Number(heapKiB))) heapArr.push(Number(heapKiB));
+                                }
                                 if (captureStdout) {
                                     const stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
                                     try { captureStdout(stdout); } catch (_) {}
@@ -1565,47 +1759,33 @@ def capstone_run_local_generator(args, out_dir):
                                 if (!canRecover) {
                                     throw new Error(`Iteration ${iter + 1}/${safeIterations} - ${stepLabel}: ${msg}`);
                                 }
-
+                            } finally {
                                 mod = null;
                                 unloadModule(spec);
                                 await delay(0, abortSignal);
-                                if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                                mod = await loadFreshModule(spec, `Recovering ${title} WASM...`, ticksDone, testsTotal, 'tests');
                             }
+                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                         }
                         return null;
                     };
-                    try {
-                        for (let iter = 0; iter < safeIterations; iter++) {
-                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                    for (let iter = 0; iter < safeIterations; iter++) {
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
 
-                            if (recycleEvery > 0 && iter > 0 && (iter % recycleEvery) === 0) {
-                                mod = null;
-                                unloadModule(spec);
-                                await delay(0, abortSignal);
-                                if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                                mod = await loadFreshModule(spec, `Refreshing ${title} WASM (${iter}/${safeIterations})...`, ticksDone, testsTotal, 'tests');
-                            }
+                        progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
+                        const firstRes = await runStepMeasuredFresh(iter, labelFirst, argsFirst, timesFirst, null, heapsFirst, refreshFirst);
+                        if (firstRes && firstRes.status === 'aborted') return firstRes;
+                        ticksDone++;
+                        progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
+                        await delay(0, abortSignal);
 
-                            progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
-                            const firstRes = await runStepMeasured(iter, labelFirst, argsFirst, timesFirst);
-                            if (firstRes && firstRes.status === 'aborted') return firstRes;
-                            ticksDone++;
-                            progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
-                            await delay(0, abortSignal);
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
 
-                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-
-                            progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
-                            const allRes = await runStepMeasured(iter, labelAll, argsAll, timesAll, captureAll);
-                            if (allRes && allRes.status === 'aborted') return allRes;
-                            ticksDone++;
-                            progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
-                            await delay(0, abortSignal);
-                        }
-                    } finally {
-                        mod = null;
-                        unloadModule(spec);
+                        progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
+                        const allRes = await runStepMeasuredFresh(iter, labelAll, argsAll, timesAll, captureAll, heapsAll, refreshAll);
+                        if (allRes && allRes.status === 'aborted') return allRes;
+                        ticksDone++;
+                        progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
+                        await delay(0, abortSignal);
                     }
                     return null;
                 };
@@ -1619,7 +1799,10 @@ def capstone_run_local_generator(args, out_dir):
                     argsAll: ['-r', '0', patternFsPath, targetFsPath],
                     timesFirst: baseFirst,
                     timesAll: baseAll,
-                    recycleEveryIterations: baselineRecycleEveryIterations,
+                    heapsFirst: baseFirstHeapKiB,
+                    heapsAll: baseAllHeapKiB,
+                    refreshFirst: baseFirstRefreshMs,
+                    refreshAll: baseAllRefreshMs,
                     captureAll: (stdout) => {
                         const line = parseFirstLine(stdout);
                         baseResult = parseFirstToken(line) || line;
@@ -1636,7 +1819,10 @@ def capstone_run_local_generator(args, out_dir):
                     argsAll: [patternFsPath, targetFsPath],
                     timesFirst: gemFirst,
                     timesAll: gemAll,
-                    recycleEveryIterations: safeIterations >= 250 ? 200 : 0,
+                    heapsFirst: gemFirstHeapKiB,
+                    heapsAll: gemAllHeapKiB,
+                    refreshFirst: gemFirstRefreshMs,
+                    refreshAll: gemAllRefreshMs,
                     captureAll: (stdout) => {
                         gemResult = parseFirstLine(stdout);
                     }
@@ -1652,7 +1838,10 @@ def capstone_run_local_generator(args, out_dir):
                     argsAll: [patternFsPath, targetFsPath],
                     timesFirst: chatFirst,
                     timesAll: chatAll,
-                    recycleEveryIterations: safeIterations >= 250 ? 200 : 0,
+                    heapsFirst: chatFirstHeapKiB,
+                    heapsAll: chatAllHeapKiB,
+                    refreshFirst: chatFirstRefreshMs,
+                    refreshAll: chatAllRefreshMs,
                     captureAll: (stdout) => {
                         chatResult = parseFirstLine(stdout);
                     }
@@ -1667,6 +1856,18 @@ def capstone_run_local_generator(args, out_dir):
                 const sGemAll = calcStatsMs(gemAll);
                 const sChatFirst = calcStatsMs(chatFirst);
                 const sChatAll = calcStatsMs(chatAll);
+                const mBaseFirst = calcStatsMs(baseFirstHeapKiB);
+                const mBaseAll = calcStatsMs(baseAllHeapKiB);
+                const mGemFirst = calcStatsMs(gemFirstHeapKiB);
+                const mGemAll = calcStatsMs(gemAllHeapKiB);
+                const mChatFirst = calcStatsMs(chatFirstHeapKiB);
+                const mChatAll = calcStatsMs(chatAllHeapKiB);
+                const rBaseFirst = calcStatsMs(baseFirstRefreshMs);
+                const rBaseAll = calcStatsMs(baseAllRefreshMs);
+                const rGemFirst = calcStatsMs(gemFirstRefreshMs);
+                const rGemAll = calcStatsMs(gemAllRefreshMs);
+                const rChatFirst = calcStatsMs(chatFirstRefreshMs);
+                const rChatAll = calcStatsMs(chatAllRefreshMs);
 
                 const lines = [];
                 const addSection = (title, result, firstStats, allStats) => {
@@ -1683,6 +1884,12 @@ def capstone_run_local_generator(args, out_dir):
                 addSection('VF3 baseline', baseResult, sBaseFirst, sBaseAll);
                 addSection('VF3 Gemini', gemResult, sGemFirst, sGemAll);
                 addSection('VF3 ChatGPT', chatResult, sChatFirst, sChatAll);
+                lines.push('[Local WASM Notes]');
+                lines.push('Memory metric: WASM heap peak (KiB), measured with a fresh module instance per measured solver run (first and all).');
+                if (rBaseFirst && rBaseAll) lines.push(...formatStatsMsFirstAll('Module refresh baseline (ms): ', rBaseFirst, rBaseAll));
+                if (rGemFirst && rGemAll) lines.push(...formatStatsMsFirstAll('Module refresh Gemini (ms): ', rGemFirst, rGemAll));
+                if (rChatFirst && rChatAll) lines.push(...formatStatsMsFirstAll('Module refresh ChatGPT (ms): ', rChatFirst, rChatAll));
+                lines.push('');
 
                 let visualization = null;
                 try {
@@ -1709,12 +1916,29 @@ def capstone_run_local_generator(args, out_dir):
                     iterations: safeIterations,
                     warmup: safeWarmup,
                     timings_ms: {},
-                    timings_ms_stdev: {}
+                    timings_ms_stdev: {},
+                    memory_kb: {},
+                    memory_kb_stdev: {},
+                    memory_metric_kind: 'wasm_heap_peak_kib',
+                    memory_metric_label: 'WASM Heap Peak',
+                    memory_metric_unit: 'KiB',
+                    local_wasm_module_refresh_ms: {},
+                    local_wasm_module_refresh_ms_stdev: {}
                 };
                 const addPair = (key, stats) => {
                     if (!stats) return;
                     result.timings_ms[key] = stats.median;
                     result.timings_ms_stdev[key] = stats.stdev;
+                };
+                const addMemPair = (key, stats) => {
+                    if (!stats) return;
+                    result.memory_kb[key] = stats.median;
+                    result.memory_kb_stdev[key] = stats.stdev;
+                };
+                const addRefreshPair = (key, stats) => {
+                    if (!stats) return;
+                    result.local_wasm_module_refresh_ms[key] = stats.median;
+                    result.local_wasm_module_refresh_ms_stdev[key] = stats.stdev;
                 };
                 addPair('baseline_first', sBaseFirst);
                 addPair('baseline_all', sBaseAll);
@@ -1722,6 +1946,22 @@ def capstone_run_local_generator(args, out_dir):
                 addPair('gemini_all', sGemAll);
                 addPair('chatgpt_first', sChatFirst);
                 addPair('chatgpt_all', sChatAll);
+                addMemPair('baseline_first', mBaseFirst);
+                addMemPair('baseline_all', mBaseAll);
+                addMemPair('gemini_first', mGemFirst);
+                addMemPair('gemini_all', mGemAll);
+                addMemPair('chatgpt_first', mChatFirst);
+                addMemPair('chatgpt_all', mChatAll);
+                addRefreshPair('baseline_first', rBaseFirst);
+                addRefreshPair('baseline_all', rBaseAll);
+                addRefreshPair('gemini_first', rGemFirst);
+                addRefreshPair('gemini_all', rGemAll);
+                addRefreshPair('chatgpt_first', rChatFirst);
+                addRefreshPair('chatgpt_all', rChatAll);
+                if (!Object.keys(result.memory_kb).length) delete result.memory_kb;
+                if (!Object.keys(result.memory_kb_stdev).length) delete result.memory_kb_stdev;
+                if (!Object.keys(result.local_wasm_module_refresh_ms).length) delete result.local_wasm_module_refresh_ms;
+                if (!Object.keys(result.local_wasm_module_refresh_ms_stdev).length) delete result.local_wasm_module_refresh_ms_stdev;
                 if (visualization) {
                     result.visualization = visualization;
                 }
@@ -1840,6 +2080,12 @@ def capstone_run_local_generator(args, out_dir):
                 writeInputs(mod);
                 return mod;
             };
+            const loadFreshModuleMeasured = async (spec, label, done, total, stage) => {
+                const t0 = runTimerNowMs();
+                const mod = await loadFreshModule(spec, label, done, total, stage);
+                const t1 = runTimerNowMs();
+                return { mod, refreshMs: Math.max(0, t1 - t0) };
+            };
 
             const abortSignal = runCtx && runCtx.abortController ? runCtx.abortController.signal : null;
 
@@ -1905,6 +2151,18 @@ def capstone_run_local_generator(args, out_dir):
                 const chatAll = [];
                 const gemFirst = [];
                 const gemAll = [];
+                const baseFirstHeapKiB = [];
+                const baseAllHeapKiB = [];
+                const chatFirstHeapKiB = [];
+                const chatAllHeapKiB = [];
+                const gemFirstHeapKiB = [];
+                const gemAllHeapKiB = [];
+                const baseFirstRefreshMs = [];
+                const baseAllRefreshMs = [];
+                const chatFirstRefreshMs = [];
+                const chatAllRefreshMs = [];
+                const gemFirstRefreshMs = [];
+                const gemAllRefreshMs = [];
                 let ticksDone = 0;
 
                 let baselineFirstOut = '';
@@ -1930,14 +2188,21 @@ def capstone_run_local_generator(args, out_dir):
                         lower.includes('unreachable');
                 };
 
-                const runOneMeasured = async (modRef, spec, title, args, storeTimes, captureStdout) => {
+                const runOneMeasuredFresh = async (spec, title, args, storeTimes, captureStdout, heapArr = null, refreshArr = null) => {
                     for (let attempt = 0; attempt < 2; attempt++) {
                         if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                        const t0 = runTimerNowMs();
+                        const loaded = await loadFreshModuleMeasured(spec, `Loading ${title} WASM...`, ticksDone, testsTotal, 'tests');
+                        let mod = loaded.mod;
+                        if (refreshArr) refreshArr.push(loaded.refreshMs);
                         try {
-                            const res = await runEmscriptenMain(modRef.mod, args);
+                            const t0 = runTimerNowMs();
+                            const res = await runEmscriptenMain(mod, args);
                             const t1 = runTimerNowMs();
                             storeTimes.push(Math.max(0, t1 - t0));
+                            if (heapArr) {
+                                const heapKiB = getEmscriptenHeapPeakKiB(mod);
+                                if (Number.isFinite(Number(heapKiB))) heapArr.push(Number(heapKiB));
+                            }
                             if (captureStdout) {
                                 const stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
                                 captureStdout(stdout);
@@ -1949,129 +2214,136 @@ def capstone_run_local_generator(args, out_dir):
                                 const msg = error && error.message ? error.message : String(error);
                                 throw new Error(`${title}: ${msg}`);
                             }
-                            modRef.mod = null;
+                        } finally {
+                            mod = null;
                             unloadModule(spec);
                             await delay(0, abortSignal);
-                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                            modRef.mod = await loadFreshModule(spec, `Recovering ${title} WASM...`, ticksDone, testsTotal, 'tests');
                         }
                     }
                     return null;
                 };
 
-                let baselineModRef = { mod: await loadFreshModule(baselineSpec, 'Loading Glasgow baseline WASM...', ticksDone, testsTotal, 'tests') };
-                let chatModRef = { mod: await loadFreshModule(chatgptSpec, 'Loading Glasgow ChatGPT WASM...', ticksDone, testsTotal, 'tests') };
-                let gemModRef = { mod: await loadFreshModule(geminiSpec, 'Loading Glasgow Gemini WASM...', ticksDone, testsTotal, 'tests') };
-                try {
-                    for (let iter = 0; iter < safeIterations; iter++) {
-                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                for (let iter = 0; iter < safeIterations; iter++) {
+                    if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
 
-                        progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
-                        let latestBaselineFirst = '';
-                        let latestBaselineAll = '';
-                        const firstRes = await runOneMeasured(
-                            baselineModRef,
-                            baselineSpec,
-                            `Iteration ${iter + 1}/${safeIterations} - Glasgow baseline first`,
-                            baselineFirstArgs,
-                            baseFirst,
-                            (stdout) => {
-                                latestBaselineFirst = stdout;
-                                if (!baselineFirstOut) baselineFirstOut = stdout;
-                            }
-                        );
-                        if (firstRes && firstRes.status === 'aborted') return firstRes;
-                        ticksDone++;
-                        progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
-                        await delay(0, abortSignal);
+                    progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
+                    let latestBaselineFirst = '';
+                    let latestBaselineAll = '';
+                    const firstRes = await runOneMeasuredFresh(
+                        baselineSpec,
+                        `Iteration ${iter + 1}/${safeIterations} - Glasgow baseline first`,
+                        baselineFirstArgs,
+                        baseFirst,
+                        (stdout) => {
+                            latestBaselineFirst = stdout;
+                            if (!baselineFirstOut) baselineFirstOut = stdout;
+                        },
+                        baseFirstHeapKiB,
+                        baseFirstRefreshMs
+                    );
+                    if (firstRes && firstRes.status === 'aborted') return firstRes;
+                    ticksDone++;
+                    progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
+                    await delay(0, abortSignal);
 
-                        progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
-                        const allRes = await runOneMeasured(
-                            baselineModRef,
-                            baselineSpec,
-                            `Iteration ${iter + 1}/${safeIterations} - Glasgow baseline all`,
-                            baselineAllArgs,
-                            baseAll,
-                            (stdout) => {
-                                latestBaselineAll = stdout;
-                                if (!baselineAllOut) baselineAllOut = stdout;
-                            }
-                        );
-                        if (allRes && allRes.status === 'aborted') return allRes;
-                        ticksDone++;
-                        progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
-                        await delay(0, abortSignal);
+                    progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
+                    const allRes = await runOneMeasuredFresh(
+                        baselineSpec,
+                        `Iteration ${iter + 1}/${safeIterations} - Glasgow baseline all`,
+                        baselineAllArgs,
+                        baseAll,
+                        (stdout) => {
+                            latestBaselineAll = stdout;
+                            if (!baselineAllOut) baselineAllOut = stdout;
+                        },
+                        baseAllHeapKiB,
+                        baseAllRefreshMs
+                    );
+                    if (allRes && allRes.status === 'aborted') return allRes;
+                    ticksDone++;
+                    progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
+                    await delay(0, abortSignal);
 
-                        const baselineCount = extractLocalSolutionCount(latestBaselineAll);
-                        if (baselineCount === null) {
-                            glasgowFail++;
-                            continue;
-                        }
-                        glasgowSuccess++;
-
-                        progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
-                        chatTotal++;
-                        let latestChat = '';
-                        const chatRes = await runOneMeasured(
-                            chatModRef,
-                            chatgptSpec,
-                            `Iteration ${iter + 1}/${safeIterations} - Glasgow ChatGPT`,
-                            chatArgs,
-                            chatFirst,
-                            (stdout) => {
-                                latestChat = stdout;
-                                if (!chatOut) chatOut = stdout;
-                            }
-                        );
-                        if (chatRes && chatRes.status === 'aborted') return chatRes;
-                        if (chatFirst.length) {
-                            const last = chatFirst[chatFirst.length - 1];
-                            chatAll.push(last);
-                        }
-                        ticksDone++;
-                        progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
-                        await delay(0, abortSignal);
-                        ticksDone++;
-                        progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
-                        const chatParsed = extractLocalCountTimeMs(latestChat);
-                        if (chatParsed && Number.isInteger(chatParsed.count) && chatParsed.count === baselineCount) chatMatch++;
-                        else chatMismatch++;
-
-                        progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
-                        gemTotal++;
-                        let latestGem = '';
-                        const gemRes = await runOneMeasured(
-                            gemModRef,
-                            geminiSpec,
-                            `Iteration ${iter + 1}/${safeIterations} - Glasgow Gemini`,
-                            gemArgs,
-                            gemFirst,
-                            (stdout) => {
-                                latestGem = stdout;
-                                if (!gemOut) gemOut = stdout;
-                            }
-                        );
-                        if (gemRes && gemRes.status === 'aborted') return gemRes;
-                        if (gemFirst.length) {
-                            const last = gemFirst[gemFirst.length - 1];
-                            gemAll.push(last);
-                        }
-                        ticksDone++;
-                        progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
-                        await delay(0, abortSignal);
-                        ticksDone++;
-                        progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
-                        const gemParsed = extractLocalCountTimeMs(latestGem);
-                        if (gemParsed && Number.isInteger(gemParsed.count) && gemParsed.count === baselineCount) gemMatch++;
-                        else gemMismatch++;
+                    const baselineCount = extractLocalSolutionCount(latestBaselineAll);
+                    if (baselineCount === null) {
+                        glasgowFail++;
+                        continue;
                     }
-                } finally {
-                    baselineModRef.mod = null;
-                    chatModRef.mod = null;
-                    gemModRef.mod = null;
-                    unloadModule(baselineSpec);
-                    unloadModule(chatgptSpec);
-                    unloadModule(geminiSpec);
+                    glasgowSuccess++;
+
+                    progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
+                    chatTotal++;
+                    let latestChat = '';
+                    const chatRes = await runOneMeasuredFresh(
+                        chatgptSpec,
+                        `Iteration ${iter + 1}/${safeIterations} - Glasgow ChatGPT`,
+                        chatArgs,
+                        chatFirst,
+                        (stdout) => {
+                            latestChat = stdout;
+                            if (!chatOut) chatOut = stdout;
+                        },
+                        chatFirstHeapKiB,
+                        chatFirstRefreshMs
+                    );
+                    if (chatRes && chatRes.status === 'aborted') return chatRes;
+                    if (chatFirst.length) {
+                        const last = chatFirst[chatFirst.length - 1];
+                        chatAll.push(last);
+                    }
+                    if (chatFirstHeapKiB.length) {
+                        const lastHeap = chatFirstHeapKiB[chatFirstHeapKiB.length - 1];
+                        chatAllHeapKiB.push(lastHeap);
+                    }
+                    if (chatFirstRefreshMs.length) {
+                        const lastRefresh = chatFirstRefreshMs[chatFirstRefreshMs.length - 1];
+                        chatAllRefreshMs.push(lastRefresh);
+                    }
+                    ticksDone++;
+                    progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
+                    await delay(0, abortSignal);
+                    ticksDone++;
+                    progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
+                    const chatParsed = extractLocalCountTimeMs(latestChat);
+                    if (chatParsed && Number.isInteger(chatParsed.count) && chatParsed.count === baselineCount) chatMatch++;
+                    else chatMismatch++;
+
+                    progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
+                    gemTotal++;
+                    let latestGem = '';
+                    const gemRes = await runOneMeasuredFresh(
+                        geminiSpec,
+                        `Iteration ${iter + 1}/${safeIterations} - Glasgow Gemini`,
+                        gemArgs,
+                        gemFirst,
+                        (stdout) => {
+                            latestGem = stdout;
+                            if (!gemOut) gemOut = stdout;
+                        },
+                        gemFirstHeapKiB,
+                        gemFirstRefreshMs
+                    );
+                    if (gemRes && gemRes.status === 'aborted') return gemRes;
+                    if (gemFirst.length) {
+                        const last = gemFirst[gemFirst.length - 1];
+                        gemAll.push(last);
+                    }
+                    if (gemFirstHeapKiB.length) {
+                        const lastHeap = gemFirstHeapKiB[gemFirstHeapKiB.length - 1];
+                        gemAllHeapKiB.push(lastHeap);
+                    }
+                    if (gemFirstRefreshMs.length) {
+                        const lastRefresh = gemFirstRefreshMs[gemFirstRefreshMs.length - 1];
+                        gemAllRefreshMs.push(lastRefresh);
+                    }
+                    ticksDone++;
+                    progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
+                    await delay(0, abortSignal);
+                    ticksDone++;
+                    progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
+                    const gemParsed = extractLocalCountTimeMs(latestGem);
+                    if (gemParsed && Number.isInteger(gemParsed.count) && gemParsed.count === baselineCount) gemMatch++;
+                    else gemMismatch++;
                 }
 
                 progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
@@ -2082,6 +2354,18 @@ def capstone_run_local_generator(args, out_dir):
                 const sChatAll = calcStatsMs(chatAll);
                 const sGemFirst = calcStatsMs(gemFirst);
                 const sGemAll = calcStatsMs(gemAll);
+                const mBaseFirst = calcStatsMs(baseFirstHeapKiB);
+                const mBaseAll = calcStatsMs(baseAllHeapKiB);
+                const mChatFirst = calcStatsMs(chatFirstHeapKiB);
+                const mChatAll = calcStatsMs(chatAllHeapKiB);
+                const mGemFirst = calcStatsMs(gemFirstHeapKiB);
+                const mGemAll = calcStatsMs(gemAllHeapKiB);
+                const rBaseFirst = calcStatsMs(baseFirstRefreshMs);
+                const rBaseAll = calcStatsMs(baseAllRefreshMs);
+                const rChatFirst = calcStatsMs(chatFirstRefreshMs);
+                const rChatAll = calcStatsMs(chatAllRefreshMs);
+                const rGemFirst = calcStatsMs(gemFirstRefreshMs);
+                const rGemAll = calcStatsMs(gemAllRefreshMs);
 
                 const lines = [];
                 const failureSuffix = glasgowFail > 0 ? `, ${glasgowFail} failed` : '';
@@ -2102,6 +2386,12 @@ def capstone_run_local_generator(args, out_dir):
                 };
                 addLlmSection('Glasgow ChatGPT', chatMatch, chatTotal, chatMismatch, sChatFirst, sChatAll);
                 addLlmSection('Glasgow Gemini', gemMatch, gemTotal, gemMismatch, sGemFirst, sGemAll);
+                lines.push('[Local WASM Notes]');
+                lines.push('Memory metric: WASM heap peak (KiB), measured with a fresh module instance per measured solver run (first and all).');
+                if (rBaseFirst && rBaseAll) lines.push(...formatStatsMsFirstAll('Module refresh baseline (ms): ', rBaseFirst, rBaseAll));
+                if (rChatFirst && rChatAll) lines.push(...formatStatsMsFirstAll('Module refresh ChatGPT (ms): ', rChatFirst, rChatAll));
+                if (rGemFirst && rGemAll) lines.push(...formatStatsMsFirstAll('Module refresh Gemini (ms): ', rGemFirst, rGemAll));
+                lines.push('');
 
                 let visualization = null;
                 try {
@@ -2129,6 +2419,13 @@ def capstone_run_local_generator(args, out_dir):
                     warmup: safeWarmup,
                     timings_ms: {},
                     timings_ms_stdev: {},
+                    memory_kb: {},
+                    memory_kb_stdev: {},
+                    memory_metric_kind: 'wasm_heap_peak_kib',
+                    memory_metric_label: 'WASM Heap Peak',
+                    memory_metric_unit: 'KiB',
+                    local_wasm_module_refresh_ms: {},
+                    local_wasm_module_refresh_ms_stdev: {},
                     match_counts: {
                         baseline: {
                             success: glasgowSuccess,
@@ -2151,12 +2448,38 @@ def capstone_run_local_generator(args, out_dir):
                     result.timings_ms[key] = stats.median;
                     result.timings_ms_stdev[key] = stats.stdev;
                 };
+                const addMemPair = (key, stats) => {
+                    if (!stats) return;
+                    result.memory_kb[key] = stats.median;
+                    result.memory_kb_stdev[key] = stats.stdev;
+                };
+                const addRefreshPair = (key, stats) => {
+                    if (!stats) return;
+                    result.local_wasm_module_refresh_ms[key] = stats.median;
+                    result.local_wasm_module_refresh_ms_stdev[key] = stats.stdev;
+                };
                 addPair('first', sBaseFirst);
                 addPair('all', sBaseAll);
                 addPair('chatgpt_first', sChatFirst);
                 addPair('chatgpt_all', sChatAll);
                 addPair('gemini_first', sGemFirst);
                 addPair('gemini_all', sGemAll);
+                addMemPair('first', mBaseFirst);
+                addMemPair('all', mBaseAll);
+                addMemPair('chatgpt_first', mChatFirst);
+                addMemPair('chatgpt_all', mChatAll);
+                addMemPair('gemini_first', mGemFirst);
+                addMemPair('gemini_all', mGemAll);
+                addRefreshPair('first', rBaseFirst);
+                addRefreshPair('all', rBaseAll);
+                addRefreshPair('chatgpt_first', rChatFirst);
+                addRefreshPair('chatgpt_all', rChatAll);
+                addRefreshPair('gemini_first', rGemFirst);
+                addRefreshPair('gemini_all', rGemAll);
+                if (!Object.keys(result.memory_kb).length) delete result.memory_kb;
+                if (!Object.keys(result.memory_kb_stdev).length) delete result.memory_kb_stdev;
+                if (!Object.keys(result.local_wasm_module_refresh_ms).length) delete result.local_wasm_module_refresh_ms;
+                if (!Object.keys(result.local_wasm_module_refresh_ms_stdev).length) delete result.local_wasm_module_refresh_ms_stdev;
                 if (visualization) result.visualization = visualization;
 
                 return {
@@ -2185,6 +2508,19 @@ def capstone_run_local_generator(args, out_dir):
             for (const [srcKey, dstKey] of Object.entries(keyMap || {})) {
                 if (Object.prototype.hasOwnProperty.call(timings, srcKey)) {
                     targetValueObj[dstKey] = timings[srcKey];
+                }
+                if (Object.prototype.hasOwnProperty.call(stdevs, srcKey)) {
+                    targetStdevObj[dstKey] = stdevs[srcKey];
+                }
+            }
+        }
+
+        function copyLocalMetricKeysWithPrefix(targetValueObj, targetStdevObj, sourceResult, valueKey, stdevKey, keyMap) {
+            const values = sourceResult && sourceResult[valueKey] ? sourceResult[valueKey] : {};
+            const stdevs = sourceResult && sourceResult[stdevKey] ? sourceResult[stdevKey] : {};
+            for (const [srcKey, dstKey] of Object.entries(keyMap || {})) {
+                if (Object.prototype.hasOwnProperty.call(values, srcKey)) {
+                    targetValueObj[dstKey] = values[srcKey];
                 }
                 if (Object.prototype.hasOwnProperty.call(stdevs, srcKey)) {
                     targetStdevObj[dstKey] = stdevs[srcKey];
@@ -2264,7 +2600,11 @@ def capstone_run_local_generator(args, out_dir):
                     warmup: safeWarmup,
                     subgraph_phase: 'full',
                     timings_ms: {},
-                    timings_ms_stdev: {}
+                    timings_ms_stdev: {},
+                    memory_kb: {},
+                    memory_kb_stdev: {},
+                    local_wasm_module_refresh_ms: {},
+                    local_wasm_module_refresh_ms_stdev: {}
                 };
 
                 copyLocalTimingKeysWithPrefix(result.timings_ms, result.timings_ms_stdev, vf3Result, {
@@ -2283,9 +2623,68 @@ def capstone_run_local_generator(args, out_dir):
                     gemini_first: 'glasgow_gemini_first',
                     gemini_all: 'glasgow_gemini_all'
                 });
+                copyLocalMetricKeysWithPrefix(result.memory_kb, result.memory_kb_stdev, vf3Result, 'memory_kb', 'memory_kb_stdev', {
+                    baseline_first: 'vf3_baseline_first',
+                    baseline_all: 'vf3_baseline_all',
+                    chatgpt_first: 'vf3_chatgpt_first',
+                    chatgpt_all: 'vf3_chatgpt_all',
+                    gemini_first: 'vf3_gemini_first',
+                    gemini_all: 'vf3_gemini_all'
+                });
+                copyLocalMetricKeysWithPrefix(result.memory_kb, result.memory_kb_stdev, glasgowResult, 'memory_kb', 'memory_kb_stdev', {
+                    first: 'glasgow_baseline_first',
+                    all: 'glasgow_baseline_all',
+                    chatgpt_first: 'glasgow_chatgpt_first',
+                    chatgpt_all: 'glasgow_chatgpt_all',
+                    gemini_first: 'glasgow_gemini_first',
+                    gemini_all: 'glasgow_gemini_all'
+                });
+                copyLocalMetricKeysWithPrefix(
+                    result.local_wasm_module_refresh_ms,
+                    result.local_wasm_module_refresh_ms_stdev,
+                    vf3Result,
+                    'local_wasm_module_refresh_ms',
+                    'local_wasm_module_refresh_ms_stdev',
+                    {
+                        baseline_first: 'vf3_baseline_first',
+                        baseline_all: 'vf3_baseline_all',
+                        chatgpt_first: 'vf3_chatgpt_first',
+                        chatgpt_all: 'vf3_chatgpt_all',
+                        gemini_first: 'vf3_gemini_first',
+                        gemini_all: 'vf3_gemini_all'
+                    }
+                );
+                copyLocalMetricKeysWithPrefix(
+                    result.local_wasm_module_refresh_ms,
+                    result.local_wasm_module_refresh_ms_stdev,
+                    glasgowResult,
+                    'local_wasm_module_refresh_ms',
+                    'local_wasm_module_refresh_ms_stdev',
+                    {
+                        first: 'glasgow_baseline_first',
+                        all: 'glasgow_baseline_all',
+                        chatgpt_first: 'glasgow_chatgpt_first',
+                        chatgpt_all: 'glasgow_chatgpt_all',
+                        gemini_first: 'glasgow_gemini_first',
+                        gemini_all: 'glasgow_gemini_all'
+                    }
+                );
 
                 if (!Object.keys(result.timings_ms).length) delete result.timings_ms;
                 if (!Object.keys(result.timings_ms_stdev).length) delete result.timings_ms_stdev;
+                if (Object.keys(result.memory_kb).length) {
+                    const metricSource = (vf3Result && vf3Result.memory_metric_kind) ? vf3Result : glasgowResult;
+                    if (metricSource) {
+                        if (metricSource.memory_metric_kind) result.memory_metric_kind = metricSource.memory_metric_kind;
+                        if (metricSource.memory_metric_label) result.memory_metric_label = metricSource.memory_metric_label;
+                        if (metricSource.memory_metric_unit) result.memory_metric_unit = metricSource.memory_metric_unit;
+                    }
+                } else {
+                    delete result.memory_kb;
+                    delete result.memory_kb_stdev;
+                }
+                if (!Object.keys(result.local_wasm_module_refresh_ms).length) delete result.local_wasm_module_refresh_ms;
+                if (!Object.keys(result.local_wasm_module_refresh_ms_stdev).length) delete result.local_wasm_module_refresh_ms_stdev;
 
                 const matchCounts = {};
                 if (vf3Result && vf3Result.match_counts && typeof vf3Result.match_counts === 'object') {
@@ -2427,7 +2826,7 @@ def capstone_run_local_generator(args, out_dir):
                 } catch (error) {
                     const msg = error && error.message ? error.message : String(error);
                     if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
-                        throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow on this branch (it commits files into wasm/ and uploads a wasm-modules artifact).');
+                        throw new Error('Glasgow local WASM modules are missing or incomplete. Run the "Build WASM Modules" workflow on this branch, then confirm `wasm/manifest.json` contains `glasgow_chatgpt`, `glasgow_gemini`, and `glasgow_baseline`. If `glasgow_baseline` is missing, check `outputs/glasgow_baseline_wasm_attempt.log` in the workflow run.');
                     }
                     throw error;
                 }
@@ -2439,7 +2838,7 @@ def capstone_run_local_generator(args, out_dir):
                 } catch (error) {
                     const msg = error && error.message ? error.message : String(error);
                     if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
-                        throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow on this branch (it commits files into wasm/ and uploads a wasm-modules artifact).');
+                        throw new Error('Subgraph local WASM requires both VF3 and Glasgow modules. Run the "Build WASM Modules" workflow, then confirm `wasm/manifest.json` contains VF3 (`vf3_baseline`, `vf3_chatgpt`, `vf3_gemini`) and Glasgow (`glasgow_chatgpt`, `glasgow_gemini`, `glasgow_baseline`) entries. If `glasgow_baseline` is missing, check the Glasgow baseline WASM attempt log in that workflow run.');
                     }
                     throw error;
                 }
