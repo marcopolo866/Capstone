@@ -723,7 +723,8 @@ def capstone_run_local_generator(args, out_dir):
             if (!lines.length) return null;
 
             for (let i = lines.length - 1; i >= 0; i--) {
-                const m = lines[i].match(/\b(?:solutions?|count)\b[^0-9-]*(-?\d+)\b/i);
+                let m = lines[i].match(/\bsolution[_\s-]*count\b\s*(?:=|:)?\s*(-?\d+)\b/i);
+                if (!m) m = lines[i].match(/\b(?:solutions?|count)\b[^0-9-]*(-?\d+)\b/i);
                 if (m) {
                     const n = Number(m[1]);
                     if (Number.isInteger(n)) return n;
@@ -764,6 +765,8 @@ def capstone_run_local_generator(args, out_dir):
             for (let i = lines.length - 1; i >= 0; i--) {
                 const line = lines[i];
                 let m = line.match(/time\s*:\s*([0-9]+(?:\.[0-9]+)?)\b/i);
+                if (!m) m = line.match(/\bruntime\b\s*(?:=|:)\s*([0-9]+(?:\.[0-9]+)?)\b/i);
+                if (!m) m = line.match(/\btime\b\s*=\s*([0-9]+(?:\.[0-9]+)?)\b/i);
                 if (!m) m = line.match(/\b([0-9]+(?:\.[0-9]+)?)\s*ms\b/i);
                 if (m) {
                     const value = Number(m[1]);
