@@ -604,9 +604,10 @@
             let sha = runSha || '';
             const waitStartedMs = runTimerNowMs();
             const maxWaitMsRaw = options && options.maxWaitMs !== undefined ? Number(options.maxWaitMs) : NaN;
+            // No timeout by default; the user can stop long runs with the Abort button.
             const maxWaitMs = Number.isFinite(maxWaitMsRaw) && maxWaitMsRaw > 0
                 ? maxWaitMsRaw
-                : 30 * 60 * 1000;
+                : 0;
             let completedSuccessNoArtifactSinceMs = 0;
             const skipSubgraphPhases = Array.isArray(options.skipSubgraphPhases)
                 ? options.skipSubgraphPhases.map(phase => String(phase || '').toLowerCase())
@@ -714,7 +715,7 @@
                 }
 
                 const elapsedWaitMs = runTimerNowMs() - waitStartedMs;
-                if (elapsedWaitMs >= maxWaitMs) {
+                if (maxWaitMs > 0 && elapsedWaitMs >= maxWaitMs) {
                     const runSuffix = workflowRunId ? ` (workflow run ${workflowRunId})` : '';
                     const lastErrorText = lastError && lastError.message ? ` Last error: ${lastError.message}` : '';
                     throw new Error(`Timed out after ${Math.round(elapsedWaitMs / 1000)}s waiting for workflow result${runSuffix}.${lastErrorText}`);
