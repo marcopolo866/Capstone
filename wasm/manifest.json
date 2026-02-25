@@ -2,9 +2,9 @@
   "schema_version": 1,
   "workflow": "Build WASM Modules",
   "workflow_file": ".github/workflows/build-wasm.yml",
-  "generated_at_utc": "",
-  "git_sha": "",
-  "git_ref_name": "",
+  "generated_at_utc": "2026-02-25T04:27:22Z",
+  "git_sha": "1a3441c2a519bcc3923cfbe26e9a790d697c0783",
+  "git_ref_name": "main",
   "modules": {
     "dijkstra_baseline": {
       "scriptPath": "wasm/dijkstra_baseline.js",
@@ -35,6 +35,16 @@
       "scriptPath": "wasm/vf3_chatgpt.js",
       "wasmPath": "wasm/vf3_chatgpt.wasm",
       "factoryName": "createVf3ChatgptModule"
+    },
+    "glasgow_chatgpt": {
+      "scriptPath": "wasm/glasgow_chatgpt.js",
+      "wasmPath": "wasm/glasgow_chatgpt.wasm",
+      "factoryName": "createGlasgowChatgptModule"
+    },
+    "glasgow_gemini": {
+      "scriptPath": "wasm/glasgow_gemini.js",
+      "wasmPath": "wasm/glasgow_gemini.wasm",
+      "factoryName": "createGlasgowGeminiModule"
     }
   }
 }
