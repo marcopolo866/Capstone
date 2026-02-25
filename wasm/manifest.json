@@ -2,8 +2,8 @@
   "schema_version": 1,
   "workflow": "Build WASM Modules",
   "workflow_file": ".github/workflows/build-wasm.yml",
-  "generated_at_utc": "2026-02-25T05:36:17Z",
-  "git_sha": "c85e84cd00ae94bfff7894d50527ea5d8a258532",
+  "generated_at_utc": "2026-02-25T21:02:11Z",
+  "git_sha": "db181e9437ddd1f696ce5e27299da532fa30f5a7",
   "git_ref_name": "main",
   "modules": {
     "dijkstra_baseline": {
@@ -45,6 +45,11 @@
       "scriptPath": "wasm/glasgow_gemini.js",
       "wasmPath": "wasm/glasgow_gemini.wasm",
       "factoryName": "createGlasgowGeminiModule"
+    },
+    "glasgow_baseline": {
+      "scriptPath": "wasm/glasgow_baseline.js",
+      "wasmPath": "wasm/glasgow_baseline.wasm",
+      "factoryName": "createGlasgowBaselineModule"
     }
   }
 }
