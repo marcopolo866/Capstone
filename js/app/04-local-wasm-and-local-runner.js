@@ -2826,7 +2826,7 @@ def capstone_run_local_generator(args, out_dir):
                 } catch (error) {
                     const msg = error && error.message ? error.message : String(error);
                     if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
-                        throw new Error('Glasgow local WASM modules are missing or incomplete. Run the "Build WASM Modules" workflow on this branch, then confirm `wasm/manifest.json` contains `glasgow_chatgpt`, `glasgow_gemini`, and `glasgow_baseline`. If `glasgow_baseline` is missing, check `outputs/glasgow_baseline_wasm_attempt.log` in the workflow run.');
+                        throw new Error('Glasgow local WASM modules are missing or incomplete. Run the "Build WASM Modules" workflow on this branch, then confirm `wasm/manifest.json` contains `glasgow_chatgpt`, `glasgow_gemini`, and `glasgow_baseline`. Note: the workflow can still succeed while `glasgow_baseline` is missing because the baseline Glasgow WASM port step is experimental/non-fatal. If `glasgow_baseline` is missing, check the `glasgow-baseline-wasm-attempt-log` artifact (or `outputs/glasgow_baseline_wasm_attempt.log` if your workflow version already uploads it).');
                     }
                     throw error;
                 }
@@ -2838,7 +2838,7 @@ def capstone_run_local_generator(args, out_dir):
                 } catch (error) {
                     const msg = error && error.message ? error.message : String(error);
                     if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
-                        throw new Error('Subgraph local WASM requires both VF3 and Glasgow modules. Run the "Build WASM Modules" workflow, then confirm `wasm/manifest.json` contains VF3 (`vf3_baseline`, `vf3_chatgpt`, `vf3_gemini`) and Glasgow (`glasgow_chatgpt`, `glasgow_gemini`, `glasgow_baseline`) entries. If `glasgow_baseline` is missing, check the Glasgow baseline WASM attempt log in that workflow run.');
+                        throw new Error('Subgraph local WASM requires both VF3 and Glasgow modules. Run the "Build WASM Modules" workflow, then confirm `wasm/manifest.json` contains VF3 (`vf3_baseline`, `vf3_chatgpt`, `vf3_gemini`) and Glasgow (`glasgow_chatgpt`, `glasgow_gemini`, `glasgow_baseline`) entries. Note: the workflow can still succeed while `glasgow_baseline` is missing because the baseline Glasgow WASM port step is experimental/non-fatal. If `glasgow_baseline` is missing, check the `glasgow-baseline-wasm-attempt-log` artifact (or `outputs/glasgow_baseline_wasm_attempt.log` if your workflow version already uploads it).');
                     }
                     throw error;
                 }

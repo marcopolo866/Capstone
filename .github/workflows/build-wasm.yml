@@ -381,6 +381,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Upload Glasgow baseline WASM attempt log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glasgow-baseline-wasm-attempt-log
+          path: outputs/glasgow_baseline_wasm_attempt.log
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Commit updated WASM artifacts
         run: |
           set -euo pipefail
