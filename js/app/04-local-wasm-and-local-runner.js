@@ -18,7 +18,7 @@
             if (!url) return Promise.reject(new Error('Missing script URL'));
             if (localWasmScriptPromises.has(url)) return localWasmScriptPromises.get(url);
 
-            const promise = new Promise((resolve, reject) => {
+            const rawPromise = new Promise((resolve, reject) => {
                 const existing = Array.from(document.querySelectorAll('script[data-capstone-wasm-src]'))
                     .find(el => el && el.dataset && el.dataset.capstoneWasmSrc === url);
                 if (existing) {
@@ -42,6 +42,10 @@
                 };
                 el.onerror = () => reject(new Error(`Failed to load script: ${url}`));
                 document.head.appendChild(el);
+            });
+            const promise = rawPromise.catch((error) => {
+                localWasmScriptPromises.delete(url);
+                throw error;
             });
 
             localWasmScriptPromises.set(url, promise);
@@ -263,6 +267,785 @@
             return `${pfx}median=${fmt(stats.median)} mean=${fmt(stats.mean)} stdev=${fmt(stats.stdev)} min=${fmt(stats.min)} max=${fmt(stats.max)}`;
         }
 
+        let localWasmManifestPromise = null;
+        let localPyodidePromise = null;
+        let localGeneratorScriptSourcePromise = null;
+        let localGeneratorBootstrapReady = false;
+
+        async function loadLocalWasmManifest() {
+            if (localWasmManifestPromise) return localWasmManifestPromise;
+            localWasmManifestPromise = (async () => {
+                try {
+                    const resp = await fetch('wasm/manifest.json', { cache: 'no-cache' });
+                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                    const data = await resp.json();
+                    if (!data || typeof data !== 'object') throw new Error('Invalid manifest');
+                    return data;
+                } catch (_) {
+                    return null;
+                }
+            })();
+            return localWasmManifestPromise;
+        }
+
+        async function getLocalWasmModuleSpec(moduleId, fallbackSpec) {
+            const id = String(moduleId || '').trim();
+            if (!id) return fallbackSpec && typeof fallbackSpec === 'object' ? fallbackSpec : null;
+            const manifest = await loadLocalWasmManifest();
+            const item = manifest && manifest.modules && manifest.modules[id] ? manifest.modules[id] : null;
+            if (!item || typeof item !== 'object') return fallbackSpec;
+            const scriptPath = String(item.scriptPath || '').trim();
+            const wasmPath = String(item.wasmPath || '').trim();
+            const factoryName = String(item.factoryName || '').trim();
+            if (!scriptPath || !wasmPath || !factoryName) return fallbackSpec;
+            return { id, scriptPath, wasmPath, factoryName };
+        }
+
+        function localRandom31() {
+            if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+                const buf = new Uint32Array(1);
+                window.crypto.getRandomValues(buf);
+                return Number(buf[0] & 0x7fffffff);
+            }
+            return Math.floor(Math.random() * 0x80000000);
+        }
+
+        async function ensureLocalPyodide() {
+            if (localPyodidePromise) return localPyodidePromise;
+            localPyodidePromise = (async () => {
+                if (typeof window.loadPyodide !== 'function') {
+                    if (typeof loadScriptOnce !== 'function') {
+                        throw new Error('Local generator runtime loader unavailable.');
+                    }
+                    await loadScriptOnce('https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js');
+                }
+                if (typeof window.loadPyodide !== 'function') {
+                    throw new Error('Failed to load Pyodide for exact local generator parity.');
+                }
+                return await window.loadPyodide({
+                    indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.27.2/full/'
+                });
+            })().catch((error) => {
+                localPyodidePromise = null;
+                throw error;
+            });
+            return localPyodidePromise;
+        }
+
+        async function getLocalGeneratorScriptSource() {
+            if (localGeneratorScriptSourcePromise) return localGeneratorScriptSourcePromise;
+            localGeneratorScriptSourcePromise = (async () => {
+                if (typeof getRepoFileText === 'function') {
+                    try {
+                        return await getRepoFileText('utilities/generate_graphs.py');
+                    } catch (_) {}
+                }
+                const resp = await fetch('utilities/generate_graphs.py', { cache: 'no-cache' });
+                if (!resp.ok) throw new Error(`Failed to load utilities/generate_graphs.py (HTTP ${resp.status})`);
+                return await resp.text();
+            })().catch((error) => {
+                localGeneratorScriptSourcePromise = null;
+                throw error;
+            });
+            return localGeneratorScriptSourcePromise;
+        }
+
+        async function ensureLocalGeneratorBootstrap() {
+            const pyodide = await ensureLocalPyodide();
+            if (localGeneratorBootstrapReady) return pyodide;
+            const source = await getLocalGeneratorScriptSource();
+            pyodide.FS.mkdirTree('/capstone');
+            pyodide.FS.writeFile('/capstone/generate_graphs.py', source, { encoding: 'utf8' });
+            await pyodide.runPythonAsync(`
+import contextlib, io, json, runpy, shutil, sys
+from pathlib import Path
+
+def capstone_run_local_generator(args, out_dir):
+    out_dir_path = Path(out_dir)
+    if out_dir_path.exists():
+        shutil.rmtree(out_dir_path)
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+    prev_argv = sys.argv[:]
+    out_buf = io.StringIO()
+    err_buf = io.StringIO()
+    try:
+        sys.argv = ["generate_graphs.py"] + [str(x) for x in args]
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+            runpy.run_path("/capstone/generate_graphs.py", run_name="__main__")
+    finally:
+        sys.argv = prev_argv
+    meta = {}
+    meta_path = out_dir_path / "metadata.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    files = []
+    for pstr in meta.get("files", []):
+        p = Path(pstr)
+        files.append({"path": p.as_posix(), "name": p.name, "text": p.read_text(encoding="utf-8")})
+    return json.dumps({"stdout": out_buf.getvalue(), "stderr": err_buf.getvalue(), "metadata": meta, "files": files})
+`);
+            localGeneratorBootstrapReady = true;
+            return pyodide;
+        }
+
+        function createLocalExactGeneratorSession(options = {}) {
+            const algorithm = String(options.algorithm || '').trim().toLowerCase();
+            const n = Number.isFinite(Number(options.n)) ? Math.floor(Number(options.n)) : null;
+            const k = Number.isFinite(Number(options.k)) ? Math.floor(Number(options.k)) : null;
+            const density = Number(options.density);
+            const seedRaw = String(options.seed ?? '').trim();
+            const hasUserSeed = /^-?\d+$/.test(seedRaw);
+            const baseSeed = hasUserSeed ? parseInt(seedRaw, 10) : localRandom31();
+            let counter = 0;
+            let visSeed = null;
+
+            const shouldSetVisSeed = (variant, iterTag) => {
+                const v = String(variant || '');
+                const t = String(iterTag || '');
+                if (algorithm === 'dijkstra') return v === 'dijkstra_iter' && t === '1';
+                if (algorithm === 'glasgow') return v === 'glasgow_iter' && t === '1';
+                if (algorithm === 'vf3') return v === 'vf3_iter' && t === '1';
+                if (algorithm === 'subgraph') return v === 'subgraph_iter' && t === '1';
+                return false;
+            };
+
+            return {
+                algorithm,
+                baseSeed,
+                hasUserSeed,
+                get generatedSeed() { return baseSeed; },
+                get counter() { return counter; },
+                get visSeed() { return visSeed; },
+                async generateForRun(variant, iterTag) {
+                    counter += 1;
+                    const derivedSeed = Number(baseSeed) + counter;
+                    if (visSeed === null && shouldSetVisSeed(variant, iterTag)) {
+                        visSeed = derivedSeed;
+                    }
+                    const pyodide = await ensureLocalGeneratorBootstrap();
+                    const outDir = `/capstone/generated/${algorithm}/${String(variant || 'run')}/iter_${String(iterTag || '1')}`;
+                    const args = [
+                        '--algorithm', algorithm,
+                        '--n', String(n),
+                        '--density', String(density),
+                        '--seed', String(derivedSeed),
+                        '--out-dir', outDir
+                    ];
+                    if (algorithm !== 'dijkstra' && Number.isFinite(k)) {
+                        args.push('--k', String(k));
+                    }
+                    const jsonText = await pyodide.runPythonAsync(
+                        `capstone_run_local_generator(${JSON.stringify(args)}, ${JSON.stringify(outDir)})`
+                    );
+                    const payload = JSON.parse(String(jsonText || '{}'));
+                    const files = Array.isArray(payload.files) ? payload.files : [];
+                    return {
+                        variant: String(variant || ''),
+                        iterTag: String(iterTag || ''),
+                        seed: derivedSeed,
+                        metadata: payload && typeof payload.metadata === 'object' ? payload.metadata : {},
+                        files: files.map(f => ({
+                            path: String(f && f.path ? f.path : ''),
+                            name: String(f && f.name ? f.name : ''),
+                            text: String(f && f.text ? f.text : '')
+                        }))
+                    };
+                }
+            };
+        }
+
+        function localEdgeKey(a, b) {
+            const x = Number(a);
+            const y = Number(b);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+            return x <= y ? [x, y] : [y, x];
+        }
+
+        function parseLocalLad(text) {
+            const lines = String(text || '').replace(/\r/g, '').split('\n');
+            let idx = 0;
+            const nextLine = () => {
+                while (idx < lines.length) {
+                    const line = String(lines[idx++] || '').trim();
+                    if (!line || line.startsWith('#')) continue;
+                    return line;
+                }
+                return null;
+            };
+            const first = nextLine();
+            const n = first ? parseInt(first, 10) : 0;
+            const adjSets = Array.from({ length: Math.max(0, n) }, () => new Set());
+            const labels = new Array(Math.max(0, n)).fill(0);
+            for (let i = 0; i < n; i++) {
+                const line = nextLine();
+                if (!line) continue;
+                const vals = line.split(/\s+/).map(Number).filter(v => Number.isFinite(v));
+                if (!vals.length) continue;
+                let degree = vals[0];
+                let start = 1;
+                if (vals.length >= 2 && vals[1] === (vals.length - 2)) {
+                    labels[i] = vals[0];
+                    degree = vals[1];
+                    start = 2;
+                }
+                for (let j = 0; j < degree && (start + j) < vals.length; j++) {
+                    const v = vals[start + j];
+                    if (Number.isInteger(v) && v >= 0 && v < n && v !== i) {
+                        adjSets[i].add(v);
+                        adjSets[v].add(i);
+                    }
+                }
+            }
+            return { adj: adjSets.map(s => Array.from(s).sort((a, b) => a - b)), labels };
+        }
+
+        function parseLocalVf(text) {
+            const lines = String(text || '').replace(/\r/g, '').split('\n');
+            let idx = 0;
+            const nextNums = () => {
+                while (idx < lines.length) {
+                    const line = String(lines[idx++] || '');
+                    const trimmed = line.trim();
+                    if (!trimmed || trimmed.startsWith('#')) continue;
+                    const nums = (line.match(/-?\d+/g) || []).map(Number).filter(v => Number.isFinite(v));
+                    if (nums.length) return nums;
+                }
+                return null;
+            };
+            const header = nextNums();
+            const n = header && header.length ? Math.max(0, Number(header[0])) : 0;
+            const labels = new Array(n).fill(0);
+            for (let i = 0; i < n; i++) {
+                const row = nextNums();
+                if (!row) break;
+                if (row.length >= 2) labels[i] = Number(row[1]);
+            }
+            const adjSets = Array.from({ length: n }, () => new Set());
+            for (let i = 0; i < n; i++) {
+                const countLine = nextNums();
+                if (!countLine) break;
+                const edgeCount = Math.max(0, Number(countLine[0]) || 0);
+                for (let k = 0; k < edgeCount; k++) {
+                    const edgeNums = nextNums();
+                    if (!edgeNums || !edgeNums.length) continue;
+                    let j = null;
+                    if (edgeNums.length >= 2) {
+                        const a = Number(edgeNums[0]);
+                        const b = Number(edgeNums[1]);
+                        if (a === i && b >= 0 && b < n) j = b;
+                        else if (b === i && a >= 0 && a < n) j = a;
+                        else if (a >= 0 && a < n) j = a;
+                        else if (b >= 0 && b < n) j = b;
+                    } else {
+                        const a = Number(edgeNums[0]);
+                        if (a >= 0 && a < n) j = a;
+                    }
+                    if (Number.isInteger(j) && j !== i) {
+                        adjSets[i].add(j);
+                        adjSets[j].add(i);
+                    }
+                }
+            }
+            return { adj: adjSets.map(s => Array.from(s).sort((a, b) => a - b)), labels };
+        }
+
+        function getLocalGraphFormatFromFile(fileLike) {
+            const path = String(
+                (fileLike && (fileLike.path || fileLike.name)) ? (fileLike.path || fileLike.name) : ''
+            ).trim().toLowerCase();
+            if (path.endsWith('.lad')) return 'lad';
+            if (path.endsWith('.vf') || path.endsWith('.grf')) return 'vf';
+            return 'vf';
+        }
+
+        function serializeLocalLad(parsed, options = {}) {
+            const adj = Array.isArray(parsed && parsed.adj) ? parsed.adj : [];
+            const labels = Array.isArray(parsed && parsed.labels) ? parsed.labels : [];
+            const forceVertexLabels = !!(options && options.vertexLabelled);
+            const lines = [String(adj.length)];
+            for (let i = 0; i < adj.length; i++) {
+                const nbrs = Array.isArray(adj[i]) ? adj[i].map(Number).filter(v => Number.isInteger(v) && v >= 0 && v < adj.length && v !== i) : [];
+                const uniq = Array.from(new Set(nbrs)).sort((a, b) => a - b);
+                if (forceVertexLabels) {
+                    const label = Number.isFinite(Number(labels[i])) ? Number(labels[i]) : 0;
+                    lines.push(`${label} ${uniq.length}${uniq.length ? ` ${uniq.join(' ')}` : ''}`);
+                } else {
+                    lines.push(`${uniq.length}${uniq.length ? ` ${uniq.join(' ')}` : ''}`);
+                }
+            }
+            return lines.join('\n') + '\n';
+        }
+
+        function serializeLocalVf(parsed) {
+            const adj = Array.isArray(parsed && parsed.adj) ? parsed.adj : [];
+            const labels = Array.isArray(parsed && parsed.labels) ? parsed.labels : [];
+            const lines = [String(adj.length)];
+            for (let i = 0; i < adj.length; i++) {
+                const label = Number.isFinite(Number(labels[i])) ? Number(labels[i]) : 0;
+                lines.push(`${i} ${label}`);
+            }
+            for (let i = 0; i < adj.length; i++) {
+                const nbrs = Array.isArray(adj[i]) ? adj[i].map(Number).filter(v => Number.isInteger(v) && v >= 0 && v < adj.length && v !== i) : [];
+                const uniq = Array.from(new Set(nbrs)).sort((a, b) => a - b);
+                lines.push(String(uniq.length));
+                for (const j of uniq) {
+                    lines.push(`${i} ${j}`);
+                }
+            }
+            return lines.join('\n') + '\n';
+        }
+
+        function parseLocalGraphByFormat(text, format) {
+            const fmt = String(format || '').trim().toLowerCase();
+            return fmt === 'lad' ? parseLocalLad(text) : parseLocalVf(text);
+        }
+
+        function buildLocalDualFormatGraphPair(opts = {}) {
+            const patternText = String(opts.patternText || '');
+            const targetText = String(opts.targetText || '');
+            const patternFormat = String(opts.patternFormat || 'vf').trim().toLowerCase();
+            const targetFormat = String(opts.targetFormat || 'vf').trim().toLowerCase();
+            const patternParsed = parseLocalGraphByFormat(patternText, patternFormat);
+            const targetParsed = parseLocalGraphByFormat(targetText, targetFormat);
+            return {
+                parsed: {
+                    pattern: patternParsed,
+                    target: targetParsed
+                },
+                vf: {
+                    patternText: serializeLocalVf(patternParsed),
+                    targetText: serializeLocalVf(targetParsed)
+                },
+                lad: {
+                    patternText: serializeLocalLad(patternParsed, { vertexLabelled: true }),
+                    targetText: serializeLocalLad(targetParsed, { vertexLabelled: true })
+                },
+                ladUnlabelled: {
+                    patternText: serializeLocalLad(patternParsed, { vertexLabelled: false }),
+                    targetText: serializeLocalLad(targetParsed, { vertexLabelled: false })
+                }
+            };
+        }
+
+        function extractLocalSolutionCount(text) {
+            const lines = String(text || '')
+                .replace(/\r/g, '')
+                .split('\n')
+                .map(line => String(line || '').trim())
+                .filter(Boolean);
+            if (!lines.length) return null;
+
+            for (let i = lines.length - 1; i >= 0; i--) {
+                const m = lines[i].match(/\b(?:solutions?|count)\b[^0-9-]*(-?\d+)\b/i);
+                if (m) {
+                    const n = Number(m[1]);
+                    if (Number.isInteger(n)) return n;
+                }
+            }
+
+            let timeLineIndex = -1;
+            for (let i = lines.length - 1; i >= 0; i--) {
+                if (/^time\s*:/i.test(lines[i]) || /time\b/i.test(lines[i])) {
+                    timeLineIndex = i;
+                    break;
+                }
+            }
+            if (timeLineIndex > 0) {
+                for (let i = timeLineIndex - 1; i >= 0; i--) {
+                    if (/^-?\d+$/.test(lines[i])) {
+                        const n = Number(lines[i]);
+                        if (Number.isInteger(n)) return n;
+                    }
+                }
+            }
+
+            for (let i = lines.length - 1; i >= 0; i--) {
+                if (/^-?\d+$/.test(lines[i])) {
+                    const n = Number(lines[i]);
+                    if (Number.isInteger(n)) return n;
+                }
+            }
+            return null;
+        }
+
+        function extractLocalCountTimeMs(text) {
+            const raw = String(text || '').replace(/\r/g, '');
+            if (!raw.trim()) return null;
+            const lines = raw.split('\n').map(line => String(line || '').trim()).filter(Boolean);
+            const count = extractLocalSolutionCount(raw);
+            let timeMs = null;
+            for (let i = lines.length - 1; i >= 0; i--) {
+                const line = lines[i];
+                let m = line.match(/time\s*:\s*([0-9]+(?:\.[0-9]+)?)\b/i);
+                if (!m) m = line.match(/\b([0-9]+(?:\.[0-9]+)?)\s*ms\b/i);
+                if (m) {
+                    const value = Number(m[1]);
+                    if (Number.isFinite(value)) {
+                        timeMs = value;
+                        break;
+                    }
+                }
+            }
+            return (count === null && timeMs === null) ? null : { count, timeMs };
+        }
+
+        function parseLocalDijkstraCsv(text) {
+            const lines = String(text || '').replace(/\r/g, '').split('\n');
+            const comments = [];
+            const rows = [];
+            for (const raw of lines) {
+                const trimmed = String(raw || '').trim();
+                if (!trimmed) continue;
+                if (trimmed.startsWith('#')) comments.push(trimmed);
+                else rows.push(String(raw || ''));
+            }
+
+            let startLabel = '';
+            let targetLabel = '';
+            for (const c of comments) {
+                const s = c.match(/\bstart\s*[:=]\s*([^\s,;]+)/i);
+                const t = c.match(/\b(?:target|end)\s*[:=]\s*([^\s,;]+)/i);
+                if (s && !startLabel) startLabel = s[1].trim();
+                if (t && !targetLabel) targetLabel = t[1].trim();
+            }
+
+            const idMap = new Map();
+            const labels = [];
+            const getId = (label) => {
+                const key = String(label);
+                if (idMap.has(key)) return idMap.get(key);
+                const id = labels.length;
+                idMap.set(key, id);
+                labels.push(key);
+                return id;
+            };
+
+            const directed = [];
+            let headerConsumed = false;
+            for (const row of rows) {
+                const cells = row.split(/[;,]/).map(v => String(v || '').trim());
+                if (cells.length < 3) continue;
+                const weight = Number(cells[2]);
+                if (!Number.isFinite(weight)) {
+                    if (!headerConsumed) {
+                        headerConsumed = true;
+                    }
+                    continue;
+                }
+                const u = getId(cells[0]);
+                const v = getId(cells[1]);
+                directed.push([u, v, weight]);
+                if (!startLabel) startLabel = cells[0];
+                targetLabel = cells[1];
+            }
+
+            const n = labels.length;
+            const directedAdj = Array.from({ length: n }, () => []);
+            const undirectedSets = Array.from({ length: n }, () => new Set());
+            for (const [u, v, w] of directed) {
+                if (u < 0 || v < 0 || u >= n || v >= n) continue;
+                directedAdj[u].push([v, w]);
+                if (u !== v) {
+                    undirectedSets[u].add(v);
+                    undirectedSets[v].add(u);
+                }
+            }
+            const undirectedAdj = undirectedSets.map(s => Array.from(s).sort((a, b) => a - b));
+
+            const startIdx = idMap.has(startLabel) ? idMap.get(startLabel) : null;
+            const targetIdx = idMap.has(targetLabel) ? idMap.get(targetLabel) : null;
+            const dist = new Array(n).fill(Number.POSITIVE_INFINITY);
+            const parent = new Array(n).fill(-1);
+            if (Number.isInteger(startIdx) && startIdx >= 0 && startIdx < n) {
+                dist[startIdx] = 0;
+                const pq = [[0, startIdx]];
+                while (pq.length) {
+                    pq.sort((a, b) => a[0] - b[0]);
+                    const [d, u] = pq.shift();
+                    if (d !== dist[u]) continue;
+                    if (u === targetIdx) break;
+                    for (const [v, w] of directedAdj[u]) {
+                        const nd = d + w;
+                        if (nd < dist[v]) {
+                            dist[v] = nd;
+                            parent[v] = u;
+                            pq.push([nd, v]);
+                        }
+                    }
+                }
+            }
+
+            let pathNodes = [];
+            let pathDistance = null;
+            if (Number.isInteger(targetIdx) && targetIdx >= 0 && targetIdx < n && dist[targetIdx] !== Number.POSITIVE_INFINITY) {
+                pathDistance = dist[targetIdx];
+                let cur = targetIdx;
+                while (cur !== -1) {
+                    pathNodes.push(cur);
+                    if (cur === startIdx) break;
+                    cur = parent[cur];
+                }
+                if (!pathNodes.length || pathNodes[pathNodes.length - 1] !== startIdx) {
+                    pathNodes = [];
+                    pathDistance = null;
+                } else {
+                    pathNodes.reverse();
+                }
+            }
+
+            return { adj: undirectedAdj, nodeLabels: labels, startLabel, targetLabel, startIdx, targetIdx, pathNodes, pathDistance };
+        }
+
+        function extractLocalMappingsFromText(text, limit = 25) {
+            const raw = String(text || '');
+            if (!raw) return [];
+            const out = [];
+            const seen = new Set();
+            for (const line of raw.replace(/\r/g, '').split('\n')) {
+                if (!line.includes('Mapping:') && !/mapping\s*=/i.test(line)) continue;
+                const pairs = Array.from(line.matchAll(/\(\s*(\d+)\s*->\s*(\d+)\s*\)/g));
+                if (!pairs.length) continue;
+                const mapping = {};
+                for (const p of pairs) {
+                    mapping[Number(p[1])] = Number(p[2]);
+                }
+                const key = JSON.stringify(mapping);
+                if (key === '{}' || seen.has(key)) continue;
+                seen.add(key);
+                out.push(mapping);
+                if (out.length >= limit) break;
+            }
+            return out;
+        }
+
+        function buildLocalDijkstraVisualization(opts = {}) {
+            const parsed = parseLocalDijkstraCsv(String(opts.inputText || ''));
+            const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : 1;
+            const seed = (opts.seed === null || opts.seed === undefined || opts.seed === '') ? null : opts.seed;
+            const adj = Array.isArray(parsed.adj) ? parsed.adj : [];
+
+            const allEdges = new Set();
+            for (let i = 0; i < adj.length; i++) {
+                for (const j of (adj[i] || [])) {
+                    if (i === j) continue;
+                    const ek = localEdgeKey(i, j);
+                    if (ek) allEdges.add(`${ek[0]}:${ek[1]}`);
+                }
+            }
+
+            const maxNodes = 4000;
+            const maxEdges = 4000;
+            const allowedNodes = new Set(Array.from({ length: Math.min(adj.length, maxNodes) }, (_, i) => i));
+            let truncated = adj.length > maxNodes;
+
+            const filteredEdges = [];
+            for (const [a, b] of Array.from(allEdges).map(k => k.split(':').map(Number)).sort((x, y) => (x[0] - y[0]) || (x[1] - y[1]))) {
+                if (allowedNodes.has(a) && allowedNodes.has(b)) filteredEdges.push([a, b]);
+                if (filteredEdges.length >= maxEdges) {
+                    truncated = true;
+                    break;
+                }
+            }
+            const filteredEdgeSet = new Set(filteredEdges.map(([a, b]) => `${a}:${b}`));
+
+            const nodes = [];
+            for (let i = 0; i < Math.min(adj.length, maxNodes); i++) {
+                nodes.push({ data: { id: String(i), label: String(parsed.nodeLabels && parsed.nodeLabels[i] !== undefined ? parsed.nodeLabels[i] : i) } });
+            }
+            const edges = filteredEdges.map(([a, b]) => ({ data: { id: `${a}-${b}`, source: String(a), target: String(b) } }));
+
+            const highlightNodes = [];
+            if (Number.isInteger(parsed.startIdx)) highlightNodes.push(parsed.startIdx);
+            if (Number.isInteger(parsed.targetIdx) && parsed.targetIdx !== parsed.startIdx) highlightNodes.push(parsed.targetIdx);
+            for (const n of (Array.isArray(parsed.pathNodes) ? parsed.pathNodes : [])) {
+                if (Number.isInteger(n) && !highlightNodes.includes(n)) highlightNodes.push(n);
+            }
+
+            const highlightEdges = [];
+            const pathNodes = Array.isArray(parsed.pathNodes) ? parsed.pathNodes : [];
+            for (let i = 0; i + 1 < pathNodes.length; i++) {
+                const ek = localEdgeKey(pathNodes[i], pathNodes[i + 1]);
+                if (!ek) continue;
+                const key = `${ek[0]}:${ek[1]}`;
+                if (filteredEdgeSet.has(key)) highlightEdges.push(`${ek[0]}-${ek[1]}`);
+            }
+
+            const payload = {
+                algorithm: 'dijkstra',
+                seed,
+                iteration,
+                node_count: adj.length,
+                edge_count: allEdges.size,
+                nodes,
+                edges,
+                highlight_nodes: highlightNodes.filter(n => allowedNodes.has(n)).map(n => String(n)),
+                highlight_edges: highlightEdges,
+                pattern_node_count: 0,
+                pattern_nodes: [],
+                pattern_edges: [],
+                solutions: [],
+                no_solutions: pathNodes.length === 0,
+                truncated
+            };
+            if (parsed.startLabel) payload.start_label = parsed.startLabel;
+            if (parsed.targetLabel) payload.target_label = parsed.targetLabel;
+            if (pathNodes.length) payload.shortest_path = pathNodes.map(i => String(parsed.nodeLabels[i] ?? i));
+            if (Number.isFinite(Number(parsed.pathDistance))) payload.shortest_path_distance = Number(parsed.pathDistance);
+            return payload;
+        }
+
+        function buildLocalVisualizationIterations(payloads) {
+            const list = (Array.isArray(payloads) ? payloads : []).filter(Boolean);
+            if (!list.length) return null;
+            const root = Object.assign({}, list[0]);
+            root.visualization_iterations = list;
+            return root;
+        }
+
+        function buildLocalSubgraphLikeVisualization(opts = {}) {
+            const algorithm = String(opts.algorithm || '').trim().toLowerCase();
+            const patternText = String(opts.patternText || '');
+            const targetText = String(opts.targetText || '');
+            const patternFormat = String(opts.patternFormat || '').trim().toLowerCase() || (algorithm === 'glasgow' ? 'lad' : 'vf');
+            const targetFormat = String(opts.targetFormat || '').trim().toLowerCase() || (algorithm === 'glasgow' ? 'lad' : 'vf');
+            const patternNodes = Array.isArray(opts.patternNodes) ? opts.patternNodes.map(Number) : null;
+            const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : 1;
+            const seed = (opts.seed === null || opts.seed === undefined || opts.seed === '') ? null : opts.seed;
+            const mappingSources = Array.isArray(opts.mappingSources) ? opts.mappingSources : [];
+
+            const parseGraph = (fmt, text) => (fmt === 'lad' ? parseLocalLad(text) : parseLocalVf(text));
+            const patternParsed = parseGraph(patternFormat, patternText);
+            const targetParsed = parseGraph(targetFormat, targetText);
+            const adjPattern = Array.isArray(patternParsed.adj) ? patternParsed.adj : [];
+            const adjTarget = Array.isArray(targetParsed.adj) ? targetParsed.adj : [];
+
+            const targetEdges = new Set();
+            for (let i = 0; i < adjTarget.length; i++) {
+                for (const j of (adjTarget[i] || [])) {
+                    if (i === j) continue;
+                    const ek = localEdgeKey(i, j);
+                    if (ek) targetEdges.add(`${ek[0]}:${ek[1]}`);
+                }
+            }
+
+            const patternEdges = [];
+            const patternEdgeSet = new Set();
+            for (let i = 0; i < adjPattern.length; i++) {
+                for (const j of (adjPattern[i] || [])) {
+                    if (i === j) continue;
+                    const ek = localEdgeKey(i, j);
+                    if (!ek) continue;
+                    const key = `${ek[0]}:${ek[1]}`;
+                    if (patternEdgeSet.has(key)) continue;
+                    patternEdgeSet.add(key);
+                    patternEdges.push([ek[0], ek[1]]);
+                }
+            }
+            patternEdges.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
+
+            const solutionLimit = algorithm === 'glasgow' ? 25 : 250;
+            let mappings = [];
+            for (const src of mappingSources) {
+                const found = extractLocalMappingsFromText(src, solutionLimit);
+                if (found.length) mappings = mappings.concat(found);
+                if (mappings.length >= solutionLimit) break;
+            }
+            if (!mappings.length && patternNodes && patternNodes.length) {
+                const fallback = {};
+                patternNodes.forEach((t, p) => {
+                    if (Number.isInteger(t)) fallback[p] = t;
+                });
+                if (Object.keys(fallback).length) mappings = [fallback];
+            }
+
+            const maxNodes = 4000;
+            const maxEdges = 4000;
+            const allowedNodes = new Set(Array.from({ length: Math.min(adjTarget.length, maxNodes) }, (_, i) => i));
+            let truncated = adjTarget.length > maxNodes;
+
+            const filteredEdges = [];
+            for (const [a, b] of Array.from(targetEdges).map(k => k.split(':').map(Number)).sort((x, y) => (x[0] - y[0]) || (x[1] - y[1]))) {
+                if (allowedNodes.has(a) && allowedNodes.has(b)) filteredEdges.push([a, b]);
+                if (filteredEdges.length >= maxEdges) {
+                    truncated = true;
+                    break;
+                }
+            }
+            const filteredEdgeSet = new Set(filteredEdges.map(([a, b]) => `${a}:${b}`));
+
+            const nodes = [];
+            for (let i = 0; i < Math.min(adjTarget.length, maxNodes); i++) {
+                nodes.push({ data: { id: String(i), label: String(i) } });
+            }
+            const edges = filteredEdges.map(([a, b]) => ({ data: { id: `${a}-${b}`, source: String(a), target: String(b) } }));
+
+            const mappingToSolution = (mappingObj) => {
+                if (!mappingObj || typeof mappingObj !== 'object') return null;
+                const mapping = new Array(adjPattern.length).fill(null);
+                for (const [pk, tv] of Object.entries(mappingObj)) {
+                    const p = Number(pk);
+                    const t = Number(tv);
+                    if (Number.isInteger(p) && Number.isInteger(t) && p >= 0 && p < mapping.length) {
+                        mapping[p] = t;
+                    }
+                }
+                const highlightNodes = mapping.filter(v => Number.isInteger(v));
+                const highlightEdges = [];
+                for (const [a, b] of patternEdges) {
+                    const ta = mapping[a];
+                    const tb = mapping[b];
+                    if (!Number.isInteger(ta) || !Number.isInteger(tb)) continue;
+                    const ek = localEdgeKey(ta, tb);
+                    if (!ek) continue;
+                    const key = `${ek[0]}:${ek[1]}`;
+                    if (targetEdges.has(key)) highlightEdges.push(key);
+                }
+                return { mapping, highlightNodes, highlightEdges };
+            };
+
+            const solutions = [];
+            const seen = new Set();
+            for (const m of mappings) {
+                const sol = mappingToSolution(m);
+                if (!sol) continue;
+                const key = JSON.stringify(sol.mapping);
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const keptNodes = sol.highlightNodes.filter(n => allowedNodes.has(n));
+                const keptEdges = sol.highlightEdges
+                    .filter(k => filteredEdgeSet.has(k))
+                    .map(k => {
+                        const [a, b] = k.split(':').map(Number);
+                        return `${a}-${b}`;
+                    });
+                solutions.push({
+                    mapping: sol.mapping,
+                    highlight_nodes: keptNodes,
+                    highlight_edges: keptEdges
+                });
+                if (solutions.length >= solutionLimit) break;
+            }
+
+            const first = solutions[0] || null;
+            return {
+                algorithm,
+                seed,
+                iteration,
+                node_count: adjTarget.length,
+                edge_count: targetEdges.size,
+                nodes,
+                edges,
+                highlight_nodes: first ? first.highlight_nodes.map(v => String(v)) : [],
+                highlight_edges: first ? first.highlight_edges : [],
+                pattern_node_count: adjPattern.length,
+                pattern_nodes: first ? first.mapping : [],
+                pattern_edges: patternEdges.map(([a, b]) => [a, b]),
+                solutions,
+                no_solutions: solutions.length === 0,
+                truncated
+            };
+        }
+
         async function runDijkstraLocally(runCtx, iterations, warmup) {
             const safeWarmup = Math.max(0, Math.floor(Number(warmup) || 0));
             const safeIterations = Math.max(1, Math.floor(Number(iterations) || 0));
@@ -287,24 +1070,33 @@
             const inputText = await getRepoFileText(inputFile.path);
             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
 
-            const baselineSpec = {
+            const baselineSpecFallback = {
                 id: 'dijkstra_baseline',
                 scriptPath: 'wasm/dijkstra_baseline.js',
                 wasmPath: 'wasm/dijkstra_baseline.wasm',
                 factoryName: 'createDijkstraBaselineModule'
             };
-            const llmSpec = {
+            const llmSpecFallback = {
                 id: 'dijkstra_llm',
                 scriptPath: 'wasm/dijkstra_llm.js',
                 wasmPath: 'wasm/dijkstra_llm.wasm',
                 factoryName: 'createDijkstraLlmModule'
             };
-            const geminiSpec = {
+            const geminiSpecFallback = {
                 id: 'dijkstra_gemini',
                 scriptPath: 'wasm/dijkstra_gemini.js',
                 wasmPath: 'wasm/dijkstra_gemini.wasm',
                 factoryName: 'createDijkstraGeminiModule'
             };
+            const baselineSpec = (typeof getLocalWasmModuleSpec === 'function')
+                ? await getLocalWasmModuleSpec('dijkstra_baseline', baselineSpecFallback)
+                : baselineSpecFallback;
+            const llmSpec = (typeof getLocalWasmModuleSpec === 'function')
+                ? await getLocalWasmModuleSpec('dijkstra_llm', llmSpecFallback)
+                : llmSpecFallback;
+            const geminiSpec = (typeof getLocalWasmModuleSpec === 'function')
+                ? await getLocalWasmModuleSpec('dijkstra_gemini', geminiSpecFallback)
+                : geminiSpecFallback;
 
             const abortSignal = runCtx && runCtx.abortController ? runCtx.abortController.signal : null;
 
@@ -512,7 +1304,47 @@
                 addSection('Dijkstra ChatGPT', llmResult, sLlm);
                 addSection('Dijkstra Gemini', geminiResult, sGemini);
 
-                return { status: 'success', output: lines.join('\n') };
+                let visualization = null;
+                try {
+                    if (typeof buildLocalDijkstraVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
+                        visualization = buildLocalVisualizationIterations([
+                            buildLocalDijkstraVisualization({
+                                inputText,
+                                iteration: 1,
+                                seed: null
+                            })
+                        ]);
+                    }
+                } catch (_) {}
+
+                const result = {
+                    algorithm: 'dijkstra',
+                    status: 'success',
+                    output: lines.join('\n'),
+                    iterations: safeIterations,
+                    warmup: safeWarmup,
+                    timings_ms: {},
+                    timings_ms_stdev: {}
+                };
+                if (sBaseline) {
+                    result.timings_ms.baseline = sBaseline.median;
+                    result.timings_ms_stdev.baseline = sBaseline.stdev;
+                }
+                if (sLlm) {
+                    result.timings_ms.llm = sLlm.median;
+                    result.timings_ms.chatgpt = sLlm.median;
+                    result.timings_ms_stdev.llm = sLlm.stdev;
+                    result.timings_ms_stdev.chatgpt = sLlm.stdev;
+                }
+                if (sGemini) {
+                    result.timings_ms.gemini = sGemini.median;
+                    result.timings_ms_stdev.gemini = sGemini.stdev;
+                }
+                if (visualization) {
+                    result.visualization = visualization;
+                }
+
+                return { status: 'success', output: lines.join('\n'), result };
             } finally {
                 unloadModule(baselineSpec);
                 unloadModule(llmSpec);
@@ -550,24 +1382,33 @@
             ]);
             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
 
-            const baselineSpec = {
+            const baselineSpecFallback = {
                 id: 'vf3_baseline',
                 scriptPath: 'wasm/vf3_baseline.js',
                 wasmPath: 'wasm/vf3_baseline.wasm',
                 factoryName: 'createVf3BaselineModule'
             };
-            const geminiSpec = {
+            const geminiSpecFallback = {
                 id: 'vf3_gemini',
                 scriptPath: 'wasm/vf3_gemini.js',
                 wasmPath: 'wasm/vf3_gemini.wasm',
                 factoryName: 'createVf3GeminiModule'
             };
-            const chatgptSpec = {
+            const chatgptSpecFallback = {
                 id: 'vf3_chatgpt',
                 scriptPath: 'wasm/vf3_chatgpt.js',
                 wasmPath: 'wasm/vf3_chatgpt.wasm',
                 factoryName: 'createVf3ChatgptModule'
             };
+            const baselineSpec = (typeof getLocalWasmModuleSpec === 'function')
+                ? await getLocalWasmModuleSpec('vf3_baseline', baselineSpecFallback)
+                : baselineSpecFallback;
+            const geminiSpec = (typeof getLocalWasmModuleSpec === 'function')
+                ? await getLocalWasmModuleSpec('vf3_gemini', geminiSpecFallback)
+                : geminiSpecFallback;
+            const chatgptSpec = (typeof getLocalWasmModuleSpec === 'function')
+                ? await getLocalWasmModuleSpec('vf3_chatgpt', chatgptSpecFallback)
+                : chatgptSpecFallback;
 
             const writeInputs = (mod) => {
                 ensureEmscriptenDir(mod, '/inputs');
@@ -843,12 +1684,654 @@
                 addSection('VF3 Gemini', gemResult, sGemFirst, sGemAll);
                 addSection('VF3 ChatGPT', chatResult, sChatFirst, sChatAll);
 
-                return { status: 'success', output: lines.join('\n') };
+                let visualization = null;
+                try {
+                    if (typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
+                        visualization = buildLocalVisualizationIterations([
+                            buildLocalSubgraphLikeVisualization({
+                                algorithm: 'vf3',
+                                patternText,
+                                targetText,
+                                patternFormat: 'vf',
+                                targetFormat: 'vf',
+                                mappingSources: [chatResult, gemResult, baseResult],
+                                iteration: 1,
+                                seed: null
+                            })
+                        ]);
+                    }
+                } catch (_) {}
+
+                const result = {
+                    algorithm: 'vf3',
+                    status: 'success',
+                    output: lines.join('\n'),
+                    iterations: safeIterations,
+                    warmup: safeWarmup,
+                    timings_ms: {},
+                    timings_ms_stdev: {}
+                };
+                const addPair = (key, stats) => {
+                    if (!stats) return;
+                    result.timings_ms[key] = stats.median;
+                    result.timings_ms_stdev[key] = stats.stdev;
+                };
+                addPair('baseline_first', sBaseFirst);
+                addPair('baseline_all', sBaseAll);
+                addPair('gemini_first', sGemFirst);
+                addPair('gemini_all', sGemAll);
+                addPair('chatgpt_first', sChatFirst);
+                addPair('chatgpt_all', sChatAll);
+                if (visualization) {
+                    result.visualization = visualization;
+                }
+
+                return { status: 'success', output: lines.join('\n'), result };
             } finally {
                 // Drop cached modules at the end of each local run to keep memory stable between runs.
                 try { invalidateEmscriptenModule(baselineSpec.id); } catch (_) {}
                 try { invalidateEmscriptenModule(geminiSpec.id); } catch (_) {}
                 try { invalidateEmscriptenModule(chatgptSpec.id); } catch (_) {}
+            }
+        }
+
+        async function runGlasgowLocally(runCtx, iterations, warmup, options = {}) {
+            const safeWarmup = Math.max(0, Math.floor(Number(warmup) || 0));
+            const safeIterations = Math.max(1, Math.floor(Number(iterations) || 0));
+            const baselineFormatFlag = String(
+                (options && options.baselineFormatFlag) || 'lad'
+            ).trim().toLowerCase() || 'lad';
+            const resultAlgorithm = String(
+                (options && options.resultAlgorithm) || 'glasgow'
+            ).trim().toLowerCase() || 'glasgow';
+
+            const patternFile = (config.selectedFiles && config.selectedFiles[0]) ? config.selectedFiles[0] : null;
+            const targetFile = (config.selectedFiles && config.selectedFiles[1]) ? config.selectedFiles[1] : null;
+            if (!patternFile || !targetFile || !patternFile.path || !targetFile.path) {
+                throw new Error('Glasgow requires a pattern and target file');
+            }
+
+            const ticksPerIter = 6; // baseline first/all + chatgpt first/all + gemini first/all
+            const setupTotal = Math.max(1, safeWarmup * ticksPerIter);
+            const testsTotal = safeIterations * ticksPerIter;
+
+            progressReset(resultAlgorithm, safeIterations, runCtx.requestId, {
+                setupTotal,
+                testsPerIter: ticksPerIter
+            });
+
+            const [patternTextRaw, targetTextRaw] = await Promise.all([
+                getRepoFileText(patternFile.path),
+                getRepoFileText(targetFile.path)
+            ]);
+            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+
+            const patternFormat = getLocalGraphFormatFromFile(patternFile);
+            const targetFormat = getLocalGraphFormatFromFile(targetFile);
+            const dual = buildLocalDualFormatGraphPair({
+                patternText: patternTextRaw,
+                targetText: targetTextRaw,
+                patternFormat,
+                targetFormat
+            });
+
+            const useVertexLabelledLad = baselineFormatFlag === 'vertexlabelledlad';
+            const ladPatternText = useVertexLabelledLad ? dual.lad.patternText : dual.ladUnlabelled.patternText;
+            const ladTargetText = useVertexLabelledLad ? dual.lad.targetText : dual.ladUnlabelled.targetText;
+
+            const patternName = sanitizeFsFilename(
+                useVertexLabelledLad ? 'pattern_vertexlabelled.lad' : (patternFile.name || 'pattern.lad')
+            );
+            const targetName = sanitizeFsFilename(
+                useVertexLabelledLad ? 'target_vertexlabelled.lad' : (targetFile.name || 'target.lad')
+            );
+            const patternFsPath = `/inputs/${patternName}`;
+            const targetFsPath = `/inputs/${targetName}`;
+
+            const baselineSpecFallback = {
+                id: 'glasgow_baseline',
+                scriptPath: 'wasm/glasgow_baseline.js',
+                wasmPath: 'wasm/glasgow_baseline.wasm',
+                factoryName: 'createGlasgowBaselineModule'
+            };
+            const chatgptSpecFallback = {
+                id: 'glasgow_chatgpt',
+                scriptPath: 'wasm/glasgow_chatgpt.js',
+                wasmPath: 'wasm/glasgow_chatgpt.wasm',
+                factoryName: 'createGlasgowChatgptModule'
+            };
+            const geminiSpecFallback = {
+                id: 'glasgow_gemini',
+                scriptPath: 'wasm/glasgow_gemini.js',
+                wasmPath: 'wasm/glasgow_gemini.wasm',
+                factoryName: 'createGlasgowGeminiModule'
+            };
+            const baselineSpec = (typeof getLocalWasmModuleSpec === 'function')
+                ? await getLocalWasmModuleSpec('glasgow_baseline', baselineSpecFallback)
+                : baselineSpecFallback;
+            const chatgptSpec = (typeof getLocalWasmModuleSpec === 'function')
+                ? await getLocalWasmModuleSpec('glasgow_chatgpt', chatgptSpecFallback)
+                : chatgptSpecFallback;
+            const geminiSpec = (typeof getLocalWasmModuleSpec === 'function')
+                ? await getLocalWasmModuleSpec('glasgow_gemini', geminiSpecFallback)
+                : geminiSpecFallback;
+
+            const writeInputs = (mod) => {
+                ensureEmscriptenDir(mod, '/inputs');
+                writeEmscriptenTextFile(mod, patternFsPath, ladPatternText);
+                writeEmscriptenTextFile(mod, targetFsPath, ladTargetText);
+            };
+
+            const unloadModule = (spec) => {
+                try {
+                    invalidateEmscriptenModule(spec && spec.id ? spec.id : '');
+                } catch (_) {}
+            };
+            const loadFreshModule = async (spec, label, done, total, stage) => {
+                if (label) {
+                    progressSetDeterminate(
+                        label,
+                        Number.isFinite(Number(done)) ? Number(done) : 0,
+                        Math.max(1, Number.isFinite(Number(total)) ? Number(total) : 1),
+                        { stage }
+                    );
+                }
+                const mod = await getFreshEmscriptenModule(spec);
+                writeInputs(mod);
+                return mod;
+            };
+
+            const abortSignal = runCtx && runCtx.abortController ? runCtx.abortController.signal : null;
+
+            const baselineFirstArgs = ['--induced', '--format', baselineFormatFlag, patternFsPath, targetFsPath];
+            const baselineAllArgs = ['--induced', '--count-solutions', '--format', baselineFormatFlag, patternFsPath, targetFsPath];
+            const chatArgs = [patternFsPath, targetFsPath];
+            const gemArgs = [patternFsPath, targetFsPath];
+
+            try {
+                const warmupSingle = async (title, spec, argsList, tickIncrementRef) => {
+                    let mod = await loadFreshModule(spec, `Loading ${title} WASM...`, tickIncrementRef.value, setupTotal, 'setup');
+                    try {
+                        for (let i = 0; i < safeWarmup; i++) {
+                            for (const stepArgs of argsList) {
+                                if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                                progressSetDeterminate(`Warming up: ${title}`, tickIncrementRef.value, setupTotal, { stage: 'setup' });
+                                try {
+                                    await runEmscriptenMain(mod, stepArgs);
+                                } catch (error) {
+                                    const msg = error && error.message ? error.message : String(error);
+                                    throw new Error(`Warmup ${i + 1}/${safeWarmup} - ${title}: ${msg}`);
+                                }
+                                tickIncrementRef.value++;
+                                progressSetDeterminate(`Warming up: ${title}`, tickIncrementRef.value, setupTotal, { stage: 'setup' });
+                                await delay(0, abortSignal);
+                            }
+                        }
+                    } finally {
+                        mod = null;
+                        unloadModule(spec);
+                    }
+                    return null;
+                };
+
+                if (safeWarmup > 0) {
+                    const setupTicks = { value: 0 };
+                    let warm = await warmupSingle('Glasgow baseline', baselineSpec, [baselineFirstArgs, baselineAllArgs], setupTicks);
+                    if (warm && warm.status === 'aborted') return warm;
+                    warm = await warmupSingle('Glasgow ChatGPT', chatgptSpec, [chatArgs], setupTicks);
+                    if (warm && warm.status === 'aborted') return warm;
+                    // Workflow counts Glasgow ChatGPT as first+all using one execution.
+                    for (let i = 0; i < safeWarmup; i++) {
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                        setupTicks.value = Math.min(setupTotal, setupTicks.value + 1);
+                        progressSetDeterminate('Warming up: Glasgow ChatGPT', setupTicks.value, setupTotal, { stage: 'setup' });
+                    }
+                    warm = await warmupSingle('Glasgow Gemini', geminiSpec, [gemArgs], setupTicks);
+                    if (warm && warm.status === 'aborted') return warm;
+                    for (let i = 0; i < safeWarmup; i++) {
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                        setupTicks.value = Math.min(setupTotal, setupTicks.value + 1);
+                        progressSetDeterminate('Warming up: Glasgow Gemini', setupTicks.value, setupTotal, { stage: 'setup' });
+                    }
+                } else {
+                    progressSetDeterminate('Setting up Testing Environment', setupTotal, setupTotal, { stage: 'setup', reset: true });
+                }
+
+                progressSetDeterminate('Running tests...', 0, testsTotal, { stage: 'tests', reset: true });
+
+                const baseFirst = [];
+                const baseAll = [];
+                const chatFirst = [];
+                const chatAll = [];
+                const gemFirst = [];
+                const gemAll = [];
+                let ticksDone = 0;
+
+                let baselineFirstOut = '';
+                let baselineAllOut = '';
+                let chatOut = '';
+                let gemOut = '';
+
+                let glasgowSuccess = 0;
+                let glasgowFail = 0;
+                let chatMatch = 0;
+                let chatTotal = 0;
+                let chatMismatch = 0;
+                let gemMatch = 0;
+                let gemTotal = 0;
+                let gemMismatch = 0;
+
+                const isTrapError = (error) => {
+                    const msg = error && error.message ? String(error.message) : String(error);
+                    const lower = msg.toLowerCase();
+                    return lower.includes('function signature mismatch') ||
+                        lower.includes('memory access out of bounds') ||
+                        lower.includes('out of bounds memory access') ||
+                        lower.includes('unreachable');
+                };
+
+                const runOneMeasured = async (modRef, spec, title, args, storeTimes, captureStdout) => {
+                    for (let attempt = 0; attempt < 2; attempt++) {
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                        const t0 = runTimerNowMs();
+                        try {
+                            const res = await runEmscriptenMain(modRef.mod, args);
+                            const t1 = runTimerNowMs();
+                            storeTimes.push(Math.max(0, t1 - t0));
+                            if (captureStdout) {
+                                const stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
+                                captureStdout(stdout);
+                            }
+                            return null;
+                        } catch (error) {
+                            const canRecover = isTrapError(error) && attempt === 0;
+                            if (!canRecover) {
+                                const msg = error && error.message ? error.message : String(error);
+                                throw new Error(`${title}: ${msg}`);
+                            }
+                            modRef.mod = null;
+                            unloadModule(spec);
+                            await delay(0, abortSignal);
+                            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                            modRef.mod = await loadFreshModule(spec, `Recovering ${title} WASM...`, ticksDone, testsTotal, 'tests');
+                        }
+                    }
+                    return null;
+                };
+
+                let baselineModRef = { mod: await loadFreshModule(baselineSpec, 'Loading Glasgow baseline WASM...', ticksDone, testsTotal, 'tests') };
+                let chatModRef = { mod: await loadFreshModule(chatgptSpec, 'Loading Glasgow ChatGPT WASM...', ticksDone, testsTotal, 'tests') };
+                let gemModRef = { mod: await loadFreshModule(geminiSpec, 'Loading Glasgow Gemini WASM...', ticksDone, testsTotal, 'tests') };
+                try {
+                    for (let iter = 0; iter < safeIterations; iter++) {
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+
+                        progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
+                        let latestBaselineFirst = '';
+                        let latestBaselineAll = '';
+                        const firstRes = await runOneMeasured(
+                            baselineModRef,
+                            baselineSpec,
+                            `Iteration ${iter + 1}/${safeIterations} - Glasgow baseline first`,
+                            baselineFirstArgs,
+                            baseFirst,
+                            (stdout) => {
+                                latestBaselineFirst = stdout;
+                                if (!baselineFirstOut) baselineFirstOut = stdout;
+                            }
+                        );
+                        if (firstRes && firstRes.status === 'aborted') return firstRes;
+                        ticksDone++;
+                        progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
+                        await delay(0, abortSignal);
+
+                        progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
+                        const allRes = await runOneMeasured(
+                            baselineModRef,
+                            baselineSpec,
+                            `Iteration ${iter + 1}/${safeIterations} - Glasgow baseline all`,
+                            baselineAllArgs,
+                            baseAll,
+                            (stdout) => {
+                                latestBaselineAll = stdout;
+                                if (!baselineAllOut) baselineAllOut = stdout;
+                            }
+                        );
+                        if (allRes && allRes.status === 'aborted') return allRes;
+                        ticksDone++;
+                        progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
+                        await delay(0, abortSignal);
+
+                        const baselineCount = extractLocalSolutionCount(latestBaselineAll);
+                        if (baselineCount === null) {
+                            glasgowFail++;
+                            continue;
+                        }
+                        glasgowSuccess++;
+
+                        progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
+                        chatTotal++;
+                        let latestChat = '';
+                        const chatRes = await runOneMeasured(
+                            chatModRef,
+                            chatgptSpec,
+                            `Iteration ${iter + 1}/${safeIterations} - Glasgow ChatGPT`,
+                            chatArgs,
+                            chatFirst,
+                            (stdout) => {
+                                latestChat = stdout;
+                                if (!chatOut) chatOut = stdout;
+                            }
+                        );
+                        if (chatRes && chatRes.status === 'aborted') return chatRes;
+                        if (chatFirst.length) {
+                            const last = chatFirst[chatFirst.length - 1];
+                            chatAll.push(last);
+                        }
+                        ticksDone++;
+                        progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
+                        await delay(0, abortSignal);
+                        ticksDone++;
+                        progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
+                        const chatParsed = extractLocalCountTimeMs(latestChat);
+                        if (chatParsed && Number.isInteger(chatParsed.count) && chatParsed.count === baselineCount) chatMatch++;
+                        else chatMismatch++;
+
+                        progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
+                        gemTotal++;
+                        let latestGem = '';
+                        const gemRes = await runOneMeasured(
+                            gemModRef,
+                            geminiSpec,
+                            `Iteration ${iter + 1}/${safeIterations} - Glasgow Gemini`,
+                            gemArgs,
+                            gemFirst,
+                            (stdout) => {
+                                latestGem = stdout;
+                                if (!gemOut) gemOut = stdout;
+                            }
+                        );
+                        if (gemRes && gemRes.status === 'aborted') return gemRes;
+                        if (gemFirst.length) {
+                            const last = gemFirst[gemFirst.length - 1];
+                            gemAll.push(last);
+                        }
+                        ticksDone++;
+                        progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
+                        await delay(0, abortSignal);
+                        ticksDone++;
+                        progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
+                        const gemParsed = extractLocalCountTimeMs(latestGem);
+                        if (gemParsed && Number.isInteger(gemParsed.count) && gemParsed.count === baselineCount) gemMatch++;
+                        else gemMismatch++;
+                    }
+                } finally {
+                    baselineModRef.mod = null;
+                    chatModRef.mod = null;
+                    gemModRef.mod = null;
+                    unloadModule(baselineSpec);
+                    unloadModule(chatgptSpec);
+                    unloadModule(geminiSpec);
+                }
+
+                progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
+
+                const sBaseFirst = calcStatsMs(baseFirst);
+                const sBaseAll = calcStatsMs(baseAll);
+                const sChatFirst = calcStatsMs(chatFirst);
+                const sChatAll = calcStatsMs(chatAll);
+                const sGemFirst = calcStatsMs(gemFirst);
+                const sGemAll = calcStatsMs(gemAll);
+
+                const lines = [];
+                const failureSuffix = glasgowFail > 0 ? `, ${glasgowFail} failed` : '';
+                lines.push('[Glasgow Subgraph Solver]');
+                lines.push(`${glasgowSuccess} iterations ran successfully${failureSuffix}`);
+                lines.push(`Warmup: ${safeWarmup}`);
+                lines.push(`Iterations: ${safeIterations}`);
+                if (sBaseFirst && sBaseAll) lines.push(...formatStatsMsFirstAll('Runtime (ms): ', sBaseFirst, sBaseAll));
+                lines.push('');
+
+                const addLlmSection = (title, match, total, mismatch, firstStats, allStats) => {
+                    lines.push(`[${title}]`);
+                    lines.push(`Matches: ${match}/${total} (mismatches: ${mismatch})`);
+                    lines.push(`Warmup: ${safeWarmup}`);
+                    lines.push(`Iterations: ${safeIterations}`);
+                    if (firstStats && allStats) lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
+                    lines.push('');
+                };
+                addLlmSection('Glasgow ChatGPT', chatMatch, chatTotal, chatMismatch, sChatFirst, sChatAll);
+                addLlmSection('Glasgow Gemini', gemMatch, gemTotal, gemMismatch, sGemFirst, sGemAll);
+
+                let visualization = null;
+                try {
+                    if (typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
+                        visualization = buildLocalVisualizationIterations([
+                            buildLocalSubgraphLikeVisualization({
+                                algorithm: 'glasgow',
+                                patternText: ladPatternText,
+                                targetText: ladTargetText,
+                                patternFormat: 'lad',
+                                targetFormat: 'lad',
+                                mappingSources: [chatOut, gemOut, baselineAllOut, baselineFirstOut],
+                                iteration: 1,
+                                seed: null
+                            })
+                        ]);
+                    }
+                } catch (_) {}
+
+                const result = {
+                    algorithm: resultAlgorithm,
+                    status: 'success',
+                    output: lines.join('\n'),
+                    iterations: safeIterations,
+                    warmup: safeWarmup,
+                    timings_ms: {},
+                    timings_ms_stdev: {},
+                    match_counts: {
+                        baseline: {
+                            success: glasgowSuccess,
+                            failed: glasgowFail
+                        },
+                        chatgpt: {
+                            matches: chatMatch,
+                            total: chatTotal,
+                            mismatches: chatMismatch
+                        },
+                        gemini: {
+                            matches: gemMatch,
+                            total: gemTotal,
+                            mismatches: gemMismatch
+                        }
+                    }
+                };
+                const addPair = (key, stats) => {
+                    if (!stats) return;
+                    result.timings_ms[key] = stats.median;
+                    result.timings_ms_stdev[key] = stats.stdev;
+                };
+                addPair('first', sBaseFirst);
+                addPair('all', sBaseAll);
+                addPair('chatgpt_first', sChatFirst);
+                addPair('chatgpt_all', sChatAll);
+                addPair('gemini_first', sGemFirst);
+                addPair('gemini_all', sGemAll);
+                if (visualization) result.visualization = visualization;
+
+                return {
+                    status: 'success',
+                    output: lines.join('\n'),
+                    result,
+                    _localPhase: {
+                        baselineFirstOut,
+                        baselineAllOut,
+                        chatOut,
+                        gemOut,
+                        ladPatternText,
+                        ladTargetText
+                    }
+                };
+            } finally {
+                try { invalidateEmscriptenModule(baselineSpec.id); } catch (_) {}
+                try { invalidateEmscriptenModule(chatgptSpec.id); } catch (_) {}
+                try { invalidateEmscriptenModule(geminiSpec.id); } catch (_) {}
+            }
+        }
+
+        function copyLocalTimingKeysWithPrefix(targetValueObj, targetStdevObj, sourceResult, keyMap) {
+            const timings = sourceResult && sourceResult.timings_ms ? sourceResult.timings_ms : {};
+            const stdevs = sourceResult && sourceResult.timings_ms_stdev ? sourceResult.timings_ms_stdev : {};
+            for (const [srcKey, dstKey] of Object.entries(keyMap || {})) {
+                if (Object.prototype.hasOwnProperty.call(timings, srcKey)) {
+                    targetValueObj[dstKey] = timings[srcKey];
+                }
+                if (Object.prototype.hasOwnProperty.call(stdevs, srcKey)) {
+                    targetStdevObj[dstKey] = stdevs[srcKey];
+                }
+            }
+        }
+
+        async function runSubgraphLocally(runCtx, iterations, warmup) {
+            const safeWarmup = Math.max(0, Math.floor(Number(warmup) || 0));
+            const safeIterations = Math.max(1, Math.floor(Number(iterations) || 0));
+
+            const patternFile = (config.selectedFiles && config.selectedFiles[0]) ? config.selectedFiles[0] : null;
+            const targetFile = (config.selectedFiles && config.selectedFiles[1]) ? config.selectedFiles[1] : null;
+            if (!patternFile || !targetFile || !patternFile.path || !targetFile.path) {
+                throw new Error('Subgraph requires a pattern and target file');
+            }
+
+            const [patternTextRaw, targetTextRaw] = await Promise.all([
+                getRepoFileText(patternFile.path),
+                getRepoFileText(targetFile.path)
+            ]);
+            if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+
+            const patternFormat = getLocalGraphFormatFromFile(patternFile);
+            const targetFormat = getLocalGraphFormatFromFile(targetFile);
+            const dual = buildLocalDualFormatGraphPair({
+                patternText: patternTextRaw,
+                targetText: targetTextRaw,
+                patternFormat,
+                targetFormat
+            });
+
+            const prevSelectedFiles = Array.isArray(config.selectedFiles) ? config.selectedFiles.slice() : [];
+            const tempKeys = [];
+            const setTemp = (path, text) => {
+                const key = String(path);
+                _localInMemoryRepoFiles.set(key, String(text || ''));
+                tempKeys.push(key);
+                return key;
+            };
+
+            const vfPatternPath = setTemp('__local/subgraph_pattern.vf', dual.vf.patternText);
+            const vfTargetPath = setTemp('__local/subgraph_target.vf', dual.vf.targetText);
+            const ladPatternPath = setTemp('__local/subgraph_pattern.lad', dual.lad.patternText);
+            const ladTargetPath = setTemp('__local/subgraph_target.lad', dual.lad.targetText);
+
+            try {
+                config.selectedFiles = [
+                    { path: vfPatternPath, name: 'subgraph_pattern.vf' },
+                    { path: vfTargetPath, name: 'subgraph_target.vf' }
+                ];
+                const vf3Run = await runVf3Locally(runCtx, safeIterations, safeWarmup);
+                if (vf3Run && vf3Run.status === 'aborted') return vf3Run;
+
+                config.selectedFiles = [
+                    { path: ladPatternPath, name: 'subgraph_pattern.lad' },
+                    { path: ladTargetPath, name: 'subgraph_target.lad' }
+                ];
+                const glasgowRun = await runGlasgowLocally(runCtx, safeIterations, safeWarmup, {
+                    baselineFormatFlag: 'vertexlabelledlad',
+                    resultAlgorithm: 'glasgow'
+                });
+                if (glasgowRun && glasgowRun.status === 'aborted') return glasgowRun;
+
+                const vf3Result = vf3Run && vf3Run.result && typeof vf3Run.result === 'object' ? vf3Run.result : null;
+                const glasgowResult = glasgowRun && glasgowRun.result && typeof glasgowRun.result === 'object' ? glasgowRun.result : null;
+
+                const combinedOutput = [vf3Run && vf3Run.output, glasgowRun && glasgowRun.output]
+                    .filter(part => typeof part === 'string' && part.trim())
+                    .join('\n\n');
+
+                const result = {
+                    algorithm: 'subgraph',
+                    status: 'success',
+                    output: combinedOutput || 'No output',
+                    iterations: safeIterations,
+                    warmup: safeWarmup,
+                    subgraph_phase: 'full',
+                    timings_ms: {},
+                    timings_ms_stdev: {}
+                };
+
+                copyLocalTimingKeysWithPrefix(result.timings_ms, result.timings_ms_stdev, vf3Result, {
+                    baseline_first: 'vf3_baseline_first',
+                    baseline_all: 'vf3_baseline_all',
+                    chatgpt_first: 'vf3_chatgpt_first',
+                    chatgpt_all: 'vf3_chatgpt_all',
+                    gemini_first: 'vf3_gemini_first',
+                    gemini_all: 'vf3_gemini_all'
+                });
+                copyLocalTimingKeysWithPrefix(result.timings_ms, result.timings_ms_stdev, glasgowResult, {
+                    first: 'glasgow_baseline_first',
+                    all: 'glasgow_baseline_all',
+                    chatgpt_first: 'glasgow_chatgpt_first',
+                    chatgpt_all: 'glasgow_chatgpt_all',
+                    gemini_first: 'glasgow_gemini_first',
+                    gemini_all: 'glasgow_gemini_all'
+                });
+
+                if (!Object.keys(result.timings_ms).length) delete result.timings_ms;
+                if (!Object.keys(result.timings_ms_stdev).length) delete result.timings_ms_stdev;
+
+                const matchCounts = {};
+                if (vf3Result && vf3Result.match_counts && typeof vf3Result.match_counts === 'object') {
+                    if (vf3Result.match_counts.baseline) matchCounts.vf3_baseline = vf3Result.match_counts.baseline;
+                    if (vf3Result.match_counts.chatgpt) matchCounts.vf3_chatgpt = vf3Result.match_counts.chatgpt;
+                    if (vf3Result.match_counts.gemini) matchCounts.vf3_gemini = vf3Result.match_counts.gemini;
+                }
+                if (glasgowResult && glasgowResult.match_counts && typeof glasgowResult.match_counts === 'object') {
+                    if (glasgowResult.match_counts.baseline) matchCounts.glasgow_baseline = glasgowResult.match_counts.baseline;
+                    if (glasgowResult.match_counts.chatgpt) matchCounts.glasgow_chatgpt = glasgowResult.match_counts.chatgpt;
+                    if (glasgowResult.match_counts.gemini) matchCounts.glasgow_gemini = glasgowResult.match_counts.gemini;
+                }
+                if (Object.keys(matchCounts).length) {
+                    result.match_counts = matchCounts;
+                }
+
+                let visualization = null;
+                if (vf3Result && vf3Result.visualization && typeof vf3Result.visualization === 'object') {
+                    try {
+                        visualization = JSON.parse(JSON.stringify(vf3Result.visualization));
+                        if (visualization && typeof visualization === 'object') {
+                            visualization.algorithm = 'subgraph';
+                            if (Array.isArray(visualization.visualization_iterations)) {
+                                for (const item of visualization.visualization_iterations) {
+                                    if (item && typeof item === 'object') item.algorithm = 'subgraph';
+                                }
+                            }
+                        }
+                    } catch (_) {
+                        visualization = vf3Result.visualization;
+                    }
+                } else if (glasgowResult && glasgowResult.visualization) {
+                    visualization = glasgowResult.visualization;
+                }
+                if (visualization) {
+                    result.visualization = visualization;
+                }
+
+                return {
+                    status: 'success',
+                    output: combinedOutput || 'No output',
+                    result
+                };
+            } finally {
+                for (const key of tempKeys) _localInMemoryRepoFiles.delete(key);
+                config.selectedFiles = prevSelectedFiles;
             }
         }
 
@@ -920,7 +2403,7 @@
                 } catch (error) {
                     const msg = error && error.message ? error.message : String(error);
                     if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
-                        throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow to generate them.');
+                        throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow on this branch (it commits files into wasm/ and uploads a wasm-modules artifact).');
                     }
                     throw error;
                 }
@@ -932,7 +2415,31 @@
                 } catch (error) {
                     const msg = error && error.message ? error.message : String(error);
                     if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
-                        throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow to generate them.');
+                        throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow on this branch (it commits files into wasm/ and uploads a wasm-modules artifact).');
+                    }
+                    throw error;
+                }
+            }
+
+            if (algoKey === 'glasgow') {
+                try {
+                    return await runGlasgowLocally(runCtx, iterations, warmup);
+                } catch (error) {
+                    const msg = error && error.message ? error.message : String(error);
+                    if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
+                        throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow on this branch (it commits files into wasm/ and uploads a wasm-modules artifact).');
+                    }
+                    throw error;
+                }
+            }
+
+            if (algoKey === 'subgraph') {
+                try {
+                    return await runSubgraphLocally(runCtx, iterations, warmup);
+                } catch (error) {
+                    const msg = error && error.message ? error.message : String(error);
+                    if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
+                        throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow on this branch (it commits files into wasm/ and uploads a wasm-modules artifact).');
                     }
                     throw error;
                 }
@@ -1013,3 +2520,197 @@
             };
         }
 
+        const _legacyGetRepoFileText = getRepoFileText;
+        const _localInMemoryRepoFiles = new Map();
+        getRepoFileText = async function(path) {
+            const key = String(path || '').trim();
+            if (key && _localInMemoryRepoFiles.has(key)) {
+                return _localInMemoryRepoFiles.get(key);
+            }
+            return await _legacyGetRepoFileText(path);
+        };
+
+        const _legacyRunAlgorithmLocally = runAlgorithmLocally;
+        runAlgorithmLocally = async function(runCtx, algoId, iterations, warmup) {
+            const inputMode = (typeof getInputMode === 'function') ? getInputMode() : 'premade';
+            const algoKey = String(algoId || '').trim().toLowerCase();
+            if (inputMode !== 'generate') {
+                return await _legacyRunAlgorithmLocally(runCtx, algoId, iterations, warmup);
+            }
+
+            if (typeof createLocalExactGeneratorSession !== 'function') {
+                throw new Error('Local generator runtime is unavailable.');
+            }
+
+            if (!['dijkstra', 'vf3', 'glasgow', 'subgraph'].includes(algoKey)) {
+                throw new Error(`Local generator mode is not implemented for "${algoKey}".`);
+            }
+
+            const prevSelectedFiles = Array.isArray(config.selectedFiles) ? config.selectedFiles.slice() : [];
+            _localInMemoryRepoFiles.clear();
+            try {
+                const session = createLocalExactGeneratorSession({
+                    algorithm: algoKey,
+                    n: config.generator && config.generator.n,
+                    k: config.generator && config.generator.k,
+                    density: config.generator && config.generator.density,
+                    seed: config.generator && config.generator.seed
+                });
+                const generated = await session.generateForRun(`${algoKey}_iter`, '1');
+                const files = Array.isArray(generated && generated.files) ? generated.files : [];
+                if (!files.length) {
+                    throw new Error('Local generator did not produce any files.');
+                }
+                for (const f of files) {
+                    const p = String(f && f.path ? f.path : '').trim();
+                    if (p) _localInMemoryRepoFiles.set(p, String(f && f.text ? f.text : ''));
+                }
+
+                const pickByName = (needle) => files.find(f => String(f && f.name ? f.name : '').toLowerCase().includes(String(needle || '').toLowerCase()));
+                const pickByExt = (ext) => files.find(f => String(f && (f.name || f.path) ? (f.name || f.path) : '').toLowerCase().endsWith(String(ext || '').toLowerCase()));
+                const pickPatternTargetPair = (prefixNeedle, preferredExts) => {
+                    const exts = Array.isArray(preferredExts) ? preferredExts.map(e => String(e || '').toLowerCase()) : [];
+                    const candidates = files.filter(Boolean);
+                    const pickRole = (role) => {
+                        const roleLower = String(role || '').toLowerCase();
+                        const byPrefixAndRole = candidates.find(f => {
+                            const name = String(f && (f.name || f.path) ? (f.name || f.path) : '').toLowerCase();
+                            if (!name.includes(roleLower)) return false;
+                            if (prefixNeedle && !name.includes(String(prefixNeedle).toLowerCase())) return false;
+                            if (!exts.length) return true;
+                            return exts.some(ext => name.endsWith(ext));
+                        });
+                        if (byPrefixAndRole) return byPrefixAndRole;
+                        const byRoleExt = candidates.find(f => {
+                            const name = String(f && (f.name || f.path) ? (f.name || f.path) : '').toLowerCase();
+                            if (!name.includes(roleLower)) return false;
+                            if (!exts.length) return true;
+                            return exts.some(ext => name.endsWith(ext));
+                        });
+                        if (byRoleExt) return byRoleExt;
+                        return candidates.find(f => String(f && (f.name || f.path) ? (f.name || f.path) : '').toLowerCase().includes(roleLower)) || null;
+                    };
+                    return {
+                        pattern: pickRole('pattern'),
+                        target: pickRole('target')
+                    };
+                };
+                if (algoKey === 'dijkstra') {
+                    const input = files[0];
+                    config.selectedFiles = [{ path: String(input.path), name: String(input.name || 'dijkstra_generated.csv') }];
+                } else {
+                    let pair = null;
+                    if (algoKey === 'vf3') {
+                        pair = pickPatternTargetPair('vf3', ['.vf', '.grf']);
+                    } else if (algoKey === 'glasgow') {
+                        pair = pickPatternTargetPair('glasgow', ['.lad']);
+                    } else if (algoKey === 'subgraph') {
+                        pair = pickPatternTargetPair('vf3', ['.vf', '.grf']);
+                        if (!pair || !pair.pattern || !pair.target) {
+                            pair = pickPatternTargetPair('glasgow', ['.lad']);
+                        }
+                    }
+                    if (!pair || !pair.pattern || !pair.target) {
+                        pair = {
+                            pattern: pickByName('pattern') || pickByExt('.lad') || pickByExt('.vf') || pickByExt('.grf') || files[0],
+                            target: pickByName('target') || files[files.length - 1]
+                        };
+                    }
+                    const pattern = pair.pattern || files[0];
+                    const target = pair.target || files[files.length - 1];
+                    config.selectedFiles = [
+                        { path: String(pattern.path), name: String(pattern.name || 'pattern') },
+                        { path: String(target.path), name: String(target.name || 'target') }
+                    ];
+                }
+
+                const localResult = await _legacyRunAlgorithmLocally(runCtx, algoKey, iterations, warmup);
+                if (localResult && localResult.status === 'success' && localResult.result && typeof localResult.result === 'object') {
+                    const result = localResult.result;
+                    result.inputs = Object.assign({}, result.inputs || {}, {
+                        input_mode: 'generate',
+                        n: Number.isFinite(Number(config.generator && config.generator.n)) ? Number(config.generator.n) : config.generator.n,
+                        density: Number.isFinite(Number(config.generator && config.generator.density)) ? Number(config.generator.density) : config.generator.density,
+                        seed: session.generatedSeed
+                    });
+                    if (algoKey !== 'dijkstra') {
+                        result.inputs.k = Number.isFinite(Number(config.generator && config.generator.k)) ? Number(config.generator.k) : config.generator.k;
+                    }
+                    const meta = generated && generated.metadata && typeof generated.metadata === 'object' ? generated.metadata : {};
+                    if ((algoKey === 'vf3' || algoKey === 'glasgow' || algoKey === 'subgraph') && result.visualization && Array.isArray(result.visualization.visualization_iterations)) {
+                        result.visualization.seed = session.visSeed ?? session.generatedSeed;
+                        for (const v of result.visualization.visualization_iterations) {
+                            if (v && typeof v === 'object') v.seed = session.visSeed ?? session.generatedSeed;
+                        }
+                    }
+                    if (algoKey === 'vf3' && typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
+                        const patternFile = config.selectedFiles[0];
+                        const targetFile = config.selectedFiles[1];
+                        const patternText = _localInMemoryRepoFiles.get(patternFile.path) || '';
+                        const targetText = _localInMemoryRepoFiles.get(targetFile.path) || '';
+                        try {
+                            result.visualization = buildLocalVisualizationIterations([
+                                buildLocalSubgraphLikeVisualization({
+                                    algorithm: 'vf3',
+                                    patternText,
+                                    targetText,
+                                    patternFormat: 'vf',
+                                    targetFormat: 'vf',
+                                    patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
+                                    iteration: 1,
+                                    seed: session.visSeed ?? session.generatedSeed
+                                })
+                            ]);
+                        } catch (_) {}
+                    } else if (algoKey === 'subgraph' && typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
+                        try {
+                            const patternFile = config.selectedFiles[0];
+                            const targetFile = config.selectedFiles[1];
+                            const patternText = _localInMemoryRepoFiles.get(patternFile.path) || '';
+                            const targetText = _localInMemoryRepoFiles.get(targetFile.path) || '';
+                            const fmt = getLocalGraphFormatFromFile(patternFile);
+                            result.visualization = buildLocalVisualizationIterations([
+                                buildLocalSubgraphLikeVisualization({
+                                    algorithm: 'subgraph',
+                                    patternText,
+                                    targetText,
+                                    patternFormat: fmt,
+                                    targetFormat: getLocalGraphFormatFromFile(targetFile),
+                                    patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
+                                    iteration: 1,
+                                    seed: session.visSeed ?? session.generatedSeed
+                                })
+                            ]);
+                        } catch (_) {}
+                    } else if (algoKey === 'glasgow' && typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function' && (!result.visualization || !Array.isArray(result.visualization.visualization_iterations))) {
+                        try {
+                            const patternFile = config.selectedFiles[0];
+                            const targetFile = config.selectedFiles[1];
+                            const patternText = _localInMemoryRepoFiles.get(patternFile.path) || '';
+                            const targetText = _localInMemoryRepoFiles.get(targetFile.path) || '';
+                            result.visualization = buildLocalVisualizationIterations([
+                                buildLocalSubgraphLikeVisualization({
+                                    algorithm: 'glasgow',
+                                    patternText,
+                                    targetText,
+                                    patternFormat: getLocalGraphFormatFromFile(patternFile),
+                                    targetFormat: getLocalGraphFormatFromFile(targetFile),
+                                    patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
+                                    iteration: 1,
+                                    seed: session.visSeed ?? session.generatedSeed
+                                })
+                            ]);
+                        } catch (_) {}
+                    } else if (algoKey === 'dijkstra' && result.visualization && Array.isArray(result.visualization.visualization_iterations)) {
+                        result.visualization.seed = session.visSeed ?? session.generatedSeed;
+                        for (const v of result.visualization.visualization_iterations) {
+                            if (v && typeof v === 'object') v.seed = session.visSeed ?? session.generatedSeed;
+                        }
+                    }
+                }
+                return localResult;
+            } finally {
+                _localInMemoryRepoFiles.clear();
+                config.selectedFiles = prevSelectedFiles;
+            }
+        };

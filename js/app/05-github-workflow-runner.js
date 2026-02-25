@@ -55,10 +55,6 @@
             const inputMode = getInputMode();
 
                 if (inputMode === 'generate') {
-                    if (runMode === 'local') {
-                        fail('Generator mode is only available for GitHub Actions runs.');
-                        return;
-                    }
                     const validation = validateGeneratorInputs();
                     if (!validation.valid) {
                         fail('Generator inputs are invalid. Ensure N >= 2, density is 0-1, and k < N.');
@@ -156,10 +152,21 @@
                         localResult.output || '(No output)'
                     ];
                     const elapsedMs = nowMs() - endToEndStartMs;
+                    const localSeedUsed = localResult && localResult.result && localResult.result.inputs && localResult.result.inputs.seed
+                        ? String(localResult.result.inputs.seed)
+                        : '';
+                    if (inputMode === 'generate' && localSeedUsed) {
+                        finalLines.push('', `Seed used: ${localSeedUsed}`);
+                    }
                     finalLines.push('', `Total end-to-end time: ${formatDurationMs(elapsedMs)}`);
                     outputDiv.textContent = finalLines.join('\n');
                     statusBadge.innerHTML = '<span class="status-badge status-ready">Success</span>';
-                    clearCharts();
+                    if (localResult && localResult.result) {
+                        renderCharts(localResult.result);
+                        renderVisualization(localResult.result);
+                    } else {
+                        clearCharts();
+                    }
                     return;
                 }
 
@@ -217,7 +224,10 @@
                     renderVisualization(result);
                 };
 
-                const result = await waitForResult(requestId, branchRef, runSha, runCtx);
+                const initialWaitOptions = (config.selectedAlgorithm === 'subgraph')
+                    ? { expectedSubgraphPhase: 'vf3', allowLegacySubgraphFallback: true }
+                    : {};
+                const result = await waitForResult(requestId, branchRef, runSha, runCtx, initialWaitOptions);
                 if (runCtx.aborted || (result && result.status === 'aborted')) {
                     if (activeRun === runCtx) {
                         outputDiv.textContent = 'Run Aborted';
@@ -233,7 +243,7 @@
                 if (result.algorithm === 'subgraph' && result.subgraph_phase === 'vf3') {
                     applyResultToUi(result, false);
                     const followUp = await waitForResult(requestId, branchRef, runSha, runCtx, {
-                        skipSubgraphPhases: ['vf3']
+                        expectedSubgraphPhase: 'glasgow'
                     });
                     if (runCtx.aborted || (followUp && followUp.status === 'aborted')) {
                         if (activeRun === runCtx) {
@@ -565,9 +575,25 @@
             return JSON.parse(text);
         }
 
-        async function fetchResultFromArtifact(requestId, branchRef, runSha) {
+        function normalizeSubgraphPhaseName(phase) {
+            const value = String(phase || '').trim().toLowerCase();
+            if (value === 'vf3' || value === 'glasgow') return value;
+            return '';
+        }
+
+        function getResultArtifactNameCandidates(expectedSubgraphPhase) {
+            const phase = normalizeSubgraphPhaseName(expectedSubgraphPhase);
+            if (phase) {
+                return [`algorithm-result-${phase}`, 'algorithm-result'];
+            }
+            return ['algorithm-result', 'algorithm-result-glasgow', 'algorithm-result-vf3'];
+        }
+
+        async function fetchResultFromArtifact(requestId, branchRef, runSha, options = {}) {
             const runId = await resolveWorkflowRunId(requestId, branchRef, runSha);
             if (!runId) return null;
+            const expectedSubgraphPhase = normalizeSubgraphPhaseName(options && options.expectedSubgraphPhase);
+            const allowLegacySubgraphFallback = !!(options && options.allowLegacySubgraphFallback);
 
             let data;
             try {
@@ -584,14 +610,41 @@
             const artifacts = artifactsRaw.filter(item => item && !item.expired);
             if (!artifacts.length) return null;
 
-            const match = artifacts.find(item => item.name === 'algorithm-result') ||
-                (requestId ? artifacts.find(item => item.name && item.name.includes(requestId)) : null) ||
-                artifacts[0];
+            const candidates = getResultArtifactNameCandidates(expectedSubgraphPhase)
+                .map(name => artifacts.find(item => item && item.name === name))
+                .filter(Boolean);
+            if (requestId) {
+                const requestMatch = artifacts.find(item => item && item.name && item.name.includes(requestId));
+                if (requestMatch && !candidates.includes(requestMatch)) {
+                    candidates.push(requestMatch);
+                }
+            }
+            if (artifacts[0] && !candidates.includes(artifacts[0])) {
+                candidates.push(artifacts[0]);
+            }
 
-            if (!match) return null;
-            const buffer = await downloadArtifactZip(match);
-            const json = await extractResultJsonFromZip(buffer);
-            if (!requestId || !json.request_id || json.request_id === requestId) {
+            for (const match of candidates) {
+                if (!match) continue;
+                const buffer = await downloadArtifactZip(match);
+                const json = await extractResultJsonFromZip(buffer);
+                if (requestId && json && json.request_id && json.request_id !== requestId) {
+                    continue;
+                }
+
+                if (expectedSubgraphPhase) {
+                    const resultPhase = normalizeSubgraphPhaseName(json && json.subgraph_phase);
+                    if (json && json.algorithm === 'subgraph') {
+                        if (resultPhase && resultPhase !== expectedSubgraphPhase) {
+                            continue;
+                        }
+                        if (!resultPhase && !allowLegacySubgraphFallback) {
+                            continue;
+                        }
+                    } else if (json && json.algorithm && !allowLegacySubgraphFallback) {
+                        continue;
+                    }
+                }
+
                 return json;
             }
             return null;
@@ -609,6 +662,8 @@
                 ? maxWaitMsRaw
                 : 0;
             let completedSuccessNoArtifactSinceMs = 0;
+            const expectedSubgraphPhase = normalizeSubgraphPhaseName(options && options.expectedSubgraphPhase);
+            const allowLegacySubgraphFallback = !!(options && options.allowLegacySubgraphFallback);
             const skipSubgraphPhases = Array.isArray(options.skipSubgraphPhases)
                 ? options.skipSubgraphPhases.map(phase => String(phase || '').toLowerCase())
                 : [];
@@ -659,7 +714,10 @@
                 }
                 let sawSkippedPhaseArtifact = false;
                 try {
-                    const result = await fetchResultFromArtifact(requestId, branchRef, sha);
+                    const result = await fetchResultFromArtifact(requestId, branchRef, sha, {
+                        expectedSubgraphPhase,
+                        allowLegacySubgraphFallback
+                    });
                     if (result) {
                         if (
                             result.algorithm === 'subgraph' &&
@@ -701,9 +759,11 @@
                         if (!completedSuccessNoArtifactSinceMs) {
                             completedSuccessNoArtifactSinceMs = nowMs;
                         } else if ((nowMs - completedSuccessNoArtifactSinceMs) >= 15000) {
-                            const expectedArtifact = sawSkippedPhaseArtifact
+                            const expectedArtifact = expectedSubgraphPhase
+                                ? `result artifact for the '${expectedSubgraphPhase}' subgraph phase`
+                                : (sawSkippedPhaseArtifact
                                 ? 'updated result artifact for the next subgraph phase'
-                                : 'result artifact';
+                                : 'result artifact');
                             const runUrlNote = runState.htmlUrl ? ` Run: ${runState.htmlUrl}` : '';
                             throw new Error(`Workflow run ${workflowRunId} completed successfully, but no ${expectedArtifact} was found.${runUrlNote}`);
                         }

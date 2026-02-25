@@ -12,5 +12,9 @@ Run the GitHub Actions workflow **Build WASM Modules** (`.github/workflows/build
 - `wasm/dijkstra_baseline.js` + `wasm/dijkstra_baseline.wasm`
 - `wasm/dijkstra_llm.js` + `wasm/dijkstra_llm.wasm`
 - `wasm/dijkstra_gemini.js` + `wasm/dijkstra_gemini.wasm`
+- `wasm/manifest.json` (build metadata + module path/export manifest)
 
-These files are committed back into the repository so the static site can fetch them.
+Workflow outputs:
+
+- Commits updated WASM files back into the branch (so the static UI can fetch them from `wasm/`)
+- Uploads a `wasm-modules` artifact containing the same files for easier inspection/download

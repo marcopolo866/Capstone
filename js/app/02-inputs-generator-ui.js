@@ -353,7 +353,7 @@
                 enabled = false;
             } else if (mode === 'generate') {
                 const validation = validateGeneratorInputs();
-                const generatorAllowed = runMode !== 'local';
+                const generatorAllowed = true;
                 enabled = validation.valid && generatorAllowed;
             } else {
                 enabled = config.selectedFiles.length === algo.requiredFiles;

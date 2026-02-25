@@ -473,7 +473,7 @@ jobs:
         if: ${{ always() && env.ALGORITHM_INPUT == 'subgraph' }}
         uses: actions/upload-artifact@v4
         with:
-          name: algorithm-result
+          name: algorithm-result-vf3
           path: outputs/result.json
 
       - name: Run subgraph phase 2 (Glasgow)
@@ -576,9 +576,8 @@ jobs:
         if: ${{ always() && env.ALGORITHM_INPUT == 'subgraph' }}
         uses: actions/upload-artifact@v4
         with:
-          name: algorithm-result
+          name: algorithm-result-glasgow
           path: outputs/result.json
-          overwrite: true
 
       - name: Create result JSON
         if: ${{ always() && env.ALGORITHM_INPUT != 'subgraph' }}

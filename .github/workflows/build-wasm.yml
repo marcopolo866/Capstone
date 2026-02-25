@@ -187,6 +187,200 @@ jobs:
             -s EXPORT_NAME=createDijkstraGeminiModule \
             -o "wasm/dijkstra_gemini.js"
 
+          echo "Building Glasgow ChatGPT..."
+          em++ -std=c++17 \
+            "${common_flags[@]}" \
+            -fexceptions \
+            -s DISABLE_EXCEPTION_CATCHING=0 \
+            "src/[CHATGPT] Glasgow.cpp" \
+            -s EXPORT_NAME=createGlasgowChatgptModule \
+            -o "wasm/glasgow_chatgpt.js"
+
+          echo "Building Glasgow Gemini..."
+          em++ -std=c++17 \
+            "${common_flags[@]}" \
+            -fexceptions \
+            -s DISABLE_EXCEPTION_CATCHING=0 \
+            "src/[GEMINI] Glasgow.cpp" \
+            -s EXPORT_NAME=createGlasgowGeminiModule \
+            -o "wasm/glasgow_gemini.js"
+
+      - name: Attempt experimental baseline Glasgow WASM build
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          source emsdk/emsdk_env.sh
+          mkdir -p wasm outputs .tmp
+          LOG="$PWD/outputs/glasgow_baseline_wasm_attempt.log"
+          : > "$LOG"
+          echo "Attempting experimental baseline Glasgow WASM build (GMP + Emscripten)." | tee -a "$LOG"
+
+          GMP_VERSION=6.3.0
+          GMP_TAR="gmp-${GMP_VERSION}.tar.xz"
+          GMP_URL="https://gmplib.org/download/gmp/${GMP_TAR}"
+          GMP_SRC_DIR="$PWD/.tmp/gmp-${GMP_VERSION}"
+          GMP_BUILD_DIR="$PWD/.tmp/gmp-build-emscripten"
+          GMP_PREFIX="$PWD/.tmp/gmp-wasm-prefix"
+
+          if [ ! -d "$GMP_SRC_DIR" ]; then
+            echo "Downloading GMP ${GMP_VERSION}..." | tee -a "$LOG"
+            curl -L "$GMP_URL" -o "$PWD/.tmp/${GMP_TAR}" >>"$LOG" 2>&1
+            tar -xJf "$PWD/.tmp/${GMP_TAR}" -C "$PWD/.tmp" >>"$LOG" 2>&1
+          fi
+
+          rm -rf "$GMP_BUILD_DIR" "$GMP_PREFIX"
+          mkdir -p "$GMP_BUILD_DIR" "$GMP_PREFIX"
+          pushd "$GMP_BUILD_DIR" >/dev/null
+          echo "Configuring GMP for Emscripten..." | tee -a "$LOG"
+          emconfigure "$GMP_SRC_DIR/configure" \
+            --host=wasm32-unknown-emscripten \
+            --disable-shared \
+            --enable-static \
+            --disable-assembly \
+            --enable-cxx \
+            --prefix="$GMP_PREFIX" >>"$LOG" 2>&1
+          echo "Building GMP..." | tee -a "$LOG"
+          emmake make -j"$(nproc)" >>"$LOG" 2>&1
+          emmake make install >>"$LOG" 2>&1
+          popd >/dev/null
+
+          echo "Patching Glasgow baseline CMake for an Emscripten attempt..." | tee -a "$LOG"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path_str, old, new):
+              path = Path(path_str)
+              text = path.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"Expected pattern not found in {path}: {old[:80]!r}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "baselines/glasgow-subgraph-solver/CMakeLists.txt",
+              "add_compile_options(-pthread)\n\nadd_link_options(-pthread)\n",
+              "if (NOT EMSCRIPTEN)\n    add_compile_options(-pthread)\n    add_link_options(-pthread)\nendif()\n",
+          )
+          replace_once(
+              "baselines/glasgow-subgraph-solver/gss/CMakeLists.txt",
+              "if (NOT GMP_INCLUDE_DIR OR NOT GMP_LIBRARY OR NOT GMPXX_LIBRARY)\n    message(FATAL_ERROR \"Could not find GMP/GMPXX libraries. Please install GMP and try again.\")\nendif()\n",
+              "if (NOT GMP_INCLUDE_DIR OR NOT GMP_LIBRARY OR (NOT GMPXX_LIBRARY AND NOT EMSCRIPTEN))\n    message(FATAL_ERROR \"Could not find required GMP libraries for this build.\")\nendif()\n",
+          )
+          replace_once(
+              "baselines/glasgow-subgraph-solver/gss/CMakeLists.txt",
+              "target_link_libraries(glasgow_subgraphs PUBLIC\n        ${cxxopts_LIBRARIES}\n        ${GMP_LIBRARY}\n        ${GMPXX_LIBRARY}\n)\n",
+              "target_link_libraries(glasgow_subgraphs PUBLIC\n        ${cxxopts_LIBRARIES}\n        ${GMP_LIBRARY}\n)\nif (GMPXX_LIBRARY)\n    target_link_libraries(glasgow_subgraphs PUBLIC ${GMPXX_LIBRARY})\nendif()\n",
+          )
+          replace_once(
+              "baselines/glasgow-subgraph-solver/gss/CMakeLists.txt",
+              "add_executable(subgraph_isomorphism_test subgraph_isomorphism_test.cc)\n"
+              "target_link_libraries(subgraph_isomorphism_test PRIVATE glasgow_subgraphs Catch2::Catch2WithMain)\n"
+              "add_test(NAME subgraph_isomorphism_test COMMAND $<TARGET_FILE:subgraph_isomorphism_test>)\n\n"
+              "add_executable(homomorphism_test homomorphism_test.cc)\n"
+              "target_link_libraries(homomorphism_test PRIVATE glasgow_subgraphs Catch2::Catch2WithMain)\n"
+              "add_test(NAME homomorphism_test COMMAND $<TARGET_FILE:homomorphism_test>)\n",
+              "if (NOT EMSCRIPTEN)\n"
+              "add_executable(subgraph_isomorphism_test subgraph_isomorphism_test.cc)\n"
+              "target_link_libraries(subgraph_isomorphism_test PRIVATE glasgow_subgraphs Catch2::Catch2WithMain)\n"
+              "add_test(NAME subgraph_isomorphism_test COMMAND $<TARGET_FILE:subgraph_isomorphism_test>)\n\n"
+              "add_executable(homomorphism_test homomorphism_test.cc)\n"
+              "target_link_libraries(homomorphism_test PRIVATE glasgow_subgraphs Catch2::Catch2WithMain)\n"
+              "add_test(NAME homomorphism_test COMMAND $<TARGET_FILE:homomorphism_test>)\n"
+              "endif()\n",
+          )
+          replace_once(
+              "baselines/glasgow-subgraph-solver/src/CMakeLists.txt",
+              "add_executable(glasgow_subgraph_solver glasgow_subgraph_solver.cc)\n"
+              "target_link_libraries(glasgow_subgraph_solver PRIVATE cxxopts)\n",
+              "add_executable(glasgow_subgraph_solver glasgow_subgraph_solver.cc)\n"
+              "target_link_libraries(glasgow_subgraph_solver PRIVATE cxxopts)\n"
+              "if (EMSCRIPTEN)\n"
+              "  set_target_properties(glasgow_subgraph_solver PROPERTIES SUFFIX \".js\")\n"
+              "  target_link_options(glasgow_subgraph_solver PRIVATE\n"
+              "    -sWASM=1\n"
+              "    -sMODULARIZE=1\n"
+              "    -sEXPORT_NAME=createGlasgowBaselineModule\n"
+              "    -sENVIRONMENT=web\n"
+              "    -sALLOW_MEMORY_GROWTH=1\n"
+              "    -sEXIT_RUNTIME=0\n"
+              "    -sFORCE_FILESYSTEM=1\n"
+              "    -sEXPORTED_RUNTIME_METHODS=[\\\"FS\\\",\\\"callMain\\\"])\n"
+              "endif()\n",
+          )
+          replace_once(
+              "baselines/glasgow-subgraph-solver/src/glasgow_subgraph_solver.cc",
+              "        if (options_vars.count(\"delay-thread-creation\") || options_vars.count(\"parallel\"))\n            params.delay_thread_creation = true;\n",
+              "        if (options_vars.count(\"delay-thread-creation\") || options_vars.count(\"parallel\"))\n            params.delay_thread_creation = true;\n#ifdef __EMSCRIPTEN__\n        params.n_threads = 1;\n        params.delay_thread_creation = false;\n#endif\n",
+          )
+          PY
+
+          rm -rf baselines/glasgow-subgraph-solver/build-wasm
+          emcmake cmake -S baselines/glasgow-subgraph-solver -B baselines/glasgow-subgraph-solver/build-wasm \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGCS_DEBUG_MODE=OFF \
+            -DGMP_INCLUDE_DIR="$GMP_PREFIX/include" \
+            -DGMP_LIBRARY="$GMP_PREFIX/lib/libgmp.a" \
+            -DGMPXX_LIBRARY="$GMP_PREFIX/lib/libgmpxx.a" >>"$LOG" 2>&1
+          emmake make -C baselines/glasgow-subgraph-solver/build-wasm -j"$(nproc)" glasgow_subgraph_solver >>"$LOG" 2>&1
+
+          cp baselines/glasgow-subgraph-solver/build-wasm/glasgow_subgraph_solver.js wasm/glasgow_baseline.js
+          cp baselines/glasgow-subgraph-solver/build-wasm/glasgow_subgraph_solver.wasm wasm/glasgow_baseline.wasm
+          echo "Glasgow baseline WASM build succeeded." | tee -a "$LOG"
+
+      - name: Write WASM manifest
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+          from pathlib import Path
+
+          candidates = {
+              "dijkstra_baseline": ("wasm/dijkstra_baseline.js", "wasm/dijkstra_baseline.wasm", "createDijkstraBaselineModule"),
+              "dijkstra_llm": ("wasm/dijkstra_llm.js", "wasm/dijkstra_llm.wasm", "createDijkstraLlmModule"),
+              "dijkstra_gemini": ("wasm/dijkstra_gemini.js", "wasm/dijkstra_gemini.wasm", "createDijkstraGeminiModule"),
+              "vf3_baseline": ("wasm/vf3_baseline.js", "wasm/vf3_baseline.wasm", "createVf3BaselineModule"),
+              "vf3_gemini": ("wasm/vf3_gemini.js", "wasm/vf3_gemini.wasm", "createVf3GeminiModule"),
+              "vf3_chatgpt": ("wasm/vf3_chatgpt.js", "wasm/vf3_chatgpt.wasm", "createVf3ChatgptModule"),
+              "glasgow_chatgpt": ("wasm/glasgow_chatgpt.js", "wasm/glasgow_chatgpt.wasm", "createGlasgowChatgptModule"),
+              "glasgow_gemini": ("wasm/glasgow_gemini.js", "wasm/glasgow_gemini.wasm", "createGlasgowGeminiModule"),
+              "glasgow_baseline": ("wasm/glasgow_baseline.js", "wasm/glasgow_baseline.wasm", "createGlasgowBaselineModule"),
+          }
+          modules = {}
+          for module_id, (script_path, wasm_path, factory_name) in candidates.items():
+              if not Path(script_path).exists() or not Path(wasm_path).exists():
+                  continue
+              modules[module_id] = {
+                  "scriptPath": script_path,
+                  "wasmPath": wasm_path,
+                  "factoryName": factory_name,
+              }
+
+          data = {
+              "schema_version": 1,
+              "workflow": "Build WASM Modules",
+              "workflow_file": ".github/workflows/build-wasm.yml",
+              "generated_at_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "git_sha": os.environ.get("GITHUB_SHA", ""),
+              "git_ref_name": os.environ.get("GITHUB_REF_NAME", ""),
+              "modules": modules,
+          }
+
+          Path("wasm").mkdir(parents=True, exist_ok=True)
+          Path("wasm/manifest.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload WASM modules artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-modules
+          path: |
+            wasm/*.js
+            wasm/*.wasm
+            wasm/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Commit updated WASM artifacts
         run: |
           set -euo pipefail

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "workflow": "Build WASM Modules",
+  "workflow_file": ".github/workflows/build-wasm.yml",
+  "generated_at_utc": "",
+  "git_sha": "",
+  "git_ref_name": "",
+  "modules": {
+    "dijkstra_baseline": {
+      "scriptPath": "wasm/dijkstra_baseline.js",
+      "wasmPath": "wasm/dijkstra_baseline.wasm",
+      "factoryName": "createDijkstraBaselineModule"
+    },
+    "dijkstra_llm": {
+      "scriptPath": "wasm/dijkstra_llm.js",
+      "wasmPath": "wasm/dijkstra_llm.wasm",
+      "factoryName": "createDijkstraLlmModule"
+    },
+    "dijkstra_gemini": {
+      "scriptPath": "wasm/dijkstra_gemini.js",
+      "wasmPath": "wasm/dijkstra_gemini.wasm",
+      "factoryName": "createDijkstraGeminiModule"
+    },
+    "vf3_baseline": {
+      "scriptPath": "wasm/vf3_baseline.js",
+      "wasmPath": "wasm/vf3_baseline.wasm",
+      "factoryName": "createVf3BaselineModule"
+    },
+    "vf3_gemini": {
+      "scriptPath": "wasm/vf3_gemini.js",
+      "wasmPath": "wasm/vf3_gemini.wasm",
+      "factoryName": "createVf3GeminiModule"
+    },
+    "vf3_chatgpt": {
+      "scriptPath": "wasm/vf3_chatgpt.js",
+      "wasmPath": "wasm/vf3_chatgpt.wasm",
+      "factoryName": "createVf3ChatgptModule"
+    }
+  }
+}

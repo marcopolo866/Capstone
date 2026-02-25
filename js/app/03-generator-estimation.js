@@ -117,7 +117,9 @@
                         const data = await apiRequest(`/actions/runs/${run.id}/artifacts`);
                         const artifactsRaw = (data && Array.isArray(data.artifacts)) ? data.artifacts : [];
                         const artifacts = artifactsRaw.filter(item => item && !item.expired);
-                        const match = artifacts.find(item => item.name === 'algorithm-result');
+                        const match = artifacts.find(item => item.name === 'algorithm-result') ||
+                            artifacts.find(item => item.name === 'algorithm-result-glasgow') ||
+                            artifacts.find(item => item.name === 'algorithm-result-vf3');
                         if (!match) continue;
                         const buffer = await downloadArtifactZip(match);
                         const json = await extractResultJsonFromZip(buffer);

@@ -1,21 +1,39 @@
 # Local Compilation Command
 
-Run from the repository root. These commands compile the binaries used by the current native benchmarking / GitHub artifact pipeline outputs.
+Run from the repository root. These scripts compile the binaries used by the current native benchmarking / GitHub artifact pipeline outputs.
 
-## Windows (Git Bash / MSYS2 MinGW64)
+## Prerequisites
 
-```bash
-git submodule update --init --recursive && g++ -std=c++17 -O3 -I "baselines/nyaan-library" "baselines/dijkstra_main.cpp" -o "baselines/dijkstra" && g++ -std=c++17 -O3 "src/[CHATGPT] Shortest Path.cpp" -o "src/dijkstra_llm" && g++ -std=c++17 -O3 "src/[GEMINI] Shortest Path.cpp" -o "src/dijkstra_gemini" && make -C baselines/vf3lib vf3 CFLAGS="-std=c++11 -O3 -DNDEBUG -Wno-deprecated" && g++ -std=c++17 -O3 "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3" && g++ -std=c++17 -O3 "src/[CHATGPT] Subgraph Isomorphism.cpp" -o "src/chatvf3" && g++ -std=c++17 -O3 "src/[CHATGPT] Glasgow.cpp" -o "src/glasgow_chatgpt" && g++ -std=c++17 -O3 "src/[GEMINI] Glasgow.cpp" -o "src/glasgow_gemini" && cmake -S baselines/glasgow-subgraph-solver -B baselines/glasgow-subgraph-solver/build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3" && cmake --build baselines/glasgow-subgraph-solver/build --config Release --parallel
+- `git`
+- `g++`
+- `make`
+- `cmake`
+- Submodules available (the scripts run `git submodule update --init --recursive`)
+
+Notes:
+- Windows builds are expected to use a MinGW/MSYS2 toolchain by default (`MinGW Makefiles`).
+- If you use a different CMake generator, pass it to the PowerShell script or set `CMAKE_GENERATOR` for the Bash script.
+
+## Windows (PowerShell, MinGW/MSYS2 toolchain in PATH)
+
+```powershell
+.\scripts\build-local.ps1
 ```
 
-## macOS
+Optional generator override:
 
-```bash
-git submodule update --init --recursive && g++ -std=c++17 -O3 -I "baselines/nyaan-library" "baselines/dijkstra_main.cpp" -o "baselines/dijkstra" && g++ -std=c++17 -O3 "src/[CHATGPT] Shortest Path.cpp" -o "src/dijkstra_llm" && g++ -std=c++17 -O3 "src/[GEMINI] Shortest Path.cpp" -o "src/dijkstra_gemini" && make -C baselines/vf3lib vf3 CFLAGS="-std=c++11 -O3 -DNDEBUG -Wno-deprecated" && g++ -std=c++17 -O3 "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3" && g++ -std=c++17 -O3 "src/[CHATGPT] Subgraph Isomorphism.cpp" -o "src/chatvf3" && g++ -std=c++17 -O3 "src/[CHATGPT] Glasgow.cpp" -o "src/glasgow_chatgpt" && g++ -std=c++17 -O3 "src/[GEMINI] Glasgow.cpp" -o "src/glasgow_gemini" && cmake -S baselines/glasgow-subgraph-solver -B baselines/glasgow-subgraph-solver/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3" && cmake --build baselines/glasgow-subgraph-solver/build --config Release --parallel
+```powershell
+.\scripts\build-local.ps1 -CMakeGenerator "Ninja"
 ```
 
-## Linux
+## macOS / Linux (Bash)
 
 ```bash
-git submodule update --init --recursive && g++ -std=c++17 -O3 -I "baselines/nyaan-library" "baselines/dijkstra_main.cpp" -o "baselines/dijkstra" && g++ -std=c++17 -O3 "src/[CHATGPT] Shortest Path.cpp" -o "src/dijkstra_llm" && g++ -std=c++17 -O3 "src/[GEMINI] Shortest Path.cpp" -o "src/dijkstra_gemini" && make -C baselines/vf3lib vf3 CFLAGS="-std=c++11 -O3 -DNDEBUG -Wno-deprecated" && g++ -std=c++17 -O3 "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3" && g++ -std=c++17 -O3 "src/[CHATGPT] Subgraph Isomorphism.cpp" -o "src/chatvf3" && g++ -std=c++17 -O3 "src/[CHATGPT] Glasgow.cpp" -o "src/glasgow_chatgpt" && g++ -std=c++17 -O3 "src/[GEMINI] Glasgow.cpp" -o "src/glasgow_gemini" && cmake -S baselines/glasgow-subgraph-solver -B baselines/glasgow-subgraph-solver/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3" && cmake --build baselines/glasgow-subgraph-solver/build --config Release --parallel
+bash scripts/build-local.sh
+```
+
+Optional generator override:
+
+```bash
+CMAKE_GENERATOR="Ninja" bash scripts/build-local.sh
 ```

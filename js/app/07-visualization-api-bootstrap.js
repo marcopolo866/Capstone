@@ -461,6 +461,7 @@
             };
             
             if (body) {
+                headers['Content-Type'] = 'application/json';
                 requestOptions.body = JSON.stringify(body);
             }
             
