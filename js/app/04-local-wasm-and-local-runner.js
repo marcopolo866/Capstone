@@ -758,25 +758,44 @@ def capstone_run_local_generator(args, out_dir):
 
         function extractLocalCountTimeMs(text) {
             const raw = String(text || '').replace(/\r/g, '');
-            if (!raw.trim()) return null;
             const lines = raw.split('\n').map(line => String(line || '').trim()).filter(Boolean);
-            const count = extractLocalSolutionCount(raw);
+            if (!lines.length) {
+                // Mirror workflow parser behavior for Glasgow ChatGPT/Gemini: no output => no solutions.
+                return { count: 0, timeMs: 0 };
+            }
+
+            let count = null;
             let timeMs = null;
-            for (let i = lines.length - 1; i >= 0; i--) {
-                const line = lines[i];
-                let m = line.match(/time\s*:\s*([0-9]+(?:\.[0-9]+)?)\b/i);
-                if (!m) m = line.match(/\bruntime\b\s*(?:=|:)\s*([0-9]+(?:\.[0-9]+)?)\b/i);
-                if (!m) m = line.match(/\btime\b\s*=\s*([0-9]+(?:\.[0-9]+)?)\b/i);
-                if (!m) m = line.match(/\b([0-9]+(?:\.[0-9]+)?)\s*ms\b/i);
+            let mappingCount = 0;
+            for (const line of lines) {
+                if (/mapping\s*:/i.test(line)) {
+                    mappingCount++;
+                    continue;
+                }
+                if (/\btime\b/i.test(line) || /\bruntime\b/i.test(line)) {
+                    const nums = line.match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g);
+                    if (nums && nums.length) {
+                        const value = Number(nums[nums.length - 1]);
+                        if (Number.isFinite(value)) timeMs = value;
+                    }
+                    continue;
+                }
+                if (/^-?\d+$/.test(line)) {
+                    const value = Number(line);
+                    if (Number.isInteger(value)) count = value;
+                    continue;
+                }
+                let m = line.match(/\bsolution[_\s-]*count\b\s*(?:=|:)?\s*(-?\d+)\b/i);
+                if (!m) m = line.match(/\b(?:count|solutions?)\b[^0-9-]*(-?\d+)\b/i);
                 if (m) {
                     const value = Number(m[1]);
-                    if (Number.isFinite(value)) {
-                        timeMs = value;
-                        break;
-                    }
+                    if (Number.isInteger(value)) count = value;
                 }
             }
-            return (count === null && timeMs === null) ? null : { count, timeMs };
+
+            if (count === null) count = mappingCount;
+            if (timeMs === null) timeMs = 0;
+            return { count, timeMs };
         }
 
         function parseLocalDijkstraCsv(text) {
