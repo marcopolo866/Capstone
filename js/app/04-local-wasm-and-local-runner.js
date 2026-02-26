@@ -131,9 +131,88 @@
                 const capture = {
                     out: [],
                     err: [],
+                    _runOpts: null,
+                    _outChars: 0,
+                    _errChars: 0,
+                    _mappingLinesKept: 0,
+                    _mappingLinesDropped: 0,
+                    _outTruncated: false,
+                    _errTruncated: false,
                     reset() {
                         this.out.length = 0;
                         this.err.length = 0;
+                        this._runOpts = null;
+                        this._outChars = 0;
+                        this._errChars = 0;
+                        this._mappingLinesKept = 0;
+                        this._mappingLinesDropped = 0;
+                        this._outTruncated = false;
+                        this._errTruncated = false;
+                    },
+                    beginRun(opts) {
+                        const o = (opts && typeof opts === 'object') ? opts : null;
+                        this._runOpts = o;
+                        this._outChars = 0;
+                        this._errChars = 0;
+                        this._mappingLinesKept = 0;
+                        this._mappingLinesDropped = 0;
+                        this._outTruncated = false;
+                        this._errTruncated = false;
+                    },
+                    endRun() {
+                        this._runOpts = null;
+                    },
+                    _pushWithLimit(arr, text, kind) {
+                        const s0 = String(text ?? '');
+                        const opts = this._runOpts || null;
+                        let s = s0;
+                        if (kind === 'out' && opts) {
+                            const mappingPolicy = String(opts.mappingLinePolicy || '').trim().toLowerCase();
+                            if (mappingPolicy && /^mapping\s*:/i.test(s)) {
+                                if (mappingPolicy === 'drop-all') {
+                                    this._mappingLinesDropped++;
+                                    return;
+                                }
+                                if (mappingPolicy === 'keep-first' && this._mappingLinesKept >= 1) {
+                                    this._mappingLinesDropped++;
+                                    return;
+                                }
+                                this._mappingLinesKept++;
+                            }
+                        }
+
+                        const maxCharsRaw = kind === 'err'
+                            ? (opts && opts.maxErrorChars)
+                            : (opts && opts.maxOutputChars);
+                        const maxChars = Number.isFinite(Number(maxCharsRaw)) ? Math.max(0, Math.floor(Number(maxCharsRaw))) : 0;
+                        let used = kind === 'err' ? this._errChars : this._outChars;
+                        if (maxChars > 0) {
+                            if (used >= maxChars) {
+                                if (kind === 'err' && !this._errTruncated) {
+                                    this._errTruncated = true;
+                                    arr.push('[capstone] stderr truncated');
+                                }
+                                if (kind === 'out' && !this._outTruncated) {
+                                    this._outTruncated = true;
+                                    arr.push('[capstone] stdout truncated');
+                                }
+                                return;
+                            }
+                            if (used + s.length > maxChars) {
+                                const keep = Math.max(0, maxChars - used);
+                                s = keep > 0 ? s.slice(0, keep) : '';
+                            }
+                        }
+                        arr.push(s);
+                        used += s.length;
+                        if (kind === 'err') this._errChars = used;
+                        else this._outChars = used;
+                    },
+                    pushOut(text) {
+                        this._pushWithLimit(this.out, text, 'out');
+                    },
+                    pushErr(text) {
+                        this._pushWithLimit(this.err, text, 'err');
                     }
                 };
 
@@ -192,8 +271,8 @@
                             }
                             return (prefix || '') + path;
                         },
-                        print: (text) => capture.out.push(String(text)),
-                        printErr: (text) => capture.err.push(String(text))
+                        print: (text) => capture.pushOut(text),
+                        printErr: (text) => capture.pushErr(text)
                     });
                 } finally {
                     try {
@@ -263,6 +342,12 @@
             const capture = mod.__capstoneCapture;
             if (!capture) throw new Error('Missing wasm capture');
             capture.reset();
+            const captureOptions = (options && typeof options.captureOptions === 'object' && options.captureOptions)
+                ? options.captureOptions
+                : null;
+            if (typeof capture.beginRun === 'function') {
+                try { capture.beginRun(captureOptions); } catch (_) {}
+            }
 
             const hasStdinText = Object.prototype.hasOwnProperty.call(options || {}, 'stdinText');
             const stdinText = hasStdinText ? String(options && options.stdinText !== undefined && options.stdinText !== null ? options.stdinText : '') : null;
@@ -279,6 +364,14 @@
                     try { window.prompt = originalPrompt; } catch (_) {}
                 };
             }
+            const finalizeRun = () => {
+                try {
+                    if (restorePrompt) restorePrompt();
+                } catch (_) {}
+                try {
+                    if (typeof capture.endRun === 'function') capture.endRun();
+                } catch (_) {}
+            };
 
             try {
                 mod.callMain(argv);
@@ -288,7 +381,7 @@
                 const stdout = capture.out.join('\n');
                 const stderr = capture.err.join('\n');
                 if (status === 0) {
-                    if (restorePrompt) restorePrompt();
+                    finalizeRun();
                     return {
                         stdout: stdout.trimEnd(),
                         stderr: stderr.trimEnd()
@@ -296,7 +389,7 @@
                 }
                 const msg = stderr || stdout || (error && error.message ? error.message : String(error));
                 if (status !== null) {
-                    if (restorePrompt) restorePrompt();
+                    finalizeRun();
                     throw new Error(`WASM program exited with status ${status}: ${msg}`);
                 }
 
@@ -305,11 +398,11 @@
                 try {
                     if (mod && mod.__capstoneId) invalidateEmscriptenModule(mod.__capstoneId);
                 } catch (_) {}
-                if (restorePrompt) restorePrompt();
+                finalizeRun();
                 throw error;
             }
 
-            if (restorePrompt) restorePrompt();
+            finalizeRun();
             return {
                 stdout: capture.out.join('\n').trimEnd(),
                 stderr: capture.err.join('\n').trimEnd()
@@ -2125,7 +2218,13 @@ def capstone_run_local_generator(args, out_dir):
                                 if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                                 progressSetDeterminate(`Warming up: ${title}`, tickIncrementRef.value, setupTotal, { stage: 'setup' });
                                 try {
-                                    await runEmscriptenMain(mod, stepArgs);
+                                    await runEmscriptenMain(mod, stepArgs, {
+                                        captureOptions: {
+                                            mappingLinePolicy: 'drop-all',
+                                            maxOutputChars: 4096,
+                                            maxErrorChars: 16384
+                                        }
+                                    });
                                 } catch (error) {
                                     const msg = error && error.message ? error.message : String(error);
                                     throw new Error(`Warmup ${i + 1}/${safeWarmup} - ${title}: ${msg}`);
@@ -2210,15 +2309,18 @@ def capstone_run_local_generator(args, out_dir):
                         lower.includes('unreachable');
                 };
 
-                const runOneMeasuredFresh = async (spec, title, args, storeTimes, captureStdout, heapArr = null, refreshArr = null) => {
+                const runOneMeasuredFresh = async (spec, title, args, storeTimes, captureStdout, heapArr = null, refreshArr = null, captureOptionsFactory = null) => {
                     for (let attempt = 0; attempt < 2; attempt++) {
                         if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                         const loaded = await loadFreshModuleMeasured(spec, `Loading ${title} WASM...`, ticksDone, testsTotal, 'tests');
                         let mod = loaded.mod;
                         if (refreshArr) refreshArr.push(loaded.refreshMs);
                         try {
+                            const captureOptions = (typeof captureOptionsFactory === 'function')
+                                ? (captureOptionsFactory({ attempt }) || null)
+                                : ((captureOptionsFactory && typeof captureOptionsFactory === 'object') ? captureOptionsFactory : null);
                             const t0 = runTimerNowMs();
-                            const res = await runEmscriptenMain(mod, args);
+                            const res = await runEmscriptenMain(mod, args, captureOptions ? { captureOptions } : {});
                             const t1 = runTimerNowMs();
                             storeTimes.push(Math.max(0, t1 - t0));
                             if (heapArr) {
@@ -2261,7 +2363,12 @@ def capstone_run_local_generator(args, out_dir):
                             if (!baselineFirstOut) baselineFirstOut = stdout;
                         },
                         baseFirstHeapKiB,
-                        baseFirstRefreshMs
+                        baseFirstRefreshMs,
+                        () => ({
+                            mappingLinePolicy: iter === 0 ? 'keep-first' : 'drop-all',
+                            maxOutputChars: 65536,
+                            maxErrorChars: 16384
+                        })
                     );
                     if (firstRes && firstRes.status === 'aborted') return firstRes;
                     ticksDone++;
@@ -2279,7 +2386,12 @@ def capstone_run_local_generator(args, out_dir):
                             if (!baselineAllOut) baselineAllOut = stdout;
                         },
                         baseAllHeapKiB,
-                        baseAllRefreshMs
+                        baseAllRefreshMs,
+                        () => ({
+                            mappingLinePolicy: 'drop-all',
+                            maxOutputChars: 65536,
+                            maxErrorChars: 16384
+                        })
                     );
                     if (allRes && allRes.status === 'aborted') return allRes;
                     ticksDone++;
@@ -2306,7 +2418,12 @@ def capstone_run_local_generator(args, out_dir):
                             if (!chatOut) chatOut = stdout;
                         },
                         chatFirstHeapKiB,
-                        chatFirstRefreshMs
+                        chatFirstRefreshMs,
+                        () => ({
+                            mappingLinePolicy: iter === 0 ? 'keep-first' : 'drop-all',
+                            maxOutputChars: 65536,
+                            maxErrorChars: 16384
+                        })
                     );
                     if (chatRes && chatRes.status === 'aborted') return chatRes;
                     if (chatFirst.length) {
@@ -2343,7 +2460,12 @@ def capstone_run_local_generator(args, out_dir):
                             if (!gemOut) gemOut = stdout;
                         },
                         gemFirstHeapKiB,
-                        gemFirstRefreshMs
+                        gemFirstRefreshMs,
+                        () => ({
+                            mappingLinePolicy: iter === 0 ? 'keep-first' : 'drop-all',
+                            maxOutputChars: 65536,
+                            maxErrorChars: 16384
+                        })
                     );
                     if (gemRes && gemRes.status === 'aborted') return gemRes;
                     if (gemFirst.length) {
@@ -2410,6 +2532,9 @@ def capstone_run_local_generator(args, out_dir):
                 addLlmSection('Glasgow Gemini', gemMatch, gemTotal, gemMismatch, sGemFirst, sGemAll);
                 lines.push('[Local WASM Notes]');
                 lines.push('Memory metric: WASM heap peak (KiB), measured with a fresh module instance per measured solver run (first and all).');
+                if (baselineFormatFlag === 'vertexlabelledlad') {
+                    lines.push('Inputs normalized to vertex-labelled LAD locally to avoid ambiguous unlabeled LAD parsing in the LLM Glasgow implementations.');
+                }
                 if (rBaseFirst && rBaseAll) lines.push(...formatStatsMsFirstAll('Module refresh baseline (ms): ', rBaseFirst, rBaseAll));
                 if (rChatFirst && rChatAll) lines.push(...formatStatsMsFirstAll('Module refresh ChatGPT (ms): ', rChatFirst, rChatAll));
                 if (rGemFirst && rGemAll) lines.push(...formatStatsMsFirstAll('Module refresh Gemini (ms): ', rGemFirst, rGemAll));
@@ -2844,7 +2969,12 @@ def capstone_run_local_generator(args, out_dir):
 
             if (algoKey === 'glasgow') {
                 try {
-                    return await runGlasgowLocally(runCtx, iterations, warmup);
+                    // Use normalized vertex-labelled LAD locally so the LLM Glasgow parsers cannot
+                    // misinterpret unlabeled LAD rows that look like "<label> <count> ...".
+                    return await runGlasgowLocally(runCtx, iterations, warmup, {
+                        baselineFormatFlag: 'vertexlabelledlad',
+                        resultAlgorithm: 'glasgow'
+                    });
                 } catch (error) {
                     const msg = error && error.message ? error.message : String(error);
                     if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
