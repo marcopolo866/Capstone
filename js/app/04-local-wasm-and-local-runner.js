@@ -6,11 +6,519 @@
 
         const localWasmScriptPromises = new Map();
         const localWasmModulePromises = new Map();
+        let localWasmWorkerPromise = null;
+        let localWasmWorkerDisabled = false;
+        let localWasmWorkerRequestSeq = 1;
+        const localWasmWorkerPending = new Map();
+        const localWasmWorkerTokensByModuleId = new Map();
+
+        function shouldUseLocalWasmWorker() {
+            return !localWasmWorkerDisabled &&
+                typeof Worker === 'function' &&
+                typeof Blob === 'function' &&
+                typeof URL !== 'undefined' &&
+                typeof URL.createObjectURL === 'function';
+        }
+
+        function localWasmWorkerWarn(message, error) {
+            try {
+                if (typeof console !== 'undefined' && console && typeof console.warn === 'function') {
+                    console.warn('[capstone][local-wasm-worker]', message, error || '');
+                }
+            } catch (_) {}
+        }
+
+        function localWasmWorkerRejectAllPending(error) {
+            for (const [requestId, pending] of localWasmWorkerPending.entries()) {
+                localWasmWorkerPending.delete(requestId);
+                try {
+                    pending.reject(error instanceof Error ? error : new Error(String(error || 'Worker failed')));
+                } catch (_) {}
+            }
+        }
+
+        function buildLocalWasmWorkerSource() {
+            return String.raw`"use strict";
+const __capstoneScriptLoads = new Set();
+const __capstoneModules = new Map();
+let __capstoneNextToken = 1;
+
+function __capNowMs() {
+  try {
+    if (self.performance && typeof self.performance.now === 'function') return self.performance.now();
+  } catch (_) {}
+  return Date.now();
+}
+
+function __capLoadScriptOnce(url) {
+  const u = String(url || '').trim();
+  if (!u) throw new Error('Missing script URL');
+  if (__capstoneScriptLoads.has(u)) return;
+  importScripts(u);
+  __capstoneScriptLoads.add(u);
+}
+
+function __capMakeCapture() {
+  return {
+    out: [],
+    err: [],
+    _runOpts: null,
+    _outChars: 0,
+    _errChars: 0,
+    _mappingLinesKept: 0,
+    _mappingLinesDropped: 0,
+    _outTruncated: false,
+    _errTruncated: false,
+    reset() {
+      this.out.length = 0;
+      this.err.length = 0;
+      this._runOpts = null;
+      this._outChars = 0;
+      this._errChars = 0;
+      this._mappingLinesKept = 0;
+      this._mappingLinesDropped = 0;
+      this._outTruncated = false;
+      this._errTruncated = false;
+    },
+    beginRun(opts) {
+      this._runOpts = (opts && typeof opts === 'object') ? opts : null;
+      this._outChars = 0;
+      this._errChars = 0;
+      this._mappingLinesKept = 0;
+      this._mappingLinesDropped = 0;
+      this._outTruncated = false;
+      this._errTruncated = false;
+    },
+    endRun() {
+      this._runOpts = null;
+    },
+    _pushWithLimit(arr, text, kind) {
+      const opts = this._runOpts || null;
+      let s = String(text == null ? '' : text);
+      if (kind === 'out' && opts) {
+        const mappingPolicy = String(opts.mappingLinePolicy || '').trim().toLowerCase();
+        if (mappingPolicy && /^mapping\s*:/i.test(s)) {
+          if (mappingPolicy === 'drop-all') {
+            this._mappingLinesDropped++;
+            return;
+          }
+          if (mappingPolicy === 'keep-first' && this._mappingLinesKept >= 1) {
+            this._mappingLinesDropped++;
+            return;
+          }
+          this._mappingLinesKept++;
+        }
+      }
+      const maxCharsRaw = kind === 'err' ? (opts && opts.maxErrorChars) : (opts && opts.maxOutputChars);
+      const maxChars = Number.isFinite(Number(maxCharsRaw)) ? Math.max(0, Math.floor(Number(maxCharsRaw))) : 0;
+      let used = kind === 'err' ? this._errChars : this._outChars;
+      if (maxChars > 0) {
+        if (used >= maxChars) {
+          if (kind === 'err' && !this._errTruncated) {
+            this._errTruncated = true;
+            arr.push('[capstone] stderr truncated');
+          }
+          if (kind === 'out' && !this._outTruncated) {
+            this._outTruncated = true;
+            arr.push('[capstone] stdout truncated');
+          }
+          return;
+        }
+        if (used + s.length > maxChars) {
+          const keep = Math.max(0, maxChars - used);
+          s = keep > 0 ? s.slice(0, keep) : '';
+        }
+      }
+      arr.push(s);
+      used += s.length;
+      if (kind === 'err') this._errChars = used; else this._outChars = used;
+    },
+    pushOut(text) { this._pushWithLimit(this.out, text, 'out'); },
+    pushErr(text) { this._pushWithLimit(this.err, text, 'err'); }
+  };
+}
+
+function __capHeapKiBFromModule(mod) {
+  try {
+    const mem = mod && mod.__capstoneWasmMemory;
+    const bytes = mem && mem.buffer ? mem.buffer.byteLength : 0;
+    if (!Number.isFinite(bytes) || bytes <= 0) return null;
+    return bytes / 1024;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function __capCreateModule(payload) {
+  const spec = payload && payload.spec ? payload.spec : {};
+  const id = String(spec.id || '').trim();
+  const scriptUrl = String(spec.scriptUrl || spec.scriptPath || '').trim();
+  const wasmUrl = String(spec.wasmUrl || spec.wasmPath || '').trim();
+  const factoryName = String(spec.factoryName || '').trim();
+  if (!id || !scriptUrl || !wasmUrl || !factoryName) {
+    throw new Error('Invalid worker wasm module spec');
+  }
+  if (!('WebAssembly' in self)) {
+    throw new Error('WebAssembly is not supported in this browser.');
+  }
+
+  const t0 = __capNowMs();
+  __capLoadScriptOnce(scriptUrl);
+  const factory = self[factoryName];
+  if (typeof factory !== 'function') {
+    throw new Error('WASM factory not found: ' + factoryName + ' (did ' + scriptUrl + ' load?)');
+  }
+
+  const moduleCaptureState = { wasmMemory: null };
+  const capture = __capMakeCapture();
+  const wasmObj = (typeof WebAssembly === 'object' && WebAssembly) ? WebAssembly : null;
+  const origInstantiate = wasmObj && typeof wasmObj.instantiate === 'function' ? wasmObj.instantiate : null;
+  const origInstantiateStreaming = wasmObj && typeof wasmObj.instantiateStreaming === 'function' ? wasmObj.instantiateStreaming : null;
+  const attachWasmMemoryFromResult = (result) => {
+    try {
+      const instance = result && result.instance ? result.instance : result;
+      const exportsObj = instance && instance.exports ? instance.exports : null;
+      if (!exportsObj || typeof exportsObj !== 'object') return result;
+      let mem = null;
+      if (exportsObj.memory instanceof WebAssembly.Memory) {
+        mem = exportsObj.memory;
+      } else {
+        for (const value of Object.values(exportsObj)) {
+          if (value instanceof WebAssembly.Memory) {
+            mem = value;
+            break;
+          }
+        }
+      }
+      if (mem) moduleCaptureState.wasmMemory = mem;
+    } catch (_) {}
+    return result;
+  };
+
+  if (wasmObj && origInstantiate) {
+    wasmObj.instantiate = function(...args) {
+      const out = origInstantiate.apply(this, args);
+      if (!out || typeof out.then !== 'function') return attachWasmMemoryFromResult(out);
+      return out.then((result) => attachWasmMemoryFromResult(result));
+    };
+  }
+  if (wasmObj && origInstantiateStreaming) {
+    wasmObj.instantiateStreaming = function(...args) {
+      const out = origInstantiateStreaming.apply(this, args);
+      if (!out || typeof out.then !== 'function') return attachWasmMemoryFromResult(out);
+      return out.then((result) => attachWasmMemoryFromResult(result));
+    };
+  }
+
+  let module;
+  try {
+    module = await factory({
+      noInitialRun: true,
+      noExitRuntime: true,
+      locateFile: function(path, prefix) {
+        if (typeof path === 'string' && path.endsWith('.wasm')) return wasmUrl;
+        return (prefix || '') + path;
+      },
+      print: function(text) { capture.pushOut(text); },
+      printErr: function(text) { capture.pushErr(text); }
+    });
+  } finally {
+    try {
+      if (wasmObj && origInstantiate) wasmObj.instantiate = origInstantiate;
+      if (wasmObj && origInstantiateStreaming) wasmObj.instantiateStreaming = origInstantiateStreaming;
+    } catch (_) {}
+  }
+
+  if (!module || !module.FS || typeof module.callMain !== 'function') {
+    throw new Error('WASM module missing FS/callMain: ' + id);
+  }
+
+  module.__capstoneCapture = capture;
+  module.__capstoneId = id;
+  module.__capstoneWasmMemory = moduleCaptureState.wasmMemory || null;
+
+  const token = (__capstoneNextToken++);
+  __capstoneModules.set(token, module);
+  const t1 = __capNowMs();
+  return { token, refreshMs: Math.max(0, t1 - t0) };
+}
+
+function __capApplyFsOps(mod, fsOps) {
+  const ops = Array.isArray(fsOps) ? fsOps : [];
+  for (const raw of ops) {
+    const op = raw && typeof raw === 'object' ? raw : null;
+    if (!op) continue;
+    const type = String(op.op || '').trim();
+    if (type === 'mkdir') {
+      const path = String(op.path || '').trim();
+      if (!path) continue;
+      try { mod.FS.mkdir(path); } catch (_) {}
+      continue;
+    }
+    if (type === 'writeFileText') {
+      const path = String(op.path || '').trim();
+      if (!path) continue;
+      mod.FS.writeFile(path, String(op.text == null ? '' : op.text), { encoding: 'utf8' });
+    }
+  }
+}
+
+async function __capRunModuleMain(payload) {
+  const token = Number(payload && payload.token);
+  if (!Number.isInteger(token) || !__capstoneModules.has(token)) {
+    throw new Error('Unknown worker wasm module token');
+  }
+  const mod = __capstoneModules.get(token);
+  __capApplyFsOps(mod, payload && payload.fsOps);
+
+  const args = Array.isArray(payload && payload.args) ? payload.args.map(v => String(v)) : [];
+  const options = payload && payload.options && typeof payload.options === 'object' ? payload.options : {};
+  const capture = mod.__capstoneCapture;
+  if (!capture) throw new Error('Missing wasm capture');
+  capture.reset();
+  if (typeof capture.beginRun === 'function') {
+    try { capture.beginRun(options.captureOptions || null); } catch (_) {}
+  }
+
+  const hasStdinText = Object.prototype.hasOwnProperty.call(options, 'stdinText');
+  const stdinText = hasStdinText ? String(options.stdinText == null ? '' : options.stdinText) : null;
+  let restorePrompt = null;
+  if (hasStdinText && typeof self.prompt === 'function') {
+    const originalPrompt = self.prompt;
+    let served = false;
+    self.prompt = function() {
+      if (served) return null;
+      served = true;
+      return stdinText;
+    };
+    restorePrompt = function() {
+      try { self.prompt = originalPrompt; } catch (_) {}
+    };
+  } else if (hasStdinText) {
+    const originalPrompt = self.prompt;
+    let served = false;
+    self.prompt = function() {
+      if (served) return null;
+      served = true;
+      return stdinText;
+    };
+    restorePrompt = function() {
+      try { self.prompt = originalPrompt; } catch (_) {}
+    };
+  }
+  const finalizeRun = function() {
+    try { if (restorePrompt) restorePrompt(); } catch (_) {}
+    try { if (typeof capture.endRun === 'function') capture.endRun(); } catch (_) {}
+  };
+
+  try {
+    mod.callMain(args);
+  } catch (error) {
+    const status = (error && typeof error.status === 'number') ? error.status : null;
+    const stdout = capture.out.join('\n');
+    const stderr = capture.err.join('\n');
+    if (status === 0) {
+      finalizeRun();
+      return { stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), heapKiB: __capHeapKiBFromModule(mod) };
+    }
+    const msg = stderr || stdout || (error && error.message ? error.message : String(error));
+    if (status !== null) {
+      finalizeRun();
+      throw new Error('WASM program exited with status ' + status + ': ' + msg);
+    }
+    __capstoneModules.delete(token);
+    finalizeRun();
+    throw error;
+  }
+  finalizeRun();
+  return {
+    stdout: capture.out.join('\n').trimEnd(),
+    stderr: capture.err.join('\n').trimEnd(),
+    heapKiB: __capHeapKiBFromModule(mod)
+  };
+}
+
+function __capDisposeModule(payload) {
+  const token = Number(payload && payload.token);
+  if (Number.isInteger(token)) __capstoneModules.delete(token);
+  return { ok: true };
+}
+
+function __capApplyFsOpsOnly(payload) {
+  const token = Number(payload && payload.token);
+  if (!Number.isInteger(token) || !__capstoneModules.has(token)) {
+    throw new Error('Unknown worker wasm module token');
+  }
+  const mod = __capstoneModules.get(token);
+  __capApplyFsOps(mod, payload && payload.fsOps);
+  return { ok: true, heapKiB: __capHeapKiBFromModule(mod) };
+}
+
+self.onmessage = async function(ev) {
+  const msg = ev && ev.data && typeof ev.data === 'object' ? ev.data : {};
+  const requestId = msg.requestId;
+  const type = String(msg.type || '');
+  try {
+    let result;
+    if (type === 'create_module') result = await __capCreateModule(msg.payload || {});
+    else if (type === 'run_module_main') result = await __capRunModuleMain(msg.payload || {});
+    else if (type === 'dispose_module') result = __capDisposeModule(msg.payload || {});
+    else if (type === 'apply_fs_ops') result = __capApplyFsOpsOnly(msg.payload || {});
+    else throw new Error('Unknown worker request: ' + type);
+    self.postMessage({ requestId, ok: true, result: result });
+  } catch (error) {
+    const e = error instanceof Error ? error : new Error(String(error || 'Worker error'));
+    self.postMessage({ requestId, ok: false, error: { message: e.message || String(e), stack: e.stack || '' } });
+  }
+};`;
+        }
+
+        async function getLocalWasmWorker() {
+            if (!shouldUseLocalWasmWorker()) {
+                throw new Error('Local WASM worker is unavailable');
+            }
+            if (localWasmWorkerPromise) return localWasmWorkerPromise;
+            localWasmWorkerPromise = (async () => {
+                const blob = new Blob([buildLocalWasmWorkerSource()], { type: 'text/javascript' });
+                const workerUrl = URL.createObjectURL(blob);
+                const worker = new Worker(workerUrl);
+                worker.__capstoneWorkerUrl = workerUrl;
+                worker.addEventListener('message', (ev) => {
+                    const msg = ev && ev.data && typeof ev.data === 'object' ? ev.data : null;
+                    if (!msg) return;
+                    const requestId = msg.requestId;
+                    if (!localWasmWorkerPending.has(requestId)) return;
+                    const pending = localWasmWorkerPending.get(requestId);
+                    localWasmWorkerPending.delete(requestId);
+                    if (msg.ok) {
+                        pending.resolve(msg.result);
+                        return;
+                    }
+                    const errObj = msg.error && typeof msg.error === 'object' ? msg.error : {};
+                    const error = new Error(String(errObj.message || 'Local WASM worker error'));
+                    if (errObj.stack) {
+                        try { error.stack = String(errObj.stack); } catch (_) {}
+                    }
+                    pending.reject(error);
+                });
+                worker.addEventListener('error', (ev) => {
+                    const message = ev && ev.message ? String(ev.message) : 'Worker runtime error';
+                    const error = new Error(message);
+                    localWasmWorkerRejectAllPending(error);
+                });
+                return worker;
+            })().catch((error) => {
+                localWasmWorkerPromise = null;
+                localWasmWorkerDisabled = true;
+                localWasmWorkerWarn('Failed to initialize local WASM worker; falling back to main thread execution.', error);
+                throw error;
+            });
+            return localWasmWorkerPromise;
+        }
+
+        async function callLocalWasmWorker(type, payload) {
+            const worker = await getLocalWasmWorker();
+            const requestId = localWasmWorkerRequestSeq++;
+            return await new Promise((resolve, reject) => {
+                localWasmWorkerPending.set(requestId, { resolve, reject });
+                try {
+                    worker.postMessage({
+                        requestId,
+                        type: String(type || ''),
+                        payload: payload && typeof payload === 'object' ? payload : {}
+                    });
+                } catch (error) {
+                    localWasmWorkerPending.delete(requestId);
+                    reject(error);
+                }
+            });
+        }
+
+        function makeLocalWasmAbsoluteUrl(path) {
+            const p = String(path || '').trim();
+            if (!p) return '';
+            try {
+                if (typeof window !== 'undefined' && window.location) {
+                    return new URL(p, window.location.href).href;
+                }
+            } catch (_) {}
+            return p;
+        }
+
+        function makeLocalWasmWorkerSpec(spec) {
+            const src = spec && typeof spec === 'object' ? spec : {};
+            return {
+                id: String(src.id || '').trim(),
+                factoryName: String(src.factoryName || '').trim(),
+                scriptUrl: makeLocalWasmAbsoluteUrl(src.scriptPath),
+                wasmUrl: makeLocalWasmAbsoluteUrl(src.wasmPath)
+            };
+        }
+
+        function registerLocalWasmWorkerModuleToken(moduleId, token) {
+            const id = String(moduleId || '').trim();
+            const t = Number(token);
+            if (!id || !Number.isInteger(t)) return;
+            if (!localWasmWorkerTokensByModuleId.has(id)) {
+                localWasmWorkerTokensByModuleId.set(id, new Set());
+            }
+            localWasmWorkerTokensByModuleId.get(id).add(t);
+        }
+
+        function unregisterLocalWasmWorkerModuleToken(moduleId, token) {
+            const id = String(moduleId || '').trim();
+            const t = Number(token);
+            if (!id || !Number.isInteger(t)) return;
+            const set = localWasmWorkerTokensByModuleId.get(id);
+            if (!set) return;
+            set.delete(t);
+            if (!set.size) localWasmWorkerTokensByModuleId.delete(id);
+        }
+
+        function makeLocalWasmWorkerModuleProxy(spec, workerSpec, createResult) {
+            const token = Number(createResult && createResult.token);
+            if (!Number.isInteger(token)) throw new Error('Invalid local WASM worker module token');
+            const refreshMsRaw = createResult && createResult.refreshMs;
+            const refreshMs = Number.isFinite(Number(refreshMsRaw)) ? Math.max(0, Number(refreshMsRaw)) : null;
+            const moduleId = String(spec && spec.id ? spec.id : '').trim();
+            registerLocalWasmWorkerModuleToken(moduleId, token);
+            const proxy = {
+                __capstoneWorkerProxy: true,
+                __capstoneWorkerToken: token,
+                __capstoneWorkerSpec: workerSpec,
+                __capstoneId: moduleId,
+                __capstoneWorkerFsOps: [],
+                __capstoneLastHeapKiB: null,
+                __capstoneCreateRefreshMs: refreshMs,
+                FS: null
+            };
+            proxy.FS = {
+                mkdir(path) {
+                    proxy.__capstoneWorkerFsOps.push({ op: 'mkdir', path: String(path || '') });
+                },
+                writeFile(path, text) {
+                    proxy.__capstoneWorkerFsOps.push({
+                        op: 'writeFileText',
+                        path: String(path || ''),
+                        text: String(text == null ? '' : text)
+                    });
+                }
+            };
+            return proxy;
+        }
 
         function invalidateEmscriptenModule(id) {
             const key = String(id || '').trim();
             if (!key) return;
             localWasmModulePromises.delete(key);
+            const tokens = localWasmWorkerTokensByModuleId.get(key);
+            if (tokens && tokens.size) {
+                const list = Array.from(tokens);
+                localWasmWorkerTokensByModuleId.delete(key);
+                for (const token of list) {
+                    callLocalWasmWorker('dispose_module', { token }).catch(() => {});
+                }
+            }
         }
 
         function loadScriptOnce(src) {
@@ -114,6 +622,34 @@
             }
 
             const promise = (async () => {
+                if (shouldUseLocalWasmWorker()) {
+                    try {
+                        const workerSpec = makeLocalWasmWorkerSpec(spec);
+                        const createResult = await callLocalWasmWorker('create_module', { spec: workerSpec });
+                        return makeLocalWasmWorkerModuleProxy(spec, workerSpec, createResult);
+                    } catch (error) {
+                        localWasmWorkerDisabled = true;
+                        localWasmWorkerWarn('Local WASM worker module creation failed; falling back to main-thread WASM execution for this session.', error);
+                        try {
+                            const worker = await Promise.resolve(localWasmWorkerPromise).catch(() => null);
+                            if (worker && typeof worker.terminate === 'function') worker.terminate();
+                        } catch (_) {}
+                        try {
+                            if (localWasmWorkerPromise && typeof localWasmWorkerPromise.then === 'function') {
+                                localWasmWorkerPromise.then((worker) => {
+                                    try {
+                                        const url = worker && worker.__capstoneWorkerUrl ? worker.__capstoneWorkerUrl : null;
+                                        if (url && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+                                            URL.revokeObjectURL(url);
+                                        }
+                                    } catch (_) {}
+                                }).catch(() => {});
+                            }
+                        } catch (_) {}
+                        localWasmWorkerPromise = null;
+                        localWasmWorkerRejectAllPending(error);
+                    }
+                }
                 if (!('WebAssembly' in window)) {
                     throw new Error('WebAssembly is not supported in this browser.');
                 }
@@ -314,8 +850,25 @@
             mod.FS.writeFile(path, String(text || ''), { encoding: 'utf8' });
         }
 
+        async function flushEmscriptenWorkerFsOps(mod) {
+            if (!mod || !mod.__capstoneWorkerProxy) return;
+            const token = Number(mod.__capstoneWorkerToken);
+            if (!Number.isInteger(token)) return;
+            const ops = Array.isArray(mod.__capstoneWorkerFsOps) ? mod.__capstoneWorkerFsOps.splice(0) : [];
+            if (!ops.length) return;
+            const result = await callLocalWasmWorker('apply_fs_ops', { token, fsOps: ops });
+            const heapKiBRaw = result && result.heapKiB;
+            const heapKiB = Number.isFinite(Number(heapKiBRaw)) ? Math.max(0, Number(heapKiBRaw)) : null;
+            mod.__capstoneLastHeapKiB = heapKiB;
+        }
+
         function getEmscriptenHeapPeakKiB(mod) {
             try {
+                if (mod && mod.__capstoneWorkerProxy) {
+                    const v = Number(mod.__capstoneLastHeapKiB);
+                    if (!Number.isFinite(v) || v <= 0) return null;
+                    return v;
+                }
                 const mem = mod && mod.__capstoneWasmMemory;
                 const bytes = mem && mem.buffer ? mem.buffer.byteLength : 0;
                 if (!Number.isFinite(bytes) || bytes <= 0) return null;
@@ -338,6 +891,42 @@
         }
 
         async function runEmscriptenMain(mod, args, options = {}) {
+            if (mod && mod.__capstoneWorkerProxy) {
+                const token = Number(mod.__capstoneWorkerToken);
+                if (!Number.isInteger(token)) throw new Error('Missing local WASM worker module token');
+                const argv = Array.isArray(args) ? args.map(a => String(a)) : [];
+                const fsOps = Array.isArray(mod.__capstoneWorkerFsOps) ? mod.__capstoneWorkerFsOps.splice(0) : [];
+                const workerOptions = {};
+                if (options && typeof options.captureOptions === 'object' && options.captureOptions) {
+                    workerOptions.captureOptions = options.captureOptions;
+                }
+                if (Object.prototype.hasOwnProperty.call(options || {}, 'stdinText')) {
+                    workerOptions.stdinText = options && options.stdinText !== undefined && options.stdinText !== null
+                        ? String(options.stdinText)
+                        : '';
+                }
+                try {
+                    const result = await callLocalWasmWorker('run_module_main', {
+                        token,
+                        fsOps,
+                        args: argv,
+                        options: workerOptions
+                    });
+                    const heapKiBRaw = result && result.heapKiB;
+                    const heapKiB = Number.isFinite(Number(heapKiBRaw)) ? Math.max(0, Number(heapKiBRaw)) : null;
+                    mod.__capstoneLastHeapKiB = heapKiB;
+                    return {
+                        stdout: String(result && result.stdout ? result.stdout : ''),
+                        stderr: String(result && result.stderr ? result.stderr : '')
+                    };
+                } catch (error) {
+                    // Worker-side runtime traps may invalidate the worker module token.
+                    try {
+                        if (mod && mod.__capstoneId) invalidateEmscriptenModule(mod.__capstoneId);
+                    } catch (_) {}
+                    throw error;
+                }
+            }
             const argv = Array.isArray(args) ? args.map(a => String(a)) : [];
             const capture = mod.__capstoneCapture;
             if (!capture) throw new Error('Missing wasm capture');
@@ -1327,6 +1916,7 @@ def capstone_run_local_generator(args, out_dir):
             const loadFreshModuleMeasured = async (spec) => {
                 const t0 = runTimerNowMs();
                 const mod = await loadFreshModule(spec);
+                await flushEmscriptenWorkerFsOps(mod);
                 const t1 = runTimerNowMs();
                 return { mod, refreshMs: Math.max(0, t1 - t0) };
             };
@@ -1527,26 +2117,20 @@ def capstone_run_local_generator(args, out_dir):
                 const rGemini = calcStatsMs(geminiRefreshMs);
 
                 const lines = [];
-                const addSection = (title, result, stats) => {
+                const addSection = (title, _result, stats, memStats) => {
                     lines.push(`[${title}]`);
-                    lines.push(result || '(No output)');
-                    lines.push(`Warmup: ${safeWarmup}`);
-                    lines.push(`Iterations: ${safeIterations}`);
                     if (stats) {
                         lines.push(formatStatsMsSummary('Runtime (ms): ', stats));
+                    }
+                    if (memStats) {
+                        lines.push(formatStatsMsSummary('WASM Heap (KiB): ', memStats));
                     }
                     lines.push('');
                 };
 
-                addSection('Dijkstra Baseline', baselineResult, sBaseline);
-                addSection('Dijkstra ChatGPT', llmResult, sLlm);
-                addSection('Dijkstra Gemini', geminiResult, sGemini);
-                lines.push('[Local WASM Notes]');
-                lines.push('Memory metric: WASM heap peak (KiB), measured with a fresh module instance per measured solver run.');
-                if (rBaseline) lines.push(formatStatsMsSummary('Module refresh baseline (ms): ', rBaseline));
-                if (rLlm) lines.push(formatStatsMsSummary('Module refresh ChatGPT (ms): ', rLlm));
-                if (rGemini) lines.push(formatStatsMsSummary('Module refresh Gemini (ms): ', rGemini));
-                lines.push('');
+                addSection('Dijkstra Baseline', baselineResult, sBaseline, mBaseline);
+                addSection('Dijkstra ChatGPT', llmResult, sLlm, mLlm);
+                addSection('Dijkstra Gemini', geminiResult, sGemini, mGemini);
 
                 let visualization = null;
                 try {
@@ -1725,6 +2309,7 @@ def capstone_run_local_generator(args, out_dir):
             const loadFreshModuleMeasured = async (spec, label, done, total, stage) => {
                 const t0 = runTimerNowMs();
                 const mod = await loadFreshModule(spec, label, done, total, stage);
+                await flushEmscriptenWorkerFsOps(mod);
                 const t1 = runTimerNowMs();
                 return { mod, refreshMs: Math.max(0, t1 - t0) };
             };
@@ -1985,26 +2570,20 @@ def capstone_run_local_generator(args, out_dir):
                 const rChatAll = calcStatsMs(chatAllRefreshMs);
 
                 const lines = [];
-                const addSection = (title, result, firstStats, allStats) => {
+                const addSection = (title, _result, firstStats, allStats, firstMemStats, allMemStats) => {
                     lines.push(`[${title}]`);
-                    lines.push(result || '(No output)');
-                    lines.push(`Warmup: ${safeWarmup}`);
-                    lines.push(`Iterations: ${safeIterations}`);
                     if (firstStats && allStats) {
                         lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
+                    }
+                    if (firstMemStats && allMemStats) {
+                        lines.push(...formatStatsMsFirstAll('WASM Heap (KiB): ', firstMemStats, allMemStats));
                     }
                     lines.push('');
                 };
 
-                addSection('VF3 baseline', baseResult, sBaseFirst, sBaseAll);
-                addSection('VF3 Gemini', gemResult, sGemFirst, sGemAll);
-                addSection('VF3 ChatGPT', chatResult, sChatFirst, sChatAll);
-                lines.push('[Local WASM Notes]');
-                lines.push('Memory metric: WASM heap peak (KiB), measured with a fresh module instance per measured solver run (first and all).');
-                if (rBaseFirst && rBaseAll) lines.push(...formatStatsMsFirstAll('Module refresh baseline (ms): ', rBaseFirst, rBaseAll));
-                if (rGemFirst && rGemAll) lines.push(...formatStatsMsFirstAll('Module refresh Gemini (ms): ', rGemFirst, rGemAll));
-                if (rChatFirst && rChatAll) lines.push(...formatStatsMsFirstAll('Module refresh ChatGPT (ms): ', rChatFirst, rChatAll));
-                lines.push('');
+                addSection('VF3 baseline', baseResult, sBaseFirst, sBaseAll, mBaseFirst, mBaseAll);
+                addSection('VF3 Gemini', gemResult, sGemFirst, sGemAll, mGemFirst, mGemAll);
+                addSection('VF3 ChatGPT', chatResult, sChatFirst, sChatAll, mChatFirst, mChatAll);
 
                 let visualization = null;
                 try {
@@ -2198,6 +2777,7 @@ def capstone_run_local_generator(args, out_dir):
             const loadFreshModuleMeasured = async (spec, label, done, total, stage) => {
                 const t0 = runTimerNowMs();
                 const mod = await loadFreshModule(spec, label, done, total, stage);
+                await flushEmscriptenWorkerFsOps(mod);
                 const t1 = runTimerNowMs();
                 return { mod, refreshMs: Math.max(0, t1 - t0) };
             };
@@ -2515,30 +3095,18 @@ def capstone_run_local_generator(args, out_dir):
                 const failureSuffix = glasgowFail > 0 ? `, ${glasgowFail} failed` : '';
                 lines.push('[Glasgow Subgraph Solver]');
                 lines.push(`${glasgowSuccess} iterations ran successfully${failureSuffix}`);
-                lines.push(`Warmup: ${safeWarmup}`);
-                lines.push(`Iterations: ${safeIterations}`);
                 if (sBaseFirst && sBaseAll) lines.push(...formatStatsMsFirstAll('Runtime (ms): ', sBaseFirst, sBaseAll));
+                if (mBaseFirst && mBaseAll) lines.push(...formatStatsMsFirstAll('WASM Heap (KiB): ', mBaseFirst, mBaseAll));
                 lines.push('');
 
-                const addLlmSection = (title, match, total, mismatch, firstStats, allStats) => {
+                const addLlmSection = (title, _match, _total, _mismatch, firstStats, allStats, firstMemStats, allMemStats) => {
                     lines.push(`[${title}]`);
-                    lines.push(`Matches: ${match}/${total} (mismatches: ${mismatch})`);
-                    lines.push(`Warmup: ${safeWarmup}`);
-                    lines.push(`Iterations: ${safeIterations}`);
                     if (firstStats && allStats) lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
+                    if (firstMemStats && allMemStats) lines.push(...formatStatsMsFirstAll('WASM Heap (KiB): ', firstMemStats, allMemStats));
                     lines.push('');
                 };
-                addLlmSection('Glasgow ChatGPT', chatMatch, chatTotal, chatMismatch, sChatFirst, sChatAll);
-                addLlmSection('Glasgow Gemini', gemMatch, gemTotal, gemMismatch, sGemFirst, sGemAll);
-                lines.push('[Local WASM Notes]');
-                lines.push('Memory metric: WASM heap peak (KiB), measured with a fresh module instance per measured solver run (first and all).');
-                if (baselineFormatFlag === 'vertexlabelledlad') {
-                    lines.push('Inputs normalized to vertex-labelled LAD locally to avoid ambiguous unlabeled LAD parsing in the LLM Glasgow implementations.');
-                }
-                if (rBaseFirst && rBaseAll) lines.push(...formatStatsMsFirstAll('Module refresh baseline (ms): ', rBaseFirst, rBaseAll));
-                if (rChatFirst && rChatAll) lines.push(...formatStatsMsFirstAll('Module refresh ChatGPT (ms): ', rChatFirst, rChatAll));
-                if (rGemFirst && rGemAll) lines.push(...formatStatsMsFirstAll('Module refresh Gemini (ms): ', rGemFirst, rGemAll));
-                lines.push('');
+                addLlmSection('Glasgow ChatGPT', chatMatch, chatTotal, chatMismatch, sChatFirst, sChatAll, mChatFirst, mChatAll);
+                addLlmSection('Glasgow Gemini', gemMatch, gemTotal, gemMismatch, sGemFirst, sGemAll, mGemFirst, mGemAll);
 
                 let visualization = null;
                 try {
