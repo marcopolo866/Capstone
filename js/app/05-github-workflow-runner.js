@@ -6,8 +6,11 @@
             runBtn.disabled = true;
             if (abortBtn) abortBtn.disabled = true;
 
-            if (activeRun && !activeRun.aborted) {
-                showStatus('A run is already in progress. Abort it before starting a new one.', 'error');
+            if (activeRun) {
+                const message = activeRun.aborted
+                    ? 'A previous run is still stopping. Please wait a moment and retry.'
+                    : 'A run is already in progress. Abort it before starting a new one.';
+                showStatus(message, 'error');
                 runBtn.disabled = false;
                 return;
             }
@@ -490,7 +493,11 @@
 
             // Local runs do not create a GitHub Actions workflow to cancel.
             if (run.mode === 'local') {
-                if (runBtn) runBtn.disabled = false;
+                try {
+                    if (typeof abortLocalWasmExecution === 'function') {
+                        await abortLocalWasmExecution('Run Aborted');
+                    }
+                } catch (_) {}
                 return;
             }
 
@@ -513,17 +520,28 @@
 
         function delay(ms, signal) {
             return new Promise(resolve => {
-                const timeoutId = setTimeout(resolve, ms);
+                let settled = false;
+                let onAbort = null;
+                const finish = () => {
+                    if (settled) return;
+                    settled = true;
+                    if (signal && onAbort && typeof signal.removeEventListener === 'function') {
+                        try { signal.removeEventListener('abort', onAbort); } catch (_) {}
+                    }
+                    resolve();
+                };
+                const timeoutId = setTimeout(finish, ms);
                 if (!signal) return;
                 if (signal.aborted) {
                     clearTimeout(timeoutId);
-                    resolve();
+                    finish();
                     return;
                 }
-                signal.addEventListener('abort', () => {
+                onAbort = () => {
                     clearTimeout(timeoutId);
-                    resolve();
-                }, { once: true });
+                    finish();
+                };
+                signal.addEventListener('abort', onAbort, { once: true });
             });
         }
 

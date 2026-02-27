@@ -9,6 +9,7 @@
         let localWasmWorkerPromise = null;
         let localWasmWorkerDisabled = false;
         let localWasmWorkerRequestSeq = 1;
+        let localWasmActiveAbortSignal = null;
         const localWasmWorkerPending = new Map();
         const localWasmWorkerTokensByModuleId = new Map();
 
@@ -35,6 +36,55 @@
                     pending.reject(error instanceof Error ? error : new Error(String(error || 'Worker failed')));
                 } catch (_) {}
             }
+        }
+
+        function makeLocalWasmAbortError(message) {
+            const error = new Error(String(message || 'Run Aborted'));
+            error.name = 'AbortError';
+            return error;
+        }
+
+        function revokeLocalWasmWorkerUrl(worker) {
+            try {
+                const url = worker && worker.__capstoneWorkerUrl ? String(worker.__capstoneWorkerUrl) : '';
+                if (url && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+                    URL.revokeObjectURL(url);
+                }
+            } catch (_) {}
+        }
+
+        async function teardownLocalWasmWorker(reason, options = {}) {
+            const opts = (options && typeof options === 'object') ? options : {};
+            const disableWorker = Boolean(opts.disableWorker);
+            if (disableWorker) localWasmWorkerDisabled = true;
+
+            const workerPromise = localWasmWorkerPromise;
+            localWasmWorkerPromise = null;
+
+            const error = reason instanceof Error
+                ? reason
+                : new Error(String(reason || 'Local WASM worker stopped'));
+            localWasmWorkerRejectAllPending(error);
+
+            const worker = await Promise.resolve(workerPromise).catch(() => null);
+            if (worker && typeof worker.terminate === 'function') {
+                try { worker.terminate(); } catch (_) {}
+                revokeLocalWasmWorkerUrl(worker);
+            }
+            localWasmWorkerTokensByModuleId.clear();
+            localWasmModulePromises.clear();
+        }
+
+        async function abortLocalWasmExecution(reason = 'Run Aborted') {
+            const abortError = makeLocalWasmAbortError(reason);
+            await teardownLocalWasmWorker(abortError, { disableWorker: false });
+            // Abort should not permanently disable worker mode; the next run may recreate it.
+            localWasmWorkerDisabled = false;
+            localWasmModulePromises.clear();
+            localWasmWorkerTokensByModuleId.clear();
+        }
+        if (typeof window !== 'undefined') {
+            window.abortLocalWasmExecution = abortLocalWasmExecution;
         }
 
         function buildLocalWasmWorkerSource() {
@@ -404,7 +454,8 @@ self.onmessage = async function(ev) {
                 worker.addEventListener('error', (ev) => {
                     const message = ev && ev.message ? String(ev.message) : 'Worker runtime error';
                     const error = new Error(message);
-                    localWasmWorkerRejectAllPending(error);
+                    localWasmWorkerWarn('Local WASM worker runtime error; falling back to main-thread execution for this session.', error);
+                    teardownLocalWasmWorker(error, { disableWorker: true }).catch(() => {});
                 });
                 return worker;
             })().catch((error) => {
@@ -416,11 +467,50 @@ self.onmessage = async function(ev) {
             return localWasmWorkerPromise;
         }
 
-        async function callLocalWasmWorker(type, payload) {
+        async function callLocalWasmWorker(type, payload, options = {}) {
             const worker = await getLocalWasmWorker();
             const requestId = localWasmWorkerRequestSeq++;
+            const opts = (options && typeof options === 'object') ? options : {};
+            const abortSignal = (opts.abortSignal && typeof opts.abortSignal === 'object')
+                ? opts.abortSignal
+                : null;
+            const terminateOnAbort = Boolean(opts.terminateOnAbort);
             return await new Promise((resolve, reject) => {
-                localWasmWorkerPending.set(requestId, { resolve, reject });
+                let settled = false;
+                const cleanup = () => {
+                    if (abortSignal && typeof abortSignal.removeEventListener === 'function') {
+                        try { abortSignal.removeEventListener('abort', onAbort); } catch (_) {}
+                    }
+                };
+                const settleResolve = (value) => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    resolve(value);
+                };
+                const settleReject = (error) => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    reject(error instanceof Error ? error : new Error(String(error || 'Worker request failed')));
+                };
+                const onAbort = () => {
+                    localWasmWorkerPending.delete(requestId);
+                    const abortError = makeLocalWasmAbortError(opts.abortMessage || 'Run Aborted');
+                    settleReject(abortError);
+                    if (terminateOnAbort) {
+                        teardownLocalWasmWorker(abortError, { disableWorker: false }).catch(() => {});
+                    }
+                };
+
+                localWasmWorkerPending.set(requestId, { resolve: settleResolve, reject: settleReject });
+                if (abortSignal && typeof abortSignal.addEventListener === 'function') {
+                    if (abortSignal.aborted) {
+                        onAbort();
+                        return;
+                    }
+                    abortSignal.addEventListener('abort', onAbort, { once: true });
+                }
                 try {
                     worker.postMessage({
                         requestId,
@@ -429,7 +519,7 @@ self.onmessage = async function(ev) {
                     });
                 } catch (error) {
                     localWasmWorkerPending.delete(requestId);
-                    reject(error);
+                    settleReject(error);
                 }
             });
         }
@@ -625,29 +715,25 @@ self.onmessage = async function(ev) {
                 if (shouldUseLocalWasmWorker()) {
                     try {
                         const workerSpec = makeLocalWasmWorkerSpec(spec);
-                        const createResult = await callLocalWasmWorker('create_module', { spec: workerSpec });
+                        const createResult = await callLocalWasmWorker('create_module', { spec: workerSpec }, {
+                            abortSignal: localWasmActiveAbortSignal,
+                            abortMessage: 'Run Aborted',
+                            terminateOnAbort: true
+                        });
                         return makeLocalWasmWorkerModuleProxy(spec, workerSpec, createResult);
                     } catch (error) {
+                        const isAbort = Boolean(
+                            error &&
+                            (String(error.name || '').toLowerCase() === 'aborterror' ||
+                                String(error.message || '').toLowerCase().includes('run aborted'))
+                        );
+                        if (isAbort) {
+                            await teardownLocalWasmWorker(error, { disableWorker: false }).catch(() => {});
+                            throw error;
+                        }
                         localWasmWorkerDisabled = true;
                         localWasmWorkerWarn('Local WASM worker module creation failed; falling back to main-thread WASM execution for this session.', error);
-                        try {
-                            const worker = await Promise.resolve(localWasmWorkerPromise).catch(() => null);
-                            if (worker && typeof worker.terminate === 'function') worker.terminate();
-                        } catch (_) {}
-                        try {
-                            if (localWasmWorkerPromise && typeof localWasmWorkerPromise.then === 'function') {
-                                localWasmWorkerPromise.then((worker) => {
-                                    try {
-                                        const url = worker && worker.__capstoneWorkerUrl ? worker.__capstoneWorkerUrl : null;
-                                        if (url && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
-                                            URL.revokeObjectURL(url);
-                                        }
-                                    } catch (_) {}
-                                }).catch(() => {});
-                            }
-                        } catch (_) {}
-                        localWasmWorkerPromise = null;
-                        localWasmWorkerRejectAllPending(error);
+                        await teardownLocalWasmWorker(error, { disableWorker: true }).catch(() => {});
                     }
                 }
                 if (!('WebAssembly' in window)) {
@@ -856,7 +942,11 @@ self.onmessage = async function(ev) {
             if (!Number.isInteger(token)) return;
             const ops = Array.isArray(mod.__capstoneWorkerFsOps) ? mod.__capstoneWorkerFsOps.splice(0) : [];
             if (!ops.length) return;
-            const result = await callLocalWasmWorker('apply_fs_ops', { token, fsOps: ops });
+            const result = await callLocalWasmWorker('apply_fs_ops', { token, fsOps: ops }, {
+                abortSignal: localWasmActiveAbortSignal,
+                abortMessage: 'Run Aborted',
+                terminateOnAbort: true
+            });
             const heapKiBRaw = result && result.heapKiB;
             const heapKiB = Number.isFinite(Number(heapKiBRaw)) ? Math.max(0, Number(heapKiBRaw)) : null;
             mod.__capstoneLastHeapKiB = heapKiB;
@@ -896,6 +986,9 @@ self.onmessage = async function(ev) {
                 if (!Number.isInteger(token)) throw new Error('Missing local WASM worker module token');
                 const argv = Array.isArray(args) ? args.map(a => String(a)) : [];
                 const fsOps = Array.isArray(mod.__capstoneWorkerFsOps) ? mod.__capstoneWorkerFsOps.splice(0) : [];
+                const abortSignal = (options && options.abortSignal && typeof options.abortSignal === 'object')
+                    ? options.abortSignal
+                    : localWasmActiveAbortSignal;
                 const workerOptions = {};
                 if (options && typeof options.captureOptions === 'object' && options.captureOptions) {
                     workerOptions.captureOptions = options.captureOptions;
@@ -911,6 +1004,10 @@ self.onmessage = async function(ev) {
                         fsOps,
                         args: argv,
                         options: workerOptions
+                    }, {
+                        abortSignal,
+                        abortMessage: 'Run Aborted',
+                        terminateOnAbort: Boolean(abortSignal)
                     });
                     const heapKiBRaw = result && result.heapKiB;
                     const heapKiB = Number.isFinite(Number(heapKiBRaw)) ? Math.max(0, Number(heapKiBRaw)) : null;
@@ -3511,132 +3608,138 @@ def capstone_run_local_generator(args, out_dir):
 
         async function runAlgorithmLocally(runCtx, algoId, iterations, warmup) {
             const algoKey = String(algoId || '');
-            if (algoKey === 'vf3') {
-                try {
-                    return await runVf3Locally(runCtx, iterations, warmup);
-                } catch (error) {
-                    const msg = error && error.message ? error.message : String(error);
-                    if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
-                        throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow on this branch (it commits files into wasm/ and uploads a wasm-modules artifact).');
-                    }
-                    throw error;
-                }
-            }
-
-            if (algoKey === 'dijkstra') {
-                try {
-                    return await runDijkstraLocally(runCtx, iterations, warmup);
-                } catch (error) {
-                    const msg = error && error.message ? error.message : String(error);
-                    if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
-                        throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow on this branch (it commits files into wasm/ and uploads a wasm-modules artifact).');
-                    }
-                    throw error;
-                }
-            }
-
-            if (algoKey === 'glasgow') {
-                try {
-                    // Use normalized vertex-labelled LAD locally so the LLM Glasgow parsers cannot
-                    // misinterpret unlabeled LAD rows that look like "<label> <count> ...".
-                    return await runGlasgowLocally(runCtx, iterations, warmup, {
-                        baselineFormatFlag: 'vertexlabelledlad',
-                        resultAlgorithm: 'glasgow'
-                    });
-                } catch (error) {
-                    const msg = error && error.message ? error.message : String(error);
-                    if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
-                        throw new Error('Glasgow local WASM modules are missing or incomplete. Run the "Build WASM Modules" workflow on this branch, then confirm `wasm/manifest.json` contains `glasgow_chatgpt`, `glasgow_gemini`, and `glasgow_baseline`. Note: the workflow can still succeed while `glasgow_baseline` is missing because the baseline Glasgow WASM port step is experimental/non-fatal. If `glasgow_baseline` is missing, check the `glasgow-baseline-wasm-attempt-log` artifact (or `outputs/glasgow_baseline_wasm_attempt.log` if your workflow version already uploads it).');
-                    }
-                    throw error;
-                }
-            }
-
-            if (algoKey === 'subgraph') {
-                try {
-                    return await runSubgraphLocally(runCtx, iterations, warmup);
-                } catch (error) {
-                    const msg = error && error.message ? error.message : String(error);
-                    if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
-                        throw new Error('Subgraph local WASM requires both VF3 and Glasgow modules. Run the "Build WASM Modules" workflow, then confirm `wasm/manifest.json` contains VF3 (`vf3_baseline`, `vf3_chatgpt`, `vf3_gemini`) and Glasgow (`glasgow_chatgpt`, `glasgow_gemini`, `glasgow_baseline`) entries. Note: the workflow can still succeed while `glasgow_baseline` is missing because the baseline Glasgow WASM port step is experimental/non-fatal. If `glasgow_baseline` is missing, check the `glasgow-baseline-wasm-attempt-log` artifact (or `outputs/glasgow_baseline_wasm_attempt.log` if your workflow version already uploads it).');
-                    }
-                    throw error;
-                }
-            }
-
-            const kernel = await getLocalWasmKernel();
-            const testsPerIter = getTestsPerIteration(algoId);
-            const setupTotal = Math.max(1, 1 + (Math.max(0, Number(warmup) || 0) * testsPerIter));
-
-            const metaList = (config.selectedFiles || []).map(f => {
-                const m = dataFileMeta && f && f.path && dataFileMeta[f.path] ? dataFileMeta[f.path] : null;
-                return { path: f && f.path ? String(f.path) : '', bytes: m && Number.isFinite(Number(m.size)) ? Number(m.size) : 0 };
-            });
-
-            let setupDone = 0;
-            const safeWarmup = Math.max(0, Math.floor(Number(warmup) || 0));
-            const safeIterations = Math.max(0, Math.floor(Number(iterations) || 0));
-            const testsTotal = safeIterations * testsPerIter;
-            const localStartMs = runTimerNowMs();
-
-            progressReset(algoId, safeIterations, runCtx.requestId, {
-                setupTotal,
-                testsPerIter
-            });
-
-            setupDone = 1;
-            progressSetDeterminate('Setting up Testing Environment', setupDone, setupTotal, { stage: 'setup', reset: true });
-
-            // Warmup phase (fills the bar the first time)
-            let warmupUnitsDone = 0;
-            for (let i = 0; i < safeWarmup; i++) {
-                for (let unit = 0; unit < testsPerIter; unit++) {
-                    if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                    kernel.work(computeLocalWorkN(algoId, unit, metaList));
-                    warmupUnitsDone++;
-                    const completed = Math.min(setupTotal, 1 + warmupUnitsDone);
-                    if (completed !== setupDone) {
-                        setupDone = completed;
-                        progressSetDeterminate('Warming up...', setupDone, setupTotal, { stage: 'setup' });
-                    }
-                    if ((warmupUnitsDone % 25) === 0) {
-                        await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
+            const prevAbortSignal = localWasmActiveAbortSignal;
+            localWasmActiveAbortSignal = runCtx && runCtx.abortController ? runCtx.abortController.signal : null;
+            try {
+                if (algoKey === 'vf3') {
+                    try {
+                        return await runVf3Locally(runCtx, iterations, warmup);
+                    } catch (error) {
+                        const msg = error && error.message ? error.message : String(error);
+                        if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
+                            throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow on this branch (it commits files into wasm/ and uploads a wasm-modules artifact).');
+                        }
+                        throw error;
                     }
                 }
-            }
 
-            // Tests phase (reset to 0% and fill again)
-            progressSetDeterminate('Running tests...', 0, testsTotal, { stage: 'tests', reset: true });
-            let testsDone = 0;
-            for (let iter = 0; iter < safeIterations; iter++) {
-                for (let unit = 0; unit < testsPerIter; unit++) {
-                    if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                    kernel.work(computeLocalWorkN(algoId, unit, metaList));
-                    testsDone++;
-                    if ((testsDone % 10) === 0 || testsDone === testsTotal) {
-                        progressSetDeterminate('Running tests...', testsDone, testsTotal, { stage: 'tests' });
-                    }
-                    if ((testsDone % 50) === 0) {
-                        await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
+                if (algoKey === 'dijkstra') {
+                    try {
+                        return await runDijkstraLocally(runCtx, iterations, warmup);
+                    } catch (error) {
+                        const msg = error && error.message ? error.message : String(error);
+                        if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
+                            throw new Error('Local WASM modules not found. Run the "Build WASM Modules" workflow on this branch (it commits files into wasm/ and uploads a wasm-modules artifact).');
+                        }
+                        throw error;
                     }
                 }
+
+                if (algoKey === 'glasgow') {
+                    try {
+                        // Use normalized vertex-labelled LAD locally so the LLM Glasgow parsers cannot
+                        // misinterpret unlabeled LAD rows that look like "<label> <count> ...".
+                        return await runGlasgowLocally(runCtx, iterations, warmup, {
+                            baselineFormatFlag: 'vertexlabelledlad',
+                            resultAlgorithm: 'glasgow'
+                        });
+                    } catch (error) {
+                        const msg = error && error.message ? error.message : String(error);
+                        if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
+                            throw new Error('Glasgow local WASM modules are missing or incomplete. Run the "Build WASM Modules" workflow on this branch, then confirm `wasm/manifest.json` contains `glasgow_chatgpt`, `glasgow_gemini`, and `glasgow_baseline`. Note: the workflow can still succeed while `glasgow_baseline` is missing because the baseline Glasgow WASM port step is experimental/non-fatal. If `glasgow_baseline` is missing, check the `glasgow-baseline-wasm-attempt-log` artifact (or `outputs/glasgow_baseline_wasm_attempt.log` if your workflow version already uploads it).');
+                        }
+                        throw error;
+                    }
+                }
+
+                if (algoKey === 'subgraph') {
+                    try {
+                        return await runSubgraphLocally(runCtx, iterations, warmup);
+                    } catch (error) {
+                        const msg = error && error.message ? error.message : String(error);
+                        if (msg.includes('Failed to load script') || msg.includes('WASM factory not found')) {
+                            throw new Error('Subgraph local WASM requires both VF3 and Glasgow modules. Run the "Build WASM Modules" workflow, then confirm `wasm/manifest.json` contains VF3 (`vf3_baseline`, `vf3_chatgpt`, `vf3_gemini`) and Glasgow (`glasgow_chatgpt`, `glasgow_gemini`, `glasgow_baseline`) entries. Note: the workflow can still succeed while `glasgow_baseline` is missing because the baseline Glasgow WASM port step is experimental/non-fatal. If `glasgow_baseline` is missing, check the `glasgow-baseline-wasm-attempt-log` artifact (or `outputs/glasgow_baseline_wasm_attempt.log` if your workflow version already uploads it).');
+                        }
+                        throw error;
+                    }
+                }
+
+                const kernel = await getLocalWasmKernel();
+                const testsPerIter = getTestsPerIteration(algoId);
+                const setupTotal = Math.max(1, 1 + (Math.max(0, Number(warmup) || 0) * testsPerIter));
+
+                const metaList = (config.selectedFiles || []).map(f => {
+                    const m = dataFileMeta && f && f.path && dataFileMeta[f.path] ? dataFileMeta[f.path] : null;
+                    return { path: f && f.path ? String(f.path) : '', bytes: m && Number.isFinite(Number(m.size)) ? Number(m.size) : 0 };
+                });
+
+                let setupDone = 0;
+                const safeWarmup = Math.max(0, Math.floor(Number(warmup) || 0));
+                const safeIterations = Math.max(0, Math.floor(Number(iterations) || 0));
+                const testsTotal = safeIterations * testsPerIter;
+                const localStartMs = runTimerNowMs();
+
+                progressReset(algoId, safeIterations, runCtx.requestId, {
+                    setupTotal,
+                    testsPerIter
+                });
+
+                setupDone = 1;
+                progressSetDeterminate('Setting up Testing Environment', setupDone, setupTotal, { stage: 'setup', reset: true });
+
+                // Warmup phase (fills the bar the first time)
+                let warmupUnitsDone = 0;
+                for (let i = 0; i < safeWarmup; i++) {
+                    for (let unit = 0; unit < testsPerIter; unit++) {
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                        kernel.work(computeLocalWorkN(algoId, unit, metaList));
+                        warmupUnitsDone++;
+                        const completed = Math.min(setupTotal, 1 + warmupUnitsDone);
+                        if (completed !== setupDone) {
+                            setupDone = completed;
+                            progressSetDeterminate('Warming up...', setupDone, setupTotal, { stage: 'setup' });
+                        }
+                        if ((warmupUnitsDone % 25) === 0) {
+                            await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
+                        }
+                    }
+                }
+
+                // Tests phase (reset to 0% and fill again)
+                progressSetDeterminate('Running tests...', 0, testsTotal, { stage: 'tests', reset: true });
+                let testsDone = 0;
+                for (let iter = 0; iter < safeIterations; iter++) {
+                    for (let unit = 0; unit < testsPerIter; unit++) {
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                        kernel.work(computeLocalWorkN(algoId, unit, metaList));
+                        testsDone++;
+                        if ((testsDone % 10) === 0 || testsDone === testsTotal) {
+                            progressSetDeterminate('Running tests...', testsDone, testsTotal, { stage: 'tests' });
+                        }
+                        if ((testsDone % 50) === 0) {
+                            await delay(0, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
+                        }
+                    }
+                }
+
+                const localElapsedMs = runTimerNowMs() - localStartMs;
+                progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
+
+                return {
+                    status: 'success',
+                    output: [
+                        `[${algoId.toUpperCase()} Local]`,
+                        `Warmup: ${safeWarmup}`,
+                        `Iterations: ${safeIterations}`,
+                        `Runtime (ms): ${Math.max(0, localElapsedMs).toFixed(1)}`,
+                        `Work units: ${testsTotal}`,
+                        '',
+                        'Note: Local mode currently runs a lightweight WebAssembly kernel for quick UI testing.'
+                    ].join('\n')
+                };
+            } finally {
+                localWasmActiveAbortSignal = prevAbortSignal;
             }
-
-            const localElapsedMs = runTimerNowMs() - localStartMs;
-            progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
-
-            return {
-                status: 'success',
-                output: [
-                    `[${algoId.toUpperCase()} Local]`,
-                    `Warmup: ${safeWarmup}`,
-                    `Iterations: ${safeIterations}`,
-                    `Runtime (ms): ${Math.max(0, localElapsedMs).toFixed(1)}`,
-                    `Work units: ${testsTotal}`,
-                    '',
-                    'Note: Local mode currently runs a lightweight WebAssembly kernel for quick UI testing.'
-                ].join('\n')
-            };
         }
 
         const _legacyGetRepoFileText = getRepoFileText;
