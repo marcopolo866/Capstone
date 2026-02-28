@@ -12,6 +12,77 @@
         let localWasmActiveAbortSignal = null;
         const localWasmWorkerPending = new Map();
         const localWasmWorkerTokensByModuleId = new Map();
+        const WASM_MEMORY_METRIC_UNIT = 'KiB';
+        const WASM_MEMORY_HEAP_KIND = 'wasm_heap_peak_kib';
+        const WASM_MEMORY_HEAP_LABEL = 'WASM Heap Peak';
+        const WASM_MEMORY_ALLOCATOR_KIND = 'wasm_allocator_peak_kib';
+        const WASM_MEMORY_ALLOCATOR_LABEL = 'WASM Allocator Peak';
+
+        function numberOrNull(value, min = null) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return null;
+            if (min !== null && num < min) return null;
+            return num;
+        }
+
+        function getDefaultWasmMemoryMetricInfo() {
+            return {
+                kind: WASM_MEMORY_HEAP_KIND,
+                label: WASM_MEMORY_HEAP_LABEL,
+                unit: WASM_MEMORY_METRIC_UNIT
+            };
+        }
+
+        function normalizeWasmMemorySample(raw) {
+            const src = (raw && typeof raw === 'object') ? raw : {};
+            const kindRaw = String(src.metricKind || '').trim().toLowerCase();
+            const isAllocator = kindRaw === WASM_MEMORY_ALLOCATOR_KIND;
+            const valueKiB = numberOrNull(src.valueKiB, 0);
+            const heapCapacityKiB = numberOrNull(src.heapCapacityKiB, 0);
+            const allocatorPeakKiB = numberOrNull(src.allocatorPeakKiB, 0);
+            const allocatorCurrentKiB = numberOrNull(src.allocatorCurrentKiB, 0);
+            const allocatorAllocCount = numberOrNull(src.allocatorAllocCount, 0);
+            const allocatorFreeCount = numberOrNull(src.allocatorFreeCount, 0);
+            const allocatorDroppedRecords = numberOrNull(src.allocatorDroppedRecords, 0);
+
+            const metricKind = isAllocator ? WASM_MEMORY_ALLOCATOR_KIND : WASM_MEMORY_HEAP_KIND;
+            const metricLabel = isAllocator ? WASM_MEMORY_ALLOCATOR_LABEL : WASM_MEMORY_HEAP_LABEL;
+            const preferredValue = isAllocator
+                ? (allocatorPeakKiB !== null ? allocatorPeakKiB : valueKiB)
+                : (valueKiB !== null ? valueKiB : heapCapacityKiB);
+
+            return {
+                metricKind,
+                metricLabel,
+                metricUnit: WASM_MEMORY_METRIC_UNIT,
+                valueKiB: preferredValue,
+                heapCapacityKiB,
+                allocatorPeakKiB,
+                allocatorCurrentKiB,
+                allocatorAllocCount,
+                allocatorFreeCount,
+                allocatorDroppedRecords
+            };
+        }
+
+        function makeHeapOnlyWasmMemorySample(heapKiB) {
+            return normalizeWasmMemorySample({
+                metricKind: WASM_MEMORY_HEAP_KIND,
+                valueKiB: numberOrNull(heapKiB, 0),
+                heapCapacityKiB: numberOrNull(heapKiB, 0)
+            });
+        }
+
+        function pickPreferredWasmMemoryMetricInfo(currentInfo, candidateInfo) {
+            const current = (currentInfo && typeof currentInfo === 'object') ? currentInfo : null;
+            const candidate = (candidateInfo && typeof candidateInfo === 'object') ? candidateInfo : null;
+            if (!candidate) return current;
+            if (!current) return candidate;
+            if (current.kind === WASM_MEMORY_HEAP_KIND && candidate.kind === WASM_MEMORY_ALLOCATOR_KIND) {
+                return candidate;
+            }
+            return current;
+        }
 
         function shouldUseLocalWasmWorker() {
             return !localWasmWorkerDisabled &&
@@ -199,6 +270,67 @@ function __capHeapKiBFromModule(mod) {
   }
 }
 
+function __capAllocatorFnsFromModule(mod) {
+  const m = mod && typeof mod === 'object' ? mod : null;
+  if (!m) return null;
+  const reset = typeof m._capstone_allocator_telemetry_reset === 'function' ? m._capstone_allocator_telemetry_reset : null;
+  const peak = typeof m._capstone_allocator_telemetry_peak_bytes === 'function' ? m._capstone_allocator_telemetry_peak_bytes : null;
+  const current = typeof m._capstone_allocator_telemetry_current_bytes === 'function' ? m._capstone_allocator_telemetry_current_bytes : null;
+  const allocCount = typeof m._capstone_allocator_telemetry_alloc_count === 'function' ? m._capstone_allocator_telemetry_alloc_count : null;
+  const freeCount = typeof m._capstone_allocator_telemetry_free_count === 'function' ? m._capstone_allocator_telemetry_free_count : null;
+  const droppedRecords = typeof m._capstone_allocator_telemetry_dropped_records === 'function' ? m._capstone_allocator_telemetry_dropped_records : null;
+  if (!reset || !peak || !current) return null;
+  return { reset, peak, current, allocCount, freeCount, droppedRecords };
+}
+
+function __capToNumOrNull(v, min) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  if (Number.isFinite(min) && n < min) return null;
+  return n;
+}
+
+function __capBuildMemorySample(mod) {
+  const heapKiB = __capHeapKiBFromModule(mod);
+  const fallback = {
+    metricKind: 'wasm_heap_peak_kib',
+    metricLabel: 'WASM Heap Peak',
+    metricUnit: 'KiB',
+    valueKiB: heapKiB,
+    heapCapacityKiB: heapKiB,
+    allocatorPeakKiB: null,
+    allocatorCurrentKiB: null,
+    allocatorAllocCount: null,
+    allocatorFreeCount: null,
+    allocatorDroppedRecords: null
+  };
+  const fns = mod && mod.__capstoneAllocatorFns ? mod.__capstoneAllocatorFns : __capAllocatorFnsFromModule(mod);
+  if (!fns) return fallback;
+  if (mod && !mod.__capstoneAllocatorFns) {
+    try { mod.__capstoneAllocatorFns = fns; } catch (_) {}
+  }
+  const peakBytes = __capToNumOrNull((() => { try { return fns.peak(); } catch (_) { return null; } })(), 0);
+  const currentBytes = __capToNumOrNull((() => { try { return fns.current(); } catch (_) { return null; } })(), 0);
+  const allocCount = __capToNumOrNull((() => { try { return fns.allocCount ? fns.allocCount() : null; } catch (_) { return null; } })(), 0);
+  const freeCount = __capToNumOrNull((() => { try { return fns.freeCount ? fns.freeCount() : null; } catch (_) { return null; } })(), 0);
+  const droppedRecords = __capToNumOrNull((() => { try { return fns.droppedRecords ? fns.droppedRecords() : null; } catch (_) { return null; } })(), 0);
+  const peakKiB = peakBytes === null ? null : (peakBytes / 1024);
+  const currentKiB = currentBytes === null ? null : (currentBytes / 1024);
+  if (peakKiB === null) return fallback;
+  return {
+    metricKind: 'wasm_allocator_peak_kib',
+    metricLabel: 'WASM Allocator Peak',
+    metricUnit: 'KiB',
+    valueKiB: peakKiB,
+    heapCapacityKiB: heapKiB,
+    allocatorPeakKiB: peakKiB,
+    allocatorCurrentKiB: currentKiB,
+    allocatorAllocCount: allocCount,
+    allocatorFreeCount: freeCount,
+    allocatorDroppedRecords: droppedRecords
+  };
+}
+
 async function __capCreateModule(payload) {
   const spec = payload && payload.spec ? payload.spec : {};
   const id = String(spec.id || '').trim();
@@ -286,6 +418,7 @@ async function __capCreateModule(payload) {
   module.__capstoneCapture = capture;
   module.__capstoneId = id;
   module.__capstoneWasmMemory = moduleCaptureState.wasmMemory || null;
+  module.__capstoneAllocatorFns = __capAllocatorFnsFromModule(module);
 
   const token = (__capstoneNextToken++);
   __capstoneModules.set(token, module);
@@ -329,6 +462,10 @@ async function __capRunModuleMain(payload) {
   if (typeof capture.beginRun === 'function') {
     try { capture.beginRun(options.captureOptions || null); } catch (_) {}
   }
+  const allocatorFns = mod && mod.__capstoneAllocatorFns ? mod.__capstoneAllocatorFns : __capAllocatorFnsFromModule(mod);
+  if (allocatorFns) {
+    try { allocatorFns.reset(); } catch (_) {}
+  }
 
   const hasStdinText = Object.prototype.hasOwnProperty.call(options, 'stdinText');
   const stdinText = hasStdinText ? String(options.stdinText == null ? '' : options.stdinText) : null;
@@ -367,9 +504,15 @@ async function __capRunModuleMain(payload) {
     const status = (error && typeof error.status === 'number') ? error.status : null;
     const stdout = capture.out.join('\n');
     const stderr = capture.err.join('\n');
+    const memory = __capBuildMemorySample(mod);
     if (status === 0) {
       finalizeRun();
-      return { stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), heapKiB: __capHeapKiBFromModule(mod) };
+      return {
+        stdout: stdout.trimEnd(),
+        stderr: stderr.trimEnd(),
+        heapKiB: memory && Number.isFinite(Number(memory.heapCapacityKiB)) ? Number(memory.heapCapacityKiB) : null,
+        memory
+      };
     }
     const msg = stderr || stdout || (error && error.message ? error.message : String(error));
     if (status !== null) {
@@ -381,10 +524,12 @@ async function __capRunModuleMain(payload) {
     throw error;
   }
   finalizeRun();
+  const memory = __capBuildMemorySample(mod);
   return {
     stdout: capture.out.join('\n').trimEnd(),
     stderr: capture.err.join('\n').trimEnd(),
-    heapKiB: __capHeapKiBFromModule(mod)
+    heapKiB: memory && Number.isFinite(Number(memory.heapCapacityKiB)) ? Number(memory.heapCapacityKiB) : null,
+    memory
   };
 }
 
@@ -401,7 +546,12 @@ function __capApplyFsOpsOnly(payload) {
   }
   const mod = __capstoneModules.get(token);
   __capApplyFsOps(mod, payload && payload.fsOps);
-  return { ok: true, heapKiB: __capHeapKiBFromModule(mod) };
+  const memory = __capBuildMemorySample(mod);
+  return {
+    ok: true,
+    heapKiB: memory && Number.isFinite(Number(memory.heapCapacityKiB)) ? Number(memory.heapCapacityKiB) : null,
+    memory
+  };
 }
 
 self.onmessage = async function(ev) {
@@ -579,6 +729,7 @@ self.onmessage = async function(ev) {
                 __capstoneId: moduleId,
                 __capstoneWorkerFsOps: [],
                 __capstoneLastHeapKiB: null,
+                __capstoneLastMemorySample: null,
                 __capstoneCreateRefreshMs: refreshMs,
                 FS: null
             };
@@ -910,6 +1061,9 @@ self.onmessage = async function(ev) {
                 module.__capstoneCapture = capture;
                 module.__capstoneId = id;
                 module.__capstoneWasmMemory = moduleCaptureState.wasmMemory || null;
+                module.__capstoneAllocatorTelemetryFns = null;
+                module.__capstoneAllocatorTelemetryChecked = false;
+                module.__capstoneLastMemorySample = null;
                 return module;
             })();
 
@@ -950,22 +1104,132 @@ self.onmessage = async function(ev) {
             const heapKiBRaw = result && result.heapKiB;
             const heapKiB = Number.isFinite(Number(heapKiBRaw)) ? Math.max(0, Number(heapKiBRaw)) : null;
             mod.__capstoneLastHeapKiB = heapKiB;
+            if (result && typeof result.memory === 'object' && result.memory) {
+                mod.__capstoneLastMemorySample = normalizeWasmMemorySample(result.memory);
+            } else if (heapKiB !== null) {
+                mod.__capstoneLastMemorySample = makeHeapOnlyWasmMemorySample(heapKiB);
+            }
         }
 
-        function getEmscriptenHeapPeakKiB(mod) {
+        function getEmscriptenAllocatorTelemetryFns(mod) {
+            if (!mod || typeof mod !== 'object' || mod.__capstoneWorkerProxy) return null;
+            if (mod.__capstoneAllocatorTelemetryChecked) {
+                return mod.__capstoneAllocatorTelemetryFns || null;
+            }
+            const reset = typeof mod._capstone_allocator_telemetry_reset === 'function'
+                ? mod._capstone_allocator_telemetry_reset
+                : null;
+            const peakBytes = typeof mod._capstone_allocator_telemetry_peak_bytes === 'function'
+                ? mod._capstone_allocator_telemetry_peak_bytes
+                : null;
+            const currentBytes = typeof mod._capstone_allocator_telemetry_current_bytes === 'function'
+                ? mod._capstone_allocator_telemetry_current_bytes
+                : null;
+            const allocCount = typeof mod._capstone_allocator_telemetry_alloc_count === 'function'
+                ? mod._capstone_allocator_telemetry_alloc_count
+                : null;
+            const freeCount = typeof mod._capstone_allocator_telemetry_free_count === 'function'
+                ? mod._capstone_allocator_telemetry_free_count
+                : null;
+            const droppedRecords = typeof mod._capstone_allocator_telemetry_dropped_records === 'function'
+                ? mod._capstone_allocator_telemetry_dropped_records
+                : null;
+            const fns = (reset && peakBytes && currentBytes)
+                ? { reset, peakBytes, currentBytes, allocCount, freeCount, droppedRecords }
+                : null;
+            mod.__capstoneAllocatorTelemetryFns = fns;
+            mod.__capstoneAllocatorTelemetryChecked = true;
+            return fns;
+        }
+
+        function resetEmscriptenAllocatorTelemetry(mod) {
+            const fns = getEmscriptenAllocatorTelemetryFns(mod);
+            if (!fns || typeof fns.reset !== 'function') return false;
+            try {
+                fns.reset();
+                return true;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        function readEmscriptenAllocatorTelemetry(mod) {
+            const fns = getEmscriptenAllocatorTelemetryFns(mod);
+            if (!fns) return null;
+            const peakBytes = numberOrNull((() => {
+                try { return fns.peakBytes(); } catch (_) { return null; }
+            })(), 0);
+            const currentBytes = numberOrNull((() => {
+                try { return fns.currentBytes(); } catch (_) { return null; }
+            })(), 0);
+            if (peakBytes === null) return null;
+            return {
+                peakKiB: peakBytes / 1024,
+                currentKiB: currentBytes !== null ? (currentBytes / 1024) : null,
+                allocCount: numberOrNull((() => {
+                    try { return fns.allocCount ? fns.allocCount() : null; } catch (_) { return null; }
+                })(), 0),
+                freeCount: numberOrNull((() => {
+                    try { return fns.freeCount ? fns.freeCount() : null; } catch (_) { return null; }
+                })(), 0),
+                droppedRecords: numberOrNull((() => {
+                    try { return fns.droppedRecords ? fns.droppedRecords() : null; } catch (_) { return null; }
+                })(), 0)
+            };
+        }
+
+        function getEmscriptenMemorySample(mod) {
             try {
                 if (mod && mod.__capstoneWorkerProxy) {
-                    const v = Number(mod.__capstoneLastHeapKiB);
-                    if (!Number.isFinite(v) || v <= 0) return null;
-                    return v;
+                    if (mod.__capstoneLastMemorySample && typeof mod.__capstoneLastMemorySample === 'object') {
+                        return normalizeWasmMemorySample(mod.__capstoneLastMemorySample);
+                    }
+                    const heapKiB = numberOrNull(mod.__capstoneLastHeapKiB, 0);
+                    if (heapKiB !== null) return makeHeapOnlyWasmMemorySample(heapKiB);
+                    return makeHeapOnlyWasmMemorySample(null);
                 }
                 const mem = mod && mod.__capstoneWasmMemory;
                 const bytes = mem && mem.buffer ? mem.buffer.byteLength : 0;
-                if (!Number.isFinite(bytes) || bytes <= 0) return null;
-                return bytes / 1024;
+                const heapKiB = (Number.isFinite(bytes) && bytes > 0) ? (bytes / 1024) : null;
+                const allocator = readEmscriptenAllocatorTelemetry(mod);
+                if (allocator && Number.isFinite(Number(allocator.peakKiB))) {
+                    return normalizeWasmMemorySample({
+                        metricKind: WASM_MEMORY_ALLOCATOR_KIND,
+                        valueKiB: allocator.peakKiB,
+                        heapCapacityKiB: heapKiB,
+                        allocatorPeakKiB: allocator.peakKiB,
+                        allocatorCurrentKiB: allocator.currentKiB,
+                        allocatorAllocCount: allocator.allocCount,
+                        allocatorFreeCount: allocator.freeCount,
+                        allocatorDroppedRecords: allocator.droppedRecords
+                    });
+                }
+                return makeHeapOnlyWasmMemorySample(heapKiB);
             } catch (_) {
-                return null;
+                return makeHeapOnlyWasmMemorySample(null);
             }
+        }
+
+        function getEmscriptenMemoryMetricInfo(mod) {
+            const sample = getEmscriptenMemorySample(mod);
+            if (!sample || typeof sample !== 'object') {
+                return getDefaultWasmMemoryMetricInfo();
+            }
+            const info = {
+                kind: String(sample.metricKind || '').trim() || WASM_MEMORY_HEAP_KIND,
+                label: String(sample.metricLabel || '').trim() || WASM_MEMORY_HEAP_LABEL,
+                unit: String(sample.metricUnit || '').trim() || WASM_MEMORY_METRIC_UNIT
+            };
+            if (info.kind !== WASM_MEMORY_ALLOCATOR_KIND && info.kind !== WASM_MEMORY_HEAP_KIND) {
+                return getDefaultWasmMemoryMetricInfo();
+            }
+            return info;
+        }
+
+        function getEmscriptenHeapPeakKiB(mod) {
+            const sample = getEmscriptenMemorySample(mod);
+            const value = numberOrNull(sample && sample.valueKiB, 0);
+            return value;
         }
 
         function parseFirstLine(text) {
@@ -1012,6 +1276,13 @@ self.onmessage = async function(ev) {
                     const heapKiBRaw = result && result.heapKiB;
                     const heapKiB = Number.isFinite(Number(heapKiBRaw)) ? Math.max(0, Number(heapKiBRaw)) : null;
                     mod.__capstoneLastHeapKiB = heapKiB;
+                    if (result && typeof result.memory === 'object' && result.memory) {
+                        mod.__capstoneLastMemorySample = normalizeWasmMemorySample(result.memory);
+                    } else if (heapKiB !== null) {
+                        mod.__capstoneLastMemorySample = makeHeapOnlyWasmMemorySample(heapKiB);
+                    } else {
+                        mod.__capstoneLastMemorySample = makeHeapOnlyWasmMemorySample(null);
+                    }
                     return {
                         stdout: String(result && result.stdout ? result.stdout : ''),
                         stderr: String(result && result.stderr ? result.stderr : '')
@@ -1034,6 +1305,7 @@ self.onmessage = async function(ev) {
             if (typeof capture.beginRun === 'function') {
                 try { capture.beginRun(captureOptions); } catch (_) {}
             }
+            resetEmscriptenAllocatorTelemetry(mod);
 
             const hasStdinText = Object.prototype.hasOwnProperty.call(options || {}, 'stdinText');
             const stdinText = hasStdinText ? String(options && options.stdinText !== undefined && options.stdinText !== null ? options.stdinText : '') : null;
@@ -1068,6 +1340,7 @@ self.onmessage = async function(ev) {
                 const stderr = capture.err.join('\n');
                 if (status === 0) {
                     finalizeRun();
+                    mod.__capstoneLastMemorySample = getEmscriptenMemorySample(mod);
                     return {
                         stdout: stdout.trimEnd(),
                         stderr: stderr.trimEnd()
@@ -1089,6 +1362,7 @@ self.onmessage = async function(ev) {
             }
 
             finalizeRun();
+            mod.__capstoneLastMemorySample = getEmscriptenMemorySample(mod);
             return {
                 stdout: capture.out.join('\n').trimEnd(),
                 stderr: capture.err.join('\n').trimEnd()
@@ -1131,6 +1405,15 @@ self.onmessage = async function(ev) {
             const pfx = String(prefix || '');
             const fmt = (v) => Number(v).toFixed(3);
             return `${pfx}median=${fmt(stats.median)} mean=${fmt(stats.mean)} stdev=${fmt(stats.stdev)} min=${fmt(stats.min)} max=${fmt(stats.max)}`;
+        }
+
+        function formatWasmMemoryStatsPrefix(metricInfo) {
+            const info = (metricInfo && typeof metricInfo === 'object')
+                ? metricInfo
+                : getDefaultWasmMemoryMetricInfo();
+            const label = String(info.label || WASM_MEMORY_HEAP_LABEL).trim() || WASM_MEMORY_HEAP_LABEL;
+            const unit = String(info.unit || WASM_MEMORY_METRIC_UNIT).trim() || WASM_MEMORY_METRIC_UNIT;
+            return `${label} (${unit}): `;
         }
 
         let localWasmManifestPromise = null;
@@ -1742,6 +2025,112 @@ def capstone_run_local_generator(args, out_dir):
             return out;
         }
 
+        function findLocalSubgraphMappings(opts = {}) {
+            const patternAdjRaw = Array.isArray(opts.patternAdj) ? opts.patternAdj : [];
+            const targetAdjRaw = Array.isArray(opts.targetAdj) ? opts.targetAdj : [];
+            const patternLabels = Array.isArray(opts.patternLabels) ? opts.patternLabels : [];
+            const targetLabels = Array.isArray(opts.targetLabels) ? opts.targetLabels : [];
+            const limit = Math.max(1, Math.min(64, Math.floor(Number(opts.limit) || 1)));
+            const timeBudgetMs = Math.max(50, Math.min(5000, Math.floor(Number(opts.timeBudgetMs) || 600)));
+
+            const pN = patternAdjRaw.length;
+            const tN = targetAdjRaw.length;
+            if (!pN || !tN || pN > tN) return [];
+
+            const toAdjSet = (adj) => (Array.isArray(adj) ? adj : []).map((row) => {
+                const set = new Set();
+                if (Array.isArray(row)) {
+                    for (const v of row) {
+                        const n = Number(v);
+                        if (Number.isInteger(n) && n >= 0) set.add(n);
+                    }
+                }
+                return set;
+            });
+            const pAdj = toAdjSet(patternAdjRaw);
+            const tAdj = toAdjSet(targetAdjRaw);
+            if (pAdj.length !== pN || tAdj.length !== tN) return [];
+
+            const pDeg = pAdj.map((s) => s.size);
+            const tDeg = tAdj.map((s) => s.size);
+
+            const hasLabelSignal = (() => {
+                const norm = (arr) => arr.some((v) => Number.isFinite(Number(v)) && Number(v) !== 0);
+                return norm(patternLabels) || norm(targetLabels);
+            })();
+            const labelsMatch = (p, t) => {
+                if (!hasLabelSignal) return true;
+                const pl = Number.isFinite(Number(patternLabels[p])) ? Number(patternLabels[p]) : 0;
+                const tl = Number.isFinite(Number(targetLabels[t])) ? Number(targetLabels[t]) : 0;
+                return pl === tl;
+            };
+
+            const candidates = [];
+            for (let p = 0; p < pN; p++) {
+                const cand = [];
+                for (let t = 0; t < tN; t++) {
+                    if (tDeg[t] < pDeg[p]) continue;
+                    if (!labelsMatch(p, t)) continue;
+                    cand.push(t);
+                }
+                if (!cand.length) return [];
+                candidates.push(cand);
+            }
+
+            const order = Array.from({ length: pN }, (_, i) => i).sort((a, b) => {
+                const dc = candidates[a].length - candidates[b].length;
+                if (dc !== 0) return dc;
+                return pDeg[b] - pDeg[a];
+            });
+
+            const mapping = new Array(pN).fill(-1);
+            const used = new Array(tN).fill(false);
+            const results = [];
+            const nowMs = () => (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
+                ? performance.now()
+                : Date.now();
+            const start = nowMs();
+            const timedOut = () => (nowMs() - start) > timeBudgetMs;
+
+            const isConsistent = (p, t) => {
+                for (let q = 0; q < pN; q++) {
+                    const tq = mapping[q];
+                    if (!Number.isInteger(tq) || tq < 0) continue;
+                    if (pAdj[p].has(q) && !tAdj[t].has(tq)) return false;
+                    if (pAdj[q].has(p) && !tAdj[tq].has(t)) return false;
+                }
+                return true;
+            };
+
+            const dfs = (depth) => {
+                if (results.length >= limit || timedOut()) return;
+                if (depth >= order.length) {
+                    const m = {};
+                    for (let p = 0; p < pN; p++) {
+                        const t = mapping[p];
+                        if (Number.isInteger(t) && t >= 0) m[p] = t;
+                    }
+                    if (Object.keys(m).length === pN) results.push(m);
+                    return;
+                }
+
+                const p = order[depth];
+                for (const t of candidates[p]) {
+                    if (used[t]) continue;
+                    if (!isConsistent(p, t)) continue;
+                    used[t] = true;
+                    mapping[p] = t;
+                    dfs(depth + 1);
+                    mapping[p] = -1;
+                    used[t] = false;
+                    if (results.length >= limit || timedOut()) return;
+                }
+            };
+
+            dfs(0);
+            return results;
+        }
+
         function buildLocalDijkstraVisualization(opts = {}) {
             const parsed = parseLocalDijkstraCsv(String(opts.inputText || ''));
             const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : 1;
@@ -1842,6 +2231,8 @@ def capstone_run_local_generator(args, out_dir):
             const targetParsed = parseGraph(targetFormat, targetText);
             const adjPattern = Array.isArray(patternParsed.adj) ? patternParsed.adj : [];
             const adjTarget = Array.isArray(targetParsed.adj) ? targetParsed.adj : [];
+            const patternLabels = Array.isArray(patternParsed.labels) ? patternParsed.labels : [];
+            const targetLabels = Array.isArray(targetParsed.labels) ? targetParsed.labels : [];
 
             const targetEdges = new Set();
             for (let i = 0; i < adjTarget.length; i++) {
@@ -1880,6 +2271,19 @@ def capstone_run_local_generator(args, out_dir):
                     if (Number.isInteger(t)) fallback[p] = t;
                 });
                 if (Object.keys(fallback).length) mappings = [fallback];
+            }
+            if (!mappings.length) {
+                const discovered = findLocalSubgraphMappings({
+                    patternAdj: adjPattern,
+                    targetAdj: adjTarget,
+                    patternLabels,
+                    targetLabels,
+                    limit: solutionLimit,
+                    timeBudgetMs: 750
+                });
+                if (Array.isArray(discovered) && discovered.length) {
+                    mappings = discovered;
+                }
             }
 
             const maxNodes = 4000;
@@ -2143,6 +2547,7 @@ def capstone_run_local_generator(args, out_dir):
                 let baselineResult = '';
                 let llmResult = '';
                 let geminiResult = '';
+                let memoryMetricInfo = null;
 
                 // Baseline chunk
                 for (let iter = 0; iter < safeIterations; iter++) {
@@ -2165,6 +2570,7 @@ def capstone_run_local_generator(args, out_dir):
                         baselineTimes.push(Math.max(0, t1 - t0));
                         const heapKiB = getEmscriptenHeapPeakKiB(mod);
                         if (Number.isFinite(Number(heapKiB))) baselineHeapKiB.push(Number(heapKiB));
+                        memoryMetricInfo = pickPreferredWasmMemoryMetricInfo(memoryMetricInfo, getEmscriptenMemoryMetricInfo(mod));
                         baselineResult = parseFirstLine(stdout) || stdout.trim();
                     } finally {
                         mod = null;
@@ -2196,6 +2602,7 @@ def capstone_run_local_generator(args, out_dir):
                         llmTimes.push(Math.max(0, t1 - t0));
                         const heapKiB = getEmscriptenHeapPeakKiB(mod);
                         if (Number.isFinite(Number(heapKiB))) llmHeapKiB.push(Number(heapKiB));
+                        memoryMetricInfo = pickPreferredWasmMemoryMetricInfo(memoryMetricInfo, getEmscriptenMemoryMetricInfo(mod));
                         llmResult = parseFirstLine(stdout) || stdout.trim();
                     } finally {
                         mod = null;
@@ -2227,6 +2634,7 @@ def capstone_run_local_generator(args, out_dir):
                         geminiTimes.push(Math.max(0, t1 - t0));
                         const heapKiB = getEmscriptenHeapPeakKiB(mod);
                         if (Number.isFinite(Number(heapKiB))) geminiHeapKiB.push(Number(heapKiB));
+                        memoryMetricInfo = pickPreferredWasmMemoryMetricInfo(memoryMetricInfo, getEmscriptenMemoryMetricInfo(mod));
                         geminiResult = parseFirstLine(stdout) || stdout.trim();
                     } finally {
                         mod = null;
@@ -2248,6 +2656,8 @@ def capstone_run_local_generator(args, out_dir):
                 const rBaseline = calcStatsMs(baselineRefreshMs);
                 const rLlm = calcStatsMs(llmRefreshMs);
                 const rGemini = calcStatsMs(geminiRefreshMs);
+                const resolvedMemoryMetricInfo = memoryMetricInfo || getDefaultWasmMemoryMetricInfo();
+                const memoryPrefix = formatWasmMemoryStatsPrefix(resolvedMemoryMetricInfo);
 
                 const lines = [];
                 const addSection = (title, _result, stats, memStats) => {
@@ -2256,7 +2666,7 @@ def capstone_run_local_generator(args, out_dir):
                         lines.push(formatStatsMsSummary('Runtime (ms): ', stats));
                     }
                     if (memStats) {
-                        lines.push(formatStatsMsSummary('WASM Heap (KiB): ', memStats));
+                        lines.push(formatStatsMsSummary(memoryPrefix, memStats));
                     }
                     lines.push('');
                 };
@@ -2288,9 +2698,9 @@ def capstone_run_local_generator(args, out_dir):
                     timings_ms_stdev: {},
                     memory_kb: {},
                     memory_kb_stdev: {},
-                    memory_metric_kind: 'wasm_heap_peak_kib',
-                    memory_metric_label: 'WASM Heap Peak',
-                    memory_metric_unit: 'KiB',
+                    memory_metric_kind: resolvedMemoryMetricInfo.kind,
+                    memory_metric_label: resolvedMemoryMetricInfo.label,
+                    memory_metric_unit: resolvedMemoryMetricInfo.unit,
                     local_wasm_module_refresh_ms: {},
                     local_wasm_module_refresh_ms_stdev: {}
                 };
@@ -2539,6 +2949,7 @@ def capstone_run_local_generator(args, out_dir):
                 let baseAllVisualizationOut = '';
                 let gemAllVisualizationOut = '';
                 let chatAllVisualizationOut = '';
+                let memoryMetricInfo = null;
 
                 let ticksDone = 0;
 
@@ -2584,9 +2995,12 @@ def capstone_run_local_generator(args, out_dir):
                                     const heapKiB = getEmscriptenHeapPeakKiB(mod);
                                     if (Number.isFinite(Number(heapKiB))) heapArr.push(Number(heapKiB));
                                 }
+                                memoryMetricInfo = pickPreferredWasmMemoryMetricInfo(memoryMetricInfo, getEmscriptenMemoryMetricInfo(mod));
                                 if (captureStdout) {
                                     const stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
-                                    try { captureStdout(stdout); } catch (_) {}
+                                    const stderr = res && typeof res.stderr === 'string' ? res.stderr : '';
+                                    const combined = [stdout, stderr].filter(part => typeof part === 'string' && part.trim()).join('\n');
+                                    try { captureStdout(combined || stdout || stderr || ''); } catch (_) {}
                                 }
                                 return null;
                             } catch (error) {
@@ -2711,7 +3125,9 @@ def capstone_run_local_generator(args, out_dir):
                                 maxErrorChars: 65536
                             }
                         });
-                        const visOut = visRes && typeof visRes.stdout === 'string' ? visRes.stdout : '';
+                        const visStdout = visRes && typeof visRes.stdout === 'string' ? visRes.stdout : '';
+                        const visStderr = visRes && typeof visRes.stderr === 'string' ? visRes.stderr : '';
+                        const visOut = [visStdout, visStderr].filter(part => typeof part === 'string' && part.trim()).join('\n');
                         if (visOut.trim()) baselineVisualizationOut = visOut;
                     } catch (_) {
                         baselineVisualizationOut = baselineVisualizationOut || baseAllVisualizationOut || '';
@@ -2741,6 +3157,8 @@ def capstone_run_local_generator(args, out_dir):
                 const rGemAll = calcStatsMs(gemAllRefreshMs);
                 const rChatFirst = calcStatsMs(chatFirstRefreshMs);
                 const rChatAll = calcStatsMs(chatAllRefreshMs);
+                const resolvedMemoryMetricInfo = memoryMetricInfo || getDefaultWasmMemoryMetricInfo();
+                const memoryPrefix = formatWasmMemoryStatsPrefix(resolvedMemoryMetricInfo);
 
                 const lines = [];
                 const addSection = (title, _result, firstStats, allStats, firstMemStats, allMemStats) => {
@@ -2749,7 +3167,7 @@ def capstone_run_local_generator(args, out_dir):
                         lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
                     }
                     if (firstMemStats && allMemStats) {
-                        lines.push(...formatStatsMsFirstAll('WASM Heap (KiB): ', firstMemStats, allMemStats));
+                        lines.push(...formatStatsMsFirstAll(memoryPrefix, firstMemStats, allMemStats));
                     }
                     lines.push('');
                 };
@@ -2794,9 +3212,9 @@ def capstone_run_local_generator(args, out_dir):
                     timings_ms_stdev: {},
                     memory_kb: {},
                     memory_kb_stdev: {},
-                    memory_metric_kind: 'wasm_heap_peak_kib',
-                    memory_metric_label: 'WASM Heap Peak',
-                    memory_metric_unit: 'KiB',
+                    memory_metric_kind: resolvedMemoryMetricInfo.kind,
+                    memory_metric_label: resolvedMemoryMetricInfo.label,
+                    memory_metric_unit: resolvedMemoryMetricInfo.unit,
                     local_wasm_module_refresh_ms: {},
                     local_wasm_module_refresh_ms_stdev: {}
                 };
@@ -3046,6 +3464,7 @@ def capstone_run_local_generator(args, out_dir):
                 const gemFirstRefreshMs = [];
                 const gemAllRefreshMs = [];
                 let ticksDone = 0;
+                let memoryMetricInfo = null;
 
                 let baselineFirstOut = '';
                 let baselineAllOut = '';
@@ -3088,9 +3507,12 @@ def capstone_run_local_generator(args, out_dir):
                                 const heapKiB = getEmscriptenHeapPeakKiB(mod);
                                 if (Number.isFinite(Number(heapKiB))) heapArr.push(Number(heapKiB));
                             }
+                            memoryMetricInfo = pickPreferredWasmMemoryMetricInfo(memoryMetricInfo, getEmscriptenMemoryMetricInfo(mod));
                             if (captureStdout) {
                                 const stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
-                                captureStdout(stdout);
+                                const stderr = res && typeof res.stderr === 'string' ? res.stderr : '';
+                                const combined = [stdout, stderr].filter(part => typeof part === 'string' && part.trim()).join('\n');
+                                captureStdout(combined || stdout || stderr || '');
                             }
                             return null;
                         } catch (error) {
@@ -3282,7 +3704,9 @@ def capstone_run_local_generator(args, out_dir):
                                 }
                             }
                         );
-                        const visOut = visRes && typeof visRes.stdout === 'string' ? visRes.stdout : '';
+                        const visStdout = visRes && typeof visRes.stdout === 'string' ? visRes.stdout : '';
+                        const visStderr = visRes && typeof visRes.stderr === 'string' ? visRes.stderr : '';
+                        const visOut = [visStdout, visStderr].filter(part => typeof part === 'string' && part.trim()).join('\n');
                         if (visOut.trim()) baselineVisualizationOut = visOut;
                     } catch (_) {
                         baselineVisualizationOut = baselineVisualizationOut || baselineAllOut || baselineFirstOut || '';
@@ -3312,19 +3736,21 @@ def capstone_run_local_generator(args, out_dir):
                 const rChatAll = calcStatsMs(chatAllRefreshMs);
                 const rGemFirst = calcStatsMs(gemFirstRefreshMs);
                 const rGemAll = calcStatsMs(gemAllRefreshMs);
+                const resolvedMemoryMetricInfo = memoryMetricInfo || getDefaultWasmMemoryMetricInfo();
+                const memoryPrefix = formatWasmMemoryStatsPrefix(resolvedMemoryMetricInfo);
 
                 const lines = [];
                 const failureSuffix = glasgowFail > 0 ? `, ${glasgowFail} failed` : '';
                 lines.push('[Glasgow Subgraph Solver]');
                 lines.push(`${glasgowSuccess} iterations ran successfully${failureSuffix}`);
                 if (sBaseFirst && sBaseAll) lines.push(...formatStatsMsFirstAll('Runtime (ms): ', sBaseFirst, sBaseAll));
-                if (mBaseFirst && mBaseAll) lines.push(...formatStatsMsFirstAll('WASM Heap (KiB): ', mBaseFirst, mBaseAll));
+                if (mBaseFirst && mBaseAll) lines.push(...formatStatsMsFirstAll(memoryPrefix, mBaseFirst, mBaseAll));
                 lines.push('');
 
                 const addLlmSection = (title, _match, _total, _mismatch, firstStats, allStats, firstMemStats, allMemStats) => {
                     lines.push(`[${title}]`);
                     if (firstStats && allStats) lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
-                    if (firstMemStats && allMemStats) lines.push(...formatStatsMsFirstAll('WASM Heap (KiB): ', firstMemStats, allMemStats));
+                    if (firstMemStats && allMemStats) lines.push(...formatStatsMsFirstAll(memoryPrefix, firstMemStats, allMemStats));
                     lines.push('');
                 };
                 addLlmSection('Glasgow ChatGPT', chatMatch, chatTotal, chatMismatch, sChatFirst, sChatAll, mChatFirst, mChatAll);
@@ -3358,9 +3784,9 @@ def capstone_run_local_generator(args, out_dir):
                     timings_ms_stdev: {},
                     memory_kb: {},
                     memory_kb_stdev: {},
-                    memory_metric_kind: 'wasm_heap_peak_kib',
-                    memory_metric_label: 'WASM Heap Peak',
-                    memory_metric_unit: 'KiB',
+                    memory_metric_kind: resolvedMemoryMetricInfo.kind,
+                    memory_metric_label: resolvedMemoryMetricInfo.label,
+                    memory_metric_unit: resolvedMemoryMetricInfo.unit,
                     local_wasm_module_refresh_ms: {},
                     local_wasm_module_refresh_ms_stdev: {},
                     match_counts: {

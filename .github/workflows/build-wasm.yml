@@ -130,11 +130,21 @@ jobs:
             -s EXIT_RUNTIME=0
             -s FORCE_FILESYSTEM=1
             -s EXPORTED_RUNTIME_METHODS='["FS","callMain"]'
+            -s EXPORTED_FUNCTIONS='["_main","_capstone_allocator_telemetry_reset","_capstone_allocator_telemetry_peak_bytes","_capstone_allocator_telemetry_current_bytes","_capstone_allocator_telemetry_alloc_count","_capstone_allocator_telemetry_free_count","_capstone_allocator_telemetry_dropped_records"]'
+          )
+
+          telemetry_flags=(
+            "wasm/allocator_telemetry.cpp"
+            -Wl,--wrap=malloc
+            -Wl,--wrap=calloc
+            -Wl,--wrap=realloc
+            -Wl,--wrap=free
           )
 
           echo "Building VF3 baseline (vf3lib)..."
           em++ -std=c++11 \
             "${common_flags[@]}" \
+            "${telemetry_flags[@]}" \
             -I "baselines/vf3lib/include" \
             -DVF3 \
             "wasm/vf3_baseline_main.cpp" \
@@ -144,6 +154,7 @@ jobs:
           echo "Building VF3 Gemini..."
           em++ -std=c++17 \
             "${common_flags[@]}" \
+            "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
             "src/[GEMINI] Subgraph Isomorphism.cpp" \
@@ -153,6 +164,7 @@ jobs:
           echo "Building VF3 ChatGPT..."
           em++ -std=c++17 \
             "${common_flags[@]}" \
+            "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
             "src/[CHATGPT] Subgraph Isomorphism.cpp" \
@@ -162,6 +174,7 @@ jobs:
           echo "Building Dijkstra baseline..."
           em++ -std=c++17 \
             "${common_flags[@]}" \
+            "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
             -I "baselines/nyaan-library" \
@@ -172,6 +185,7 @@ jobs:
           echo "Building Dijkstra ChatGPT..."
           em++ -std=c++17 \
             "${common_flags[@]}" \
+            "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
             "src/[CHATGPT] Shortest Path.cpp" \
@@ -181,6 +195,7 @@ jobs:
           echo "Building Dijkstra Gemini..."
           em++ -std=c++17 \
             "${common_flags[@]}" \
+            "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
             "src/[GEMINI] Shortest Path.cpp" \
@@ -190,6 +205,7 @@ jobs:
           echo "Building Glasgow ChatGPT..."
           em++ -std=c++17 \
             "${common_flags[@]}" \
+            "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
             "src/[CHATGPT] Glasgow.cpp" \
@@ -199,6 +215,7 @@ jobs:
           echo "Building Glasgow Gemini..."
           em++ -std=c++17 \
             "${common_flags[@]}" \
+            "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
             "src/[GEMINI] Glasgow.cpp" \
@@ -314,6 +331,7 @@ jobs:
               "add_executable(glasgow_subgraph_solver glasgow_subgraph_solver.cc)\n"
               "target_link_libraries(glasgow_subgraph_solver PRIVATE cxxopts)\n"
               "if (EMSCRIPTEN)\n"
+              "  target_sources(glasgow_subgraph_solver PRIVATE ${CMAKE_SOURCE_DIR}/../../wasm/allocator_telemetry.cpp)\n"
               "  set_target_properties(glasgow_subgraph_solver PROPERTIES SUFFIX \".js\")\n"
               "  target_link_options(glasgow_subgraph_solver PRIVATE\n"
               "    -sWASM=1\n"
@@ -323,7 +341,12 @@ jobs:
               "    -sALLOW_MEMORY_GROWTH=1\n"
               "    -sEXIT_RUNTIME=0\n"
               "    -sFORCE_FILESYSTEM=1\n"
-              "    -sEXPORTED_RUNTIME_METHODS=[\\\"FS\\\",\\\"callMain\\\"])\n"
+              "    -Wl,--wrap=malloc\n"
+              "    -Wl,--wrap=calloc\n"
+              "    -Wl,--wrap=realloc\n"
+              "    -Wl,--wrap=free\n"
+              "    -sEXPORTED_RUNTIME_METHODS=[\\\"FS\\\",\\\"callMain\\\"]\n"
+              "    -sEXPORTED_FUNCTIONS=[\\\"_main\\\",\\\"_capstone_allocator_telemetry_reset\\\",\\\"_capstone_allocator_telemetry_peak_bytes\\\",\\\"_capstone_allocator_telemetry_current_bytes\\\",\\\"_capstone_allocator_telemetry_alloc_count\\\",\\\"_capstone_allocator_telemetry_free_count\\\",\\\"_capstone_allocator_telemetry_dropped_records\\\"])\n"
               "endif()\n",
           )
           replace_once(

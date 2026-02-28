@@ -2,6 +2,8 @@
 
 This folder contains prebuilt WebAssembly modules used by the **Run Locally (WebAssembly)** option in `index.html`.
 
+The WASM builds include allocator telemetry (`wasm/allocator_telemetry.cpp`) so local memory stats can report per-run allocator peak usage when the telemetry exports are present.
+
 ## Build / Update
 
 Run the GitHub Actions workflow **Build WASM Modules** (`.github/workflows/build-wasm.yml`) to regenerate (it also runs automatically on pushes to `main`):
