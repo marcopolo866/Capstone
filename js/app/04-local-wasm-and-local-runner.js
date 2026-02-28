@@ -2013,6 +2013,13 @@ def capstone_run_local_generator(args, out_dir):
                         if (out.length >= max) break;
                         continue;
                     }
+                    // Alternate mapping style: "0=12 1=7"
+                    pairs = Array.from(line.matchAll(/(\d+)\s*=\s*(\d+)/g));
+                    if (pairs.length) {
+                        addPairs(pairs);
+                        if (out.length >= max) break;
+                        continue;
+                    }
                 }
             }
 
@@ -2259,12 +2266,77 @@ def capstone_run_local_generator(args, out_dir):
             patternEdges.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
 
             const solutionLimit = algorithm === 'glasgow' ? 25 : 250;
+            const normalizeMappings = (rawMappings) => {
+                const inList = Array.isArray(rawMappings) ? rawMappings : [];
+                const out = [];
+                const seen = new Set();
+                const parseMaybeIndex = (value) => {
+                    const num = Number(value);
+                    if (Number.isInteger(num)) return num;
+                    const m = String(value == null ? '' : value).match(/-?\d+/);
+                    if (!m) return null;
+                    const parsed = Number(m[0]);
+                    return Number.isInteger(parsed) ? parsed : null;
+                };
+                const pCount = adjPattern.length;
+                const tCount = adjTarget.length;
+
+                for (const mappingObj of inList) {
+                    if (!mappingObj || typeof mappingObj !== 'object') continue;
+                    const pairs = [];
+                    for (const [pk, tv] of Object.entries(mappingObj)) {
+                        const p = parseMaybeIndex(pk);
+                        const t = parseMaybeIndex(tv);
+                        if (Number.isInteger(p) && Number.isInteger(t)) pairs.push([p, t]);
+                    }
+                    if (!pairs.length) continue;
+
+                    const allowPatternShift = pCount > 0 && pairs.every(([p]) => p >= 1 && p <= pCount);
+                    const allowTargetShift = tCount > 0 && pairs.every(([, t]) => t >= 1 && t <= tCount);
+                    const variants = [[0, 0]];
+                    if (allowPatternShift) variants.push([-1, 0]);
+                    if (allowTargetShift) variants.push([0, -1]);
+                    if (allowPatternShift && allowTargetShift) variants.push([-1, -1]);
+
+                    let best = null;
+                    let bestScore = -1;
+                    let bestPenalty = Number.POSITIVE_INFINITY;
+                    for (const [patternShift, targetShift] of variants) {
+                        const normalized = {};
+                        for (const [pRaw, tRaw] of pairs) {
+                            const p = pRaw + patternShift;
+                            const t = tRaw + targetShift;
+                            if (!Number.isInteger(p) || !Number.isInteger(t)) continue;
+                            if (p < 0 || p >= pCount) continue;
+                            if (t < 0 || t >= tCount) continue;
+                            normalized[p] = t;
+                        }
+                        const score = Object.keys(normalized).length;
+                        if (!score) continue;
+                        const penalty = Math.abs(patternShift) + Math.abs(targetShift);
+                        if (score > bestScore || (score === bestScore && penalty < bestPenalty)) {
+                            best = normalized;
+                            bestScore = score;
+                            bestPenalty = penalty;
+                        }
+                    }
+                    if (!best) continue;
+
+                    const key = JSON.stringify(best);
+                    if (key === '{}' || seen.has(key)) continue;
+                    seen.add(key);
+                    out.push(best);
+                    if (out.length >= solutionLimit) break;
+                }
+                return out;
+            };
             let mappings = [];
             for (const src of mappingSources) {
                 const found = extractLocalMappingsFromText(src, solutionLimit);
                 if (found.length) mappings = mappings.concat(found);
                 if (mappings.length >= solutionLimit) break;
             }
+            mappings = normalizeMappings(mappings);
             if (!mappings.length && patternNodes && patternNodes.length) {
                 const fallback = {};
                 patternNodes.forEach((t, p) => {
@@ -2272,6 +2344,7 @@ def capstone_run_local_generator(args, out_dir):
                 });
                 if (Object.keys(fallback).length) mappings = [fallback];
             }
+            mappings = normalizeMappings(mappings);
             if (!mappings.length) {
                 const discovered = findLocalSubgraphMappings({
                     patternAdj: adjPattern,
@@ -2283,6 +2356,22 @@ def capstone_run_local_generator(args, out_dir):
                 });
                 if (Array.isArray(discovered) && discovered.length) {
                     mappings = discovered;
+                }
+            }
+            mappings = normalizeMappings(mappings);
+            if (!mappings.length && algorithm === 'glasgow') {
+                // Some Glasgow local runs can provide mappings with incompatible label/index conventions.
+                // For visualization fallback, retry a label-agnostic structural match.
+                const discovered = findLocalSubgraphMappings({
+                    patternAdj: adjPattern,
+                    targetAdj: adjTarget,
+                    patternLabels: [],
+                    targetLabels: [],
+                    limit: solutionLimit,
+                    timeBudgetMs: 2000
+                });
+                if (Array.isArray(discovered) && discovered.length) {
+                    mappings = normalizeMappings(discovered);
                 }
             }
 
@@ -4410,6 +4499,16 @@ def capstone_run_local_generator(args, out_dir):
                         result.inputs.k = Number.isFinite(Number(config.generator && config.generator.k)) ? Number(config.generator.k) : config.generator.k;
                     }
                     const meta = generated && generated.metadata && typeof generated.metadata === 'object' ? generated.metadata : {};
+                    const shouldRebuildGlasgowVisualization = (() => {
+                        if (algoKey !== 'glasgow') return false;
+                        if (!result.visualization || !Array.isArray(result.visualization.visualization_iterations) || !result.visualization.visualization_iterations.length) {
+                            return true;
+                        }
+                        const first = result.visualization.visualization_iterations[0];
+                        const noSolutions = Boolean(first && typeof first === 'object' && first.no_solutions);
+                        const hasPatternNodes = Array.isArray(meta.pattern_nodes) && meta.pattern_nodes.length > 0;
+                        return noSolutions && hasPatternNodes;
+                    })();
                     if ((algoKey === 'vf3' || algoKey === 'glasgow' || algoKey === 'subgraph') && result.visualization && Array.isArray(result.visualization.visualization_iterations)) {
                         result.visualization.seed = session.visSeed ?? session.generatedSeed;
                         for (const v of result.visualization.visualization_iterations) {
@@ -4465,7 +4564,7 @@ def capstone_run_local_generator(args, out_dir):
                                 })
                             ]);
                         } catch (_) {}
-                    } else if (algoKey === 'glasgow' && typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function' && (!result.visualization || !Array.isArray(result.visualization.visualization_iterations))) {
+                    } else if (algoKey === 'glasgow' && typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function' && shouldRebuildGlasgowVisualization) {
                         try {
                             const patternFile = config.selectedFiles[0];
                             const targetFile = config.selectedFiles[1];
