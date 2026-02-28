@@ -2187,7 +2187,7 @@ def build_visualization(pattern_path, target_path, pattern_nodes, iteration_inde
 
     mapping = {}
     solutions = []
-    solution_limit = 25 if algo == "glasgow" else 250
+    solution_limit = 1000
     solver_stdout = ""
     solver_stderr = ""
     solver_cmd = []
@@ -2522,4 +2522,3 @@ echo "SUBGRAPH_PHASE=${SUBGRAPH_PHASE:-}" >> "$GITHUB_OUTPUT"
 echo "SEED_USED=${SEED_USED:-}" >> "$GITHUB_OUTPUT"
 # Always exit 0 so later steps run and results are committed
 exit 0
-

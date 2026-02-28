@@ -103,7 +103,13 @@
                 return;
             }
             controls.hidden = false;
-            if (label) label.textContent = `Solution ${currentSolutionIndex + 1} of ${total}`;
+            if (label) {
+                const current = visSolutions[currentSolutionIndex] || null;
+                const name = current && typeof current.name === 'string' ? current.name.trim() : '';
+                label.textContent = name
+                    ? `Solution ${currentSolutionIndex + 1} of ${total}: ${name}`
+                    : `Solution ${currentSolutionIndex + 1} of ${total}`;
+            }
             if (prevBtn) prevBtn.disabled = currentSolutionIndex <= 0;
             if (nextBtn) nextBtn.disabled = currentSolutionIndex >= total - 1;
         }

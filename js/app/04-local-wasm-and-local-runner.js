@@ -2143,6 +2143,7 @@ def capstone_run_local_generator(args, out_dir):
             const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : 1;
             const seed = (opts.seed === null || opts.seed === undefined || opts.seed === '') ? null : opts.seed;
             const adj = Array.isArray(parsed.adj) ? parsed.adj : [];
+            const solverSolutions = Array.isArray(opts.solverSolutions) ? opts.solverSolutions : [];
 
             const allEdges = new Set();
             for (let i = 0; i < adj.length; i++) {
@@ -2173,22 +2174,118 @@ def capstone_run_local_generator(args, out_dir):
                 nodes.push({ data: { id: String(i), label: String(parsed.nodeLabels && parsed.nodeLabels[i] !== undefined ? parsed.nodeLabels[i] : i) } });
             }
             const edges = filteredEdges.map(([a, b]) => ({ data: { id: `${a}-${b}`, source: String(a), target: String(b) } }));
-
-            const highlightNodes = [];
-            if (Number.isInteger(parsed.startIdx)) highlightNodes.push(parsed.startIdx);
-            if (Number.isInteger(parsed.targetIdx) && parsed.targetIdx !== parsed.startIdx) highlightNodes.push(parsed.targetIdx);
-            for (const n of (Array.isArray(parsed.pathNodes) ? parsed.pathNodes : [])) {
-                if (Number.isInteger(n) && !highlightNodes.includes(n)) highlightNodes.push(n);
+            const nodeLabels = Array.isArray(parsed.nodeLabels) ? parsed.nodeLabels : [];
+            const labelToId = new Map();
+            const labelToIdLower = new Map();
+            for (let i = 0; i < nodeLabels.length; i++) {
+                const raw = String(nodeLabels[i] == null ? '' : nodeLabels[i]).trim();
+                if (!raw) continue;
+                if (!labelToId.has(raw)) labelToId.set(raw, i);
+                const lower = raw.toLowerCase();
+                if (!labelToIdLower.has(lower)) labelToIdLower.set(lower, i);
             }
 
-            const highlightEdges = [];
-            const pathNodes = Array.isArray(parsed.pathNodes) ? parsed.pathNodes : [];
-            for (let i = 0; i + 1 < pathNodes.length; i++) {
-                const ek = localEdgeKey(pathNodes[i], pathNodes[i + 1]);
-                if (!ek) continue;
-                const key = `${ek[0]}:${ek[1]}`;
-                if (filteredEdgeSet.has(key)) highlightEdges.push(`${ek[0]}-${ek[1]}`);
+            const parseDijkstraPathFromOutput = (outputText) => {
+                const lines = String(outputText || '').replace(/\r/g, '').split('\n');
+                const first = lines.map(line => String(line || '').trim()).find(line => line && !/^runtime\b/i.test(line));
+                if (!first) return null;
+                if (/no\s*path|path\s*not\s*found/i.test(first)) return null;
+
+                const sep = first.indexOf(';');
+                const left = sep >= 0 ? first.slice(0, sep).trim() : '';
+                const right = sep >= 0 ? first.slice(sep + 1).trim() : first;
+                if (/^inf$/i.test(left) || /^-1$/.test(left)) return null;
+
+                const rightNorm = right.replace(/\s*->\s*/g, ' -> ');
+                const rawTokens = rightNorm.split(/[,\s]+/).map(t => String(t || '').trim()).filter(Boolean);
+                const cleanToken = (tok) => String(tok || '')
+                    .replace(/^[\[\]{}()'"`]+/, '')
+                    .replace(/[\[\]{}()'"`,;:]+$/, '')
+                    .trim();
+                const parseNodeId = (tok) => {
+                    const t = cleanToken(tok);
+                    if (!t || t === '->') return null;
+                    if (labelToId.has(t)) return labelToId.get(t);
+                    const lower = t.toLowerCase();
+                    if (labelToIdLower.has(lower)) return labelToIdLower.get(lower);
+                    const n = Number(t);
+                    if (Number.isInteger(n) && n >= 0 && n < adj.length) return n;
+                    return null;
+                };
+                const path = [];
+                for (const tok of rawTokens) {
+                    if (tok === '->') continue;
+                    const id = parseNodeId(tok);
+                    if (!Number.isInteger(id)) continue;
+                    path.push(id);
+                }
+                if (!path.length) return null;
+                const compact = [];
+                for (const id of path) {
+                    if (!compact.length || compact[compact.length - 1] !== id) compact.push(id);
+                }
+                if (compact.length < 2) return null;
+                return compact;
+            };
+
+            const toDijkstraSolution = (pathNodesRaw, name = '') => {
+                const src = Array.isArray(pathNodesRaw) ? pathNodesRaw : [];
+                if (!src.length) return null;
+                const keptNodes = [];
+                for (const raw of src) {
+                    const n = Number(raw);
+                    if (!Number.isInteger(n) || n < 0 || n >= adj.length) continue;
+                    if (!allowedNodes.has(n)) continue;
+                    if (!keptNodes.includes(n)) keptNodes.push(n);
+                }
+                if (!keptNodes.length) return null;
+                const keptEdges = [];
+                for (let i = 0; i + 1 < src.length; i++) {
+                    const ek = localEdgeKey(src[i], src[i + 1]);
+                    if (!ek) continue;
+                    const key = `${ek[0]}:${ek[1]}`;
+                    if (filteredEdgeSet.has(key)) keptEdges.push(`${ek[0]}-${ek[1]}`);
+                }
+                const labels = src
+                    .map(v => Number(v))
+                    .filter(v => Number.isInteger(v) && v >= 0 && v < nodeLabels.length)
+                    .map(v => String(nodeLabels[v] !== undefined ? nodeLabels[v] : v));
+                return {
+                    name: String(name || '').trim(),
+                    mapping: [],
+                    highlight_nodes: keptNodes,
+                    highlight_edges: keptEdges,
+                    path_labels: labels
+                };
+            };
+
+            const solutions = [];
+            const parsedFallbackPathNodes = Array.isArray(parsed.pathNodes) ? parsed.pathNodes : [];
+            for (const raw of solverSolutions) {
+                const entry = raw && typeof raw === 'object' ? raw : {};
+                const name = String(entry.name || '').trim() || `Solver ${solutions.length + 1}`;
+                const output = String(entry.output || '');
+                const path = parseDijkstraPathFromOutput(output) || (parsedFallbackPathNodes.length ? parsedFallbackPathNodes : null);
+                if (!Array.isArray(path) || !path.length) continue;
+                const sol = toDijkstraSolution(path, name);
+                if (sol) solutions.push(sol);
             }
+
+            if (!solutions.length) {
+                const fallbackPath = Array.isArray(parsed.pathNodes) ? parsed.pathNodes : [];
+                const fallback = toDijkstraSolution(fallbackPath, 'Reference shortest path');
+                if (fallback) solutions.push(fallback);
+            }
+
+            const fallbackHighlightNodes = [];
+            if (Number.isInteger(parsed.startIdx)) fallbackHighlightNodes.push(parsed.startIdx);
+            if (Number.isInteger(parsed.targetIdx) && parsed.targetIdx !== parsed.startIdx) fallbackHighlightNodes.push(parsed.targetIdx);
+            const first = solutions[0] || null;
+            const highlightNodes = first && Array.isArray(first.highlight_nodes) && first.highlight_nodes.length
+                ? first.highlight_nodes.map(v => String(v))
+                : fallbackHighlightNodes.filter(n => allowedNodes.has(n)).map(v => String(v));
+            const highlightEdges = first && Array.isArray(first.highlight_edges) ? first.highlight_edges : [];
+            const bestPathLabels = first && Array.isArray(first.path_labels) ? first.path_labels : [];
 
             const payload = {
                 algorithm: 'dijkstra',
@@ -2198,18 +2295,18 @@ def capstone_run_local_generator(args, out_dir):
                 edge_count: allEdges.size,
                 nodes,
                 edges,
-                highlight_nodes: highlightNodes.filter(n => allowedNodes.has(n)).map(n => String(n)),
+                highlight_nodes: highlightNodes,
                 highlight_edges: highlightEdges,
                 pattern_node_count: 0,
                 pattern_nodes: [],
                 pattern_edges: [],
-                solutions: [],
-                no_solutions: pathNodes.length === 0,
+                solutions,
+                no_solutions: solutions.length === 0,
                 truncated
             };
             if (parsed.startLabel) payload.start_label = parsed.startLabel;
             if (parsed.targetLabel) payload.target_label = parsed.targetLabel;
-            if (pathNodes.length) payload.shortest_path = pathNodes.map(i => String(parsed.nodeLabels[i] ?? i));
+            if (bestPathLabels.length) payload.shortest_path = bestPathLabels;
             if (Number.isFinite(Number(parsed.pathDistance))) payload.shortest_path_distance = Number(parsed.pathDistance);
             return payload;
         }
@@ -2265,7 +2362,7 @@ def capstone_run_local_generator(args, out_dir):
             }
             patternEdges.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
 
-            const solutionLimit = algorithm === 'glasgow' ? 25 : 250;
+            const solutionLimit = 1000;
             const normalizeMappings = (rawMappings) => {
                 const inList = Array.isArray(rawMappings) ? rawMappings : [];
                 const out = [];
@@ -2637,6 +2734,9 @@ def capstone_run_local_generator(args, out_dir):
                 let llmResult = '';
                 let geminiResult = '';
                 let memoryMetricInfo = null;
+                const baselineOutputsByIteration = new Array(safeIterations).fill('');
+                const llmOutputsByIteration = new Array(safeIterations).fill('');
+                const geminiOutputsByIteration = new Array(safeIterations).fill('');
 
                 // Baseline chunk
                 for (let iter = 0; iter < safeIterations; iter++) {
@@ -2661,6 +2761,7 @@ def capstone_run_local_generator(args, out_dir):
                         if (Number.isFinite(Number(heapKiB))) baselineHeapKiB.push(Number(heapKiB));
                         memoryMetricInfo = pickPreferredWasmMemoryMetricInfo(memoryMetricInfo, getEmscriptenMemoryMetricInfo(mod));
                         baselineResult = parseFirstLine(stdout) || stdout.trim();
+                        baselineOutputsByIteration[iter] = stdout;
                     } finally {
                         mod = null;
                         unloadModule(baselineSpec);
@@ -2693,6 +2794,7 @@ def capstone_run_local_generator(args, out_dir):
                         if (Number.isFinite(Number(heapKiB))) llmHeapKiB.push(Number(heapKiB));
                         memoryMetricInfo = pickPreferredWasmMemoryMetricInfo(memoryMetricInfo, getEmscriptenMemoryMetricInfo(mod));
                         llmResult = parseFirstLine(stdout) || stdout.trim();
+                        llmOutputsByIteration[iter] = stdout;
                     } finally {
                         mod = null;
                         unloadModule(llmSpec);
@@ -2725,6 +2827,7 @@ def capstone_run_local_generator(args, out_dir):
                         if (Number.isFinite(Number(heapKiB))) geminiHeapKiB.push(Number(heapKiB));
                         memoryMetricInfo = pickPreferredWasmMemoryMetricInfo(memoryMetricInfo, getEmscriptenMemoryMetricInfo(mod));
                         geminiResult = parseFirstLine(stdout) || stdout.trim();
+                        geminiOutputsByIteration[iter] = stdout;
                     } finally {
                         mod = null;
                         unloadModule(geminiSpec);
@@ -2767,13 +2870,20 @@ def capstone_run_local_generator(args, out_dir):
                 let visualization = null;
                 try {
                     if (typeof buildLocalDijkstraVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
-                        visualization = buildLocalVisualizationIterations([
-                            buildLocalDijkstraVisualization({
+                        const payloads = [];
+                        for (let iter = 0; iter < safeIterations; iter++) {
+                            payloads.push(buildLocalDijkstraVisualization({
                                 inputText,
-                                iteration: 1,
-                                seed: null
-                            })
-                        ]);
+                                iteration: iter + 1,
+                                seed: null,
+                                solverSolutions: [
+                                    { name: 'Dijkstra Baseline', output: baselineOutputsByIteration[iter] || '' },
+                                    { name: 'Dijkstra ChatGPT', output: llmOutputsByIteration[iter] || '' },
+                                    { name: 'Dijkstra Gemini', output: geminiOutputsByIteration[iter] || '' }
+                                ]
+                            }));
+                        }
+                        visualization = buildLocalVisualizationIterations(payloads);
                     }
                 } catch (_) {}
 
@@ -3038,6 +3148,12 @@ def capstone_run_local_generator(args, out_dir):
                 let baseAllVisualizationOut = '';
                 let gemAllVisualizationOut = '';
                 let chatAllVisualizationOut = '';
+                const baseFirstVisualizationByIter = new Array(safeIterations).fill('');
+                const gemFirstVisualizationByIter = new Array(safeIterations).fill('');
+                const chatFirstVisualizationByIter = new Array(safeIterations).fill('');
+                const baseAllVisualizationByIter = new Array(safeIterations).fill('');
+                const gemAllVisualizationByIter = new Array(safeIterations).fill('');
+                const chatAllVisualizationByIter = new Array(safeIterations).fill('');
                 let memoryMetricInfo = null;
 
                 let ticksDone = 0;
@@ -3055,6 +3171,7 @@ def capstone_run_local_generator(args, out_dir):
                     const heapsAll = Array.isArray(opts && opts.heapsAll ? opts.heapsAll : null) ? opts.heapsAll : null;
                     const refreshFirst = Array.isArray(opts && opts.refreshFirst ? opts.refreshFirst : null) ? opts.refreshFirst : null;
                     const refreshAll = Array.isArray(opts && opts.refreshAll ? opts.refreshAll : null) ? opts.refreshAll : null;
+                    const captureFirst = typeof (opts && opts.captureFirst) === 'function' ? opts.captureFirst : null;
                     const captureAll = typeof (opts && opts.captureAll) === 'function' ? opts.captureAll : null;
 
                     if (!spec || !spec.id) throw new Error(`Invalid wasm spec for ${title}`);
@@ -3111,7 +3228,10 @@ def capstone_run_local_generator(args, out_dir):
                         if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
 
                         progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
-                        const firstRes = await runStepMeasuredFresh(iter, labelFirst, argsFirst, timesFirst, null, heapsFirst, refreshFirst);
+                        const captureFirstThisIter = captureFirst
+                            ? ((stdout) => captureFirst(stdout, iter))
+                            : null;
+                        const firstRes = await runStepMeasuredFresh(iter, labelFirst, argsFirst, timesFirst, captureFirstThisIter, heapsFirst, refreshFirst);
                         if (firstRes && firstRes.status === 'aborted') return firstRes;
                         ticksDone++;
                         progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
@@ -3120,7 +3240,10 @@ def capstone_run_local_generator(args, out_dir):
                         if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
 
                         progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
-                        const allRes = await runStepMeasuredFresh(iter, labelAll, argsAll, timesAll, captureAll, heapsAll, refreshAll);
+                        const captureAllThisIter = captureAll
+                            ? ((stdout) => captureAll(stdout, iter))
+                            : null;
+                        const allRes = await runStepMeasuredFresh(iter, labelAll, argsAll, timesAll, captureAllThisIter, heapsAll, refreshAll);
                         if (allRes && allRes.status === 'aborted') return allRes;
                         ticksDone++;
                         progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
@@ -3142,9 +3265,17 @@ def capstone_run_local_generator(args, out_dir):
                     heapsAll: baseAllHeapKiB,
                     refreshFirst: baseFirstRefreshMs,
                     refreshAll: baseAllRefreshMs,
-                    captureAll: (stdout) => {
+                    captureFirst: (stdout, iterIndex) => {
+                        if (Number.isInteger(iterIndex) && iterIndex >= 0 && iterIndex < baseFirstVisualizationByIter.length && typeof stdout === 'string' && stdout.trim()) {
+                            baseFirstVisualizationByIter[iterIndex] = stdout;
+                        }
+                    },
+                    captureAll: (stdout, iterIndex) => {
                         if (!baseAllVisualizationOut && typeof stdout === 'string' && stdout.trim()) {
                             baseAllVisualizationOut = stdout;
+                        }
+                        if (Number.isInteger(iterIndex) && iterIndex >= 0 && iterIndex < baseAllVisualizationByIter.length && typeof stdout === 'string' && stdout.trim()) {
+                            baseAllVisualizationByIter[iterIndex] = stdout;
                         }
                         const line = parseFirstLine(stdout);
                         baseResult = parseFirstToken(line) || line;
@@ -3165,9 +3296,17 @@ def capstone_run_local_generator(args, out_dir):
                     heapsAll: gemAllHeapKiB,
                     refreshFirst: gemFirstRefreshMs,
                     refreshAll: gemAllRefreshMs,
-                    captureAll: (stdout) => {
+                    captureFirst: (stdout, iterIndex) => {
+                        if (Number.isInteger(iterIndex) && iterIndex >= 0 && iterIndex < gemFirstVisualizationByIter.length && typeof stdout === 'string' && stdout.trim()) {
+                            gemFirstVisualizationByIter[iterIndex] = stdout;
+                        }
+                    },
+                    captureAll: (stdout, iterIndex) => {
                         if (!gemAllVisualizationOut && typeof stdout === 'string' && stdout.trim()) {
                             gemAllVisualizationOut = stdout;
+                        }
+                        if (Number.isInteger(iterIndex) && iterIndex >= 0 && iterIndex < gemAllVisualizationByIter.length && typeof stdout === 'string' && stdout.trim()) {
+                            gemAllVisualizationByIter[iterIndex] = stdout;
                         }
                         gemResult = parseFirstLine(stdout);
                     }
@@ -3187,9 +3326,17 @@ def capstone_run_local_generator(args, out_dir):
                     heapsAll: chatAllHeapKiB,
                     refreshFirst: chatFirstRefreshMs,
                     refreshAll: chatAllRefreshMs,
-                    captureAll: (stdout) => {
+                    captureFirst: (stdout, iterIndex) => {
+                        if (Number.isInteger(iterIndex) && iterIndex >= 0 && iterIndex < chatFirstVisualizationByIter.length && typeof stdout === 'string' && stdout.trim()) {
+                            chatFirstVisualizationByIter[iterIndex] = stdout;
+                        }
+                    },
+                    captureAll: (stdout, iterIndex) => {
                         if (!chatAllVisualizationOut && typeof stdout === 'string' && stdout.trim()) {
                             chatAllVisualizationOut = stdout;
+                        }
+                        if (Number.isInteger(iterIndex) && iterIndex >= 0 && iterIndex < chatAllVisualizationByIter.length && typeof stdout === 'string' && stdout.trim()) {
+                            chatAllVisualizationByIter[iterIndex] = stdout;
                         }
                         chatResult = parseFirstLine(stdout);
                     }
@@ -3268,26 +3415,36 @@ def capstone_run_local_generator(args, out_dir):
                 let visualization = null;
                 try {
                     if (typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
-                        visualization = buildLocalVisualizationIterations([
-                            buildLocalSubgraphLikeVisualization({
-                                algorithm: 'vf3',
-                                patternText,
-                                targetText,
-                                patternFormat: 'vf',
-                                targetFormat: 'vf',
-                                mappingSources: [
-                                    baselineVisualizationOut,
-                                    chatAllVisualizationOut,
-                                    gemAllVisualizationOut,
-                                    baseAllVisualizationOut,
-                                    chatResult,
-                                    gemResult,
-                                    baseResult
-                                ],
-                                iteration: 1,
-                                seed: null
-                            })
-                        ]);
+                        const payloads = [];
+                        for (let iter = 0; iter < safeIterations; iter++) {
+                            payloads.push(
+                                buildLocalSubgraphLikeVisualization({
+                                    algorithm: 'vf3',
+                                    patternText,
+                                    targetText,
+                                    patternFormat: 'vf',
+                                    targetFormat: 'vf',
+                                    mappingSources: [
+                                        baseFirstVisualizationByIter[iter] || '',
+                                        baseAllVisualizationByIter[iter] || '',
+                                        chatFirstVisualizationByIter[iter] || '',
+                                        chatAllVisualizationByIter[iter] || '',
+                                        gemFirstVisualizationByIter[iter] || '',
+                                        gemAllVisualizationByIter[iter] || '',
+                                        baselineVisualizationOut,
+                                        baseAllVisualizationOut,
+                                        chatAllVisualizationOut,
+                                        gemAllVisualizationOut,
+                                        chatResult,
+                                        gemResult,
+                                        baseResult
+                                    ],
+                                    iteration: iter + 1,
+                                    seed: null
+                                })
+                            );
+                        }
+                        visualization = buildLocalVisualizationIterations(payloads);
                     }
                 } catch (_) {}
 
@@ -3568,6 +3725,7 @@ def capstone_run_local_generator(args, out_dir):
                 let gemMatch = 0;
                 let gemTotal = 0;
                 let gemMismatch = 0;
+                const iterationVisualizationSources = [];
 
                 const isTrapError = (error) => {
                     const msg = error && error.message ? String(error.message) : String(error);
@@ -3672,6 +3830,12 @@ def capstone_run_local_generator(args, out_dir):
 
                     const baselineCount = extractLocalSolutionCount(latestBaselineAll);
                     if (baselineCount === null) {
+                        iterationVisualizationSources.push({
+                            baselineFirstOut: latestBaselineFirst,
+                            baselineAllOut: latestBaselineAll,
+                            chatOut: '',
+                            gemOut: ''
+                        });
                         glasgowFail++;
                         continue;
                     }
@@ -3760,6 +3924,12 @@ def capstone_run_local_generator(args, out_dir):
                     const gemParsed = extractLocalCountTimeMs(latestGem);
                     if (gemParsed && Number.isInteger(gemParsed.count) && gemParsed.count === baselineCount) gemMatch++;
                     else gemMismatch++;
+                    iterationVisualizationSources.push({
+                        baselineFirstOut: latestBaselineFirst,
+                        baselineAllOut: latestBaselineAll,
+                        chatOut: latestChat,
+                        gemOut: latestGem
+                    });
                 }
 
                 let baselineVisualizationOut = baselineAllOut || baselineFirstOut || '';
@@ -3782,7 +3952,7 @@ def capstone_run_local_generator(args, out_dir):
                                 baselineFormatFlag,
                                 '--print-all-solutions',
                                 '--solution-limit',
-                                '25',
+                                '1000',
                                 patternFsPath,
                                 targetFsPath
                             ],
@@ -3848,18 +4018,34 @@ def capstone_run_local_generator(args, out_dir):
                 let visualization = null;
                 try {
                     if (typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
-                        visualization = buildLocalVisualizationIterations([
-                            buildLocalSubgraphLikeVisualization({
-                                algorithm: 'glasgow',
-                                patternText: ladPatternText,
-                                targetText: ladTargetText,
-                                patternFormat: 'lad',
-                                targetFormat: 'lad',
-                                mappingSources: [baselineVisualizationOut, chatOut, gemOut, baselineAllOut, baselineFirstOut],
-                                iteration: 1,
-                                seed: null
-                            })
-                        ]);
+                        const payloads = [];
+                        const visCount = Math.max(1, Math.min(safeIterations, iterationVisualizationSources.length || safeIterations));
+                        for (let i = 0; i < visCount; i++) {
+                            const src = iterationVisualizationSources[i] || {};
+                            payloads.push(
+                                buildLocalSubgraphLikeVisualization({
+                                    algorithm: 'glasgow',
+                                    patternText: ladPatternText,
+                                    targetText: ladTargetText,
+                                    patternFormat: 'lad',
+                                    targetFormat: 'lad',
+                                    mappingSources: [
+                                        src.baselineAllOut || '',
+                                        src.baselineFirstOut || '',
+                                        src.chatOut || '',
+                                        src.gemOut || '',
+                                        baselineVisualizationOut,
+                                        baselineAllOut,
+                                        baselineFirstOut,
+                                        chatOut,
+                                        gemOut
+                                    ],
+                                    iteration: i + 1,
+                                    seed: null
+                                })
+                            );
+                        }
+                        visualization = buildLocalVisualizationIterations(payloads);
                     }
                 } catch (_) {}
 
@@ -4499,6 +4685,15 @@ def capstone_run_local_generator(args, out_dir):
                         result.inputs.k = Number.isFinite(Number(config.generator && config.generator.k)) ? Number(config.generator.k) : config.generator.k;
                     }
                     const meta = generated && generated.metadata && typeof generated.metadata === 'object' ? generated.metadata : {};
+                    const fallbackVisCount = Math.max(1, Math.floor(Number(result && result.iterations) || 1));
+                    const buildRepeatedVisualization = (factory) => {
+                        if (typeof factory !== 'function') return null;
+                        const payloads = [];
+                        for (let i = 0; i < fallbackVisCount; i++) {
+                            payloads.push(factory(i));
+                        }
+                        return buildLocalVisualizationIterations(payloads);
+                    };
                     const shouldRebuildGlasgowVisualization = (() => {
                         if (algoKey !== 'glasgow') return false;
                         if (!result.visualization || !Array.isArray(result.visualization.visualization_iterations) || !result.visualization.visualization_iterations.length) {
@@ -4526,18 +4721,16 @@ def capstone_run_local_generator(args, out_dir):
                         const patternText = _localInMemoryRepoFiles.get(patternFile.path) || '';
                         const targetText = _localInMemoryRepoFiles.get(targetFile.path) || '';
                         try {
-                            result.visualization = buildLocalVisualizationIterations([
-                                buildLocalSubgraphLikeVisualization({
-                                    algorithm: 'vf3',
-                                    patternText,
-                                    targetText,
-                                    patternFormat: 'vf',
-                                    targetFormat: 'vf',
-                                    patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
-                                    iteration: 1,
-                                    seed: session.visSeed ?? session.generatedSeed
-                                })
-                            ]);
+                            result.visualization = buildRepeatedVisualization((iterIndex) => buildLocalSubgraphLikeVisualization({
+                                algorithm: 'vf3',
+                                patternText,
+                                targetText,
+                                patternFormat: 'vf',
+                                targetFormat: 'vf',
+                                patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
+                                iteration: iterIndex + 1,
+                                seed: session.visSeed ?? session.generatedSeed
+                            }));
                         } catch (_) {}
                     } else if (
                         algoKey === 'subgraph' &&
@@ -4551,18 +4744,16 @@ def capstone_run_local_generator(args, out_dir):
                             const patternText = _localInMemoryRepoFiles.get(patternFile.path) || '';
                             const targetText = _localInMemoryRepoFiles.get(targetFile.path) || '';
                             const fmt = getLocalGraphFormatFromFile(patternFile);
-                            result.visualization = buildLocalVisualizationIterations([
-                                buildLocalSubgraphLikeVisualization({
-                                    algorithm: 'subgraph',
-                                    patternText,
-                                    targetText,
-                                    patternFormat: fmt,
-                                    targetFormat: getLocalGraphFormatFromFile(targetFile),
-                                    patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
-                                    iteration: 1,
-                                    seed: session.visSeed ?? session.generatedSeed
-                                })
-                            ]);
+                            result.visualization = buildRepeatedVisualization((iterIndex) => buildLocalSubgraphLikeVisualization({
+                                algorithm: 'subgraph',
+                                patternText,
+                                targetText,
+                                patternFormat: fmt,
+                                targetFormat: getLocalGraphFormatFromFile(targetFile),
+                                patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
+                                iteration: iterIndex + 1,
+                                seed: session.visSeed ?? session.generatedSeed
+                            }));
                         } catch (_) {}
                     } else if (algoKey === 'glasgow' && typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function' && shouldRebuildGlasgowVisualization) {
                         try {
@@ -4570,18 +4761,16 @@ def capstone_run_local_generator(args, out_dir):
                             const targetFile = config.selectedFiles[1];
                             const patternText = _localInMemoryRepoFiles.get(patternFile.path) || '';
                             const targetText = _localInMemoryRepoFiles.get(targetFile.path) || '';
-                            result.visualization = buildLocalVisualizationIterations([
-                                buildLocalSubgraphLikeVisualization({
-                                    algorithm: 'glasgow',
-                                    patternText,
-                                    targetText,
-                                    patternFormat: getLocalGraphFormatFromFile(patternFile),
-                                    targetFormat: getLocalGraphFormatFromFile(targetFile),
-                                    patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
-                                    iteration: 1,
-                                    seed: session.visSeed ?? session.generatedSeed
-                                })
-                            ]);
+                            result.visualization = buildRepeatedVisualization((iterIndex) => buildLocalSubgraphLikeVisualization({
+                                algorithm: 'glasgow',
+                                patternText,
+                                targetText,
+                                patternFormat: getLocalGraphFormatFromFile(patternFile),
+                                targetFormat: getLocalGraphFormatFromFile(targetFile),
+                                patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
+                                iteration: iterIndex + 1,
+                                seed: session.visSeed ?? session.generatedSeed
+                            }));
                         } catch (_) {}
                     } else if (algoKey === 'dijkstra' && result.visualization && Array.isArray(result.visualization.visualization_iterations)) {
                         result.visualization.seed = session.visSeed ?? session.generatedSeed;
