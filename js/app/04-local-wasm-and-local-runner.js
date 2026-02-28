@@ -1689,19 +1689,55 @@ def capstone_run_local_generator(args, out_dir):
             if (!raw) return [];
             const out = [];
             const seen = new Set();
-            for (const line of raw.replace(/\r/g, '').split('\n')) {
-                if (!line.includes('Mapping:') && !/mapping\s*=/i.test(line)) continue;
-                const pairs = Array.from(line.matchAll(/\(\s*(\d+)\s*->\s*(\d+)\s*\)/g));
-                if (!pairs.length) continue;
+            const max = Math.max(1, Math.floor(Number(limit) || 1));
+            const addPairs = (pairs) => {
+                if (!pairs || !pairs.length) return;
                 const mapping = {};
                 for (const p of pairs) {
                     mapping[Number(p[1])] = Number(p[2]);
                 }
                 const key = JSON.stringify(mapping);
-                if (key === '{}' || seen.has(key)) continue;
+                if (key === '{}' || seen.has(key)) return;
                 seen.add(key);
                 out.push(mapping);
-                if (out.length >= limit) break;
+            };
+
+            for (const rawLine of raw.replace(/\r/g, '').split('\n')) {
+                const line = String(rawLine || '').trim();
+                if (!line) continue;
+
+                // Glasgow style: "Mapping: (0 -> 12) (1 -> 7)" or "mapping = ..."
+                let pairs = Array.from(line.matchAll(/\(\s*(\d+)\s*->\s*(\d+)\s*\)/g));
+                if (pairs.length) {
+                    addPairs(pairs);
+                    if (out.length >= max) break;
+                    continue;
+                }
+
+                // VF3 style: "0,4: 1,2: 2,7:"
+                pairs = Array.from(line.matchAll(/(\d+)\s*,\s*(\d+)\s*:/g));
+                if (pairs.length) {
+                    addPairs(pairs);
+                    if (out.length >= max) break;
+                    continue;
+                }
+
+                // Generic arrow fallback for lines that mention mapping or include arrows.
+                if (/mapping\s*[:=]/i.test(line) || /->/.test(line)) {
+                    pairs = Array.from(line.matchAll(/(\d+)\s*->\s*(\d+)/g));
+                    if (pairs.length) {
+                        addPairs(pairs);
+                        if (out.length >= max) break;
+                        continue;
+                    }
+                }
+            }
+
+            if (!out.length) {
+                // Last resort: parse a single aggregate mapping from the whole text.
+                let pairs = Array.from(raw.matchAll(/\(\s*(\d+)\s*->\s*(\d+)\s*\)/g));
+                if (!pairs.length) pairs = Array.from(raw.matchAll(/(\d+)\s*->\s*(\d+)/g));
+                if (pairs.length) addPairs(pairs);
             }
             return out;
         }
@@ -2500,6 +2536,9 @@ def capstone_run_local_generator(args, out_dir):
                 let baseResult = '';
                 let gemResult = '';
                 let chatResult = '';
+                let baseAllVisualizationOut = '';
+                let gemAllVisualizationOut = '';
+                let chatAllVisualizationOut = '';
 
                 let ticksDone = 0;
 
@@ -2601,6 +2640,9 @@ def capstone_run_local_generator(args, out_dir):
                     refreshFirst: baseFirstRefreshMs,
                     refreshAll: baseAllRefreshMs,
                     captureAll: (stdout) => {
+                        if (!baseAllVisualizationOut && typeof stdout === 'string' && stdout.trim()) {
+                            baseAllVisualizationOut = stdout;
+                        }
                         const line = parseFirstLine(stdout);
                         baseResult = parseFirstToken(line) || line;
                     }
@@ -2621,6 +2663,9 @@ def capstone_run_local_generator(args, out_dir):
                     refreshFirst: gemFirstRefreshMs,
                     refreshAll: gemAllRefreshMs,
                     captureAll: (stdout) => {
+                        if (!gemAllVisualizationOut && typeof stdout === 'string' && stdout.trim()) {
+                            gemAllVisualizationOut = stdout;
+                        }
                         gemResult = parseFirstLine(stdout);
                     }
                 });
@@ -2640,10 +2685,41 @@ def capstone_run_local_generator(args, out_dir):
                     refreshFirst: chatFirstRefreshMs,
                     refreshAll: chatAllRefreshMs,
                     captureAll: (stdout) => {
+                        if (!chatAllVisualizationOut && typeof stdout === 'string' && stdout.trim()) {
+                            chatAllVisualizationOut = stdout;
+                        }
                         chatResult = parseFirstLine(stdout);
                     }
                 });
                 if (chatgptRun && chatgptRun.status === 'aborted') return chatgptRun;
+
+                let baselineVisualizationOut = baseAllVisualizationOut || '';
+                if (!extractLocalMappingsFromText(baselineVisualizationOut, 1).length && !(runCtx && runCtx.aborted)) {
+                    // Match the GitHub Actions visualizer path: run baseline VF3 once with solution-print flags.
+                    let visMod = null;
+                    try {
+                        visMod = await loadFreshModule(
+                            baselineSpec,
+                            'Loading VF3 visualization baseline...',
+                            ticksDone,
+                            testsTotal,
+                            'tests'
+                        );
+                        const visRes = await runEmscriptenMain(visMod, ['-u', '-s', '-r', '0', patternFsPath, targetFsPath], {
+                            captureOptions: {
+                                maxOutputChars: 262144,
+                                maxErrorChars: 65536
+                            }
+                        });
+                        const visOut = visRes && typeof visRes.stdout === 'string' ? visRes.stdout : '';
+                        if (visOut.trim()) baselineVisualizationOut = visOut;
+                    } catch (_) {
+                        baselineVisualizationOut = baselineVisualizationOut || baseAllVisualizationOut || '';
+                    } finally {
+                        visMod = null;
+                        unloadModule(baselineSpec);
+                    }
+                }
 
                 progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
 
@@ -2692,7 +2768,15 @@ def capstone_run_local_generator(args, out_dir):
                                 targetText,
                                 patternFormat: 'vf',
                                 targetFormat: 'vf',
-                                mappingSources: [chatResult, gemResult, baseResult],
+                                mappingSources: [
+                                    baselineVisualizationOut,
+                                    chatAllVisualizationOut,
+                                    gemAllVisualizationOut,
+                                    baseAllVisualizationOut,
+                                    chatResult,
+                                    gemResult,
+                                    baseResult
+                                ],
                                 iteration: 1,
                                 seed: null
                             })
@@ -3167,6 +3251,47 @@ def capstone_run_local_generator(args, out_dir):
                     else gemMismatch++;
                 }
 
+                let baselineVisualizationOut = baselineAllOut || baselineFirstOut || '';
+                if (!extractLocalMappingsFromText(baselineVisualizationOut, 1).length && !(runCtx && runCtx.aborted)) {
+                    // Match the GitHub Actions visualizer path: run baseline Glasgow once with solution-print flags.
+                    let visMod = null;
+                    try {
+                        visMod = await loadFreshModule(
+                            baselineSpec,
+                            'Loading Glasgow visualization baseline...',
+                            ticksDone,
+                            testsTotal,
+                            'tests'
+                        );
+                        const visRes = await runEmscriptenMain(
+                            visMod,
+                            [
+                                '--induced',
+                                '--format',
+                                baselineFormatFlag,
+                                '--print-all-solutions',
+                                '--solution-limit',
+                                '25',
+                                patternFsPath,
+                                targetFsPath
+                            ],
+                            {
+                                captureOptions: {
+                                    maxOutputChars: 262144,
+                                    maxErrorChars: 65536
+                                }
+                            }
+                        );
+                        const visOut = visRes && typeof visRes.stdout === 'string' ? visRes.stdout : '';
+                        if (visOut.trim()) baselineVisualizationOut = visOut;
+                    } catch (_) {
+                        baselineVisualizationOut = baselineVisualizationOut || baselineAllOut || baselineFirstOut || '';
+                    } finally {
+                        visMod = null;
+                        unloadModule(baselineSpec);
+                    }
+                }
+
                 progressSetDeterminate('Completed', testsTotal, testsTotal, { stage: 'tests' });
 
                 const sBaseFirst = calcStatsMs(baseFirst);
@@ -3215,7 +3340,7 @@ def capstone_run_local_generator(args, out_dir):
                                 targetText: ladTargetText,
                                 patternFormat: 'lad',
                                 targetFormat: 'lad',
-                                mappingSources: [chatOut, gemOut, baselineAllOut, baselineFirstOut],
+                                mappingSources: [baselineVisualizationOut, chatOut, gemOut, baselineAllOut, baselineFirstOut],
                                 iteration: 1,
                                 seed: null
                             })
@@ -3865,7 +3990,12 @@ def capstone_run_local_generator(args, out_dir):
                             if (v && typeof v === 'object') v.seed = session.visSeed ?? session.generatedSeed;
                         }
                     }
-                    if (algoKey === 'vf3' && typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
+                    if (
+                        algoKey === 'vf3' &&
+                        typeof buildLocalSubgraphLikeVisualization === 'function' &&
+                        typeof buildLocalVisualizationIterations === 'function' &&
+                        (!result.visualization || !Array.isArray(result.visualization.visualization_iterations) || !result.visualization.visualization_iterations.length)
+                    ) {
                         const patternFile = config.selectedFiles[0];
                         const targetFile = config.selectedFiles[1];
                         const patternText = _localInMemoryRepoFiles.get(patternFile.path) || '';
@@ -3884,7 +4014,12 @@ def capstone_run_local_generator(args, out_dir):
                                 })
                             ]);
                         } catch (_) {}
-                    } else if (algoKey === 'subgraph' && typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
+                    } else if (
+                        algoKey === 'subgraph' &&
+                        typeof buildLocalSubgraphLikeVisualization === 'function' &&
+                        typeof buildLocalVisualizationIterations === 'function' &&
+                        (!result.visualization || !Array.isArray(result.visualization.visualization_iterations) || !result.visualization.visualization_iterations.length)
+                    ) {
                         try {
                             const patternFile = config.selectedFiles[0];
                             const targetFile = config.selectedFiles[1];
