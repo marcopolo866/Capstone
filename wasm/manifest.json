@@ -2,8 +2,8 @@
   "schema_version": 1,
   "workflow": "Build WASM Modules",
   "workflow_file": ".github/workflows/build-wasm.yml",
-  "generated_at_utc": "2026-02-28T23:03:57Z",
-  "git_sha": "36161f03c1aa224b66d8bd3e686bbd8980120e1c",
+  "generated_at_utc": "2026-03-01T00:00:08Z",
+  "git_sha": "40197fea4d822301e585e327143b1bf73f0bb77b",
   "git_ref_name": "main",
   "modules": {
     "dijkstra_baseline": {
