@@ -2584,6 +2584,24 @@ def capstone_run_local_generator(args, out_dir):
             const inputText = await getRepoFileText(inputFile.path);
             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
 
+            const resolveDijkstraInputForIteration = (iterIndex) => {
+                const generated = getLocalGeneratedIterationInput('dijkstra', iterIndex);
+                const generatedFiles = generated && Array.isArray(generated.selectedFiles) ? generated.selectedFiles : null;
+                const generatedInput = generatedFiles && generatedFiles[0] ? generatedFiles[0] : null;
+                const generatedPath = generatedInput && generatedInput.path ? String(generatedInput.path) : '';
+                let text = inputText;
+                if (generatedPath && _localInMemoryRepoFiles.has(generatedPath)) {
+                    text = String(_localInMemoryRepoFiles.get(generatedPath) || '');
+                }
+                return {
+                    inputText: String(text || ''),
+                    seed: generated && Object.prototype.hasOwnProperty.call(generated, 'seed')
+                        ? generated.seed
+                        : null
+                };
+            };
+            const firstDijkstraInput = resolveDijkstraInputForIteration(0);
+
             const baselineSpecFallback = {
                 id: 'dijkstra_baseline',
                 scriptPath: 'wasm/dijkstra_baseline.js',
@@ -2614,9 +2632,9 @@ def capstone_run_local_generator(args, out_dir):
 
             const abortSignal = runCtx && runCtx.abortController ? runCtx.abortController.signal : null;
 
-            const writeInput = (mod) => {
+            const writeInput = (mod, textForRun = firstDijkstraInput.inputText) => {
                 ensureEmscriptenDir(mod, '/inputs');
-                writeEmscriptenTextFile(mod, inputFsPath, inputText);
+                writeEmscriptenTextFile(mod, inputFsPath, String(textForRun || ''));
             };
 
             const runDijkstraGeminiWasm = async (mod) => {
@@ -2631,14 +2649,14 @@ def capstone_run_local_generator(args, out_dir):
                 } catch (_) {}
             };
 
-            const loadFreshModule = async (spec) => {
+            const loadFreshModule = async (spec, textForRun = firstDijkstraInput.inputText) => {
                 const mod = await getFreshEmscriptenModule(spec);
-                writeInput(mod);
+                writeInput(mod, textForRun);
                 return mod;
             };
-            const loadFreshModuleMeasured = async (spec) => {
+            const loadFreshModuleMeasured = async (spec, textForRun = firstDijkstraInput.inputText) => {
                 const t0 = runTimerNowMs();
-                const mod = await loadFreshModule(spec);
+                const mod = await loadFreshModule(spec, textForRun);
                 await flushEmscriptenWorkerFsOps(mod);
                 const t1 = runTimerNowMs();
                 return { mod, refreshMs: Math.max(0, t1 - t0) };
@@ -2648,9 +2666,10 @@ def capstone_run_local_generator(args, out_dir):
                 // Phase 1: setup + warmup (progress bar fills once)
                 if (safeWarmup > 0) {
                     let setupDone = 0;
+                    const warmupInput = resolveDijkstraInputForIteration(0);
 
                     // Baseline warmups
-                    let mod = await loadFreshModule(baselineSpec);
+                    let mod = await loadFreshModule(baselineSpec, warmupInput.inputText);
                     try {
                         for (let i = 0; i < safeWarmup; i++) {
                             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
@@ -2671,7 +2690,7 @@ def capstone_run_local_generator(args, out_dir):
                     }
 
                     // LLM warmups
-                    mod = await loadFreshModule(llmSpec);
+                    mod = await loadFreshModule(llmSpec, warmupInput.inputText);
                     try {
                         for (let i = 0; i < safeWarmup; i++) {
                             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
@@ -2692,7 +2711,7 @@ def capstone_run_local_generator(args, out_dir):
                     }
 
                     // Gemini warmups
-                    mod = await loadFreshModule(geminiSpec);
+                    mod = await loadFreshModule(geminiSpec, warmupInput.inputText);
                     try {
                         for (let i = 0; i < safeWarmup; i++) {
                             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
@@ -2742,7 +2761,8 @@ def capstone_run_local_generator(args, out_dir):
                 for (let iter = 0; iter < safeIterations; iter++) {
                     if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                     progressSetDeterminate('Dijkstra baseline', ticksDone, testsTotal, { stage: 'tests' });
-                    const loaded = await loadFreshModuleMeasured(baselineSpec);
+                    const iterInput = resolveDijkstraInputForIteration(iter);
+                    const loaded = await loadFreshModuleMeasured(baselineSpec, iterInput.inputText);
                     let mod = loaded.mod;
                     baselineRefreshMs.push(loaded.refreshMs);
                     try {
@@ -2775,7 +2795,8 @@ def capstone_run_local_generator(args, out_dir):
                 for (let iter = 0; iter < safeIterations; iter++) {
                     if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                     progressSetDeterminate('Dijkstra llm', ticksDone, testsTotal, { stage: 'tests' });
-                    const loaded = await loadFreshModuleMeasured(llmSpec);
+                    const iterInput = resolveDijkstraInputForIteration(iter);
+                    const loaded = await loadFreshModuleMeasured(llmSpec, iterInput.inputText);
                     let mod = loaded.mod;
                     llmRefreshMs.push(loaded.refreshMs);
                     try {
@@ -2808,7 +2829,8 @@ def capstone_run_local_generator(args, out_dir):
                 for (let iter = 0; iter < safeIterations; iter++) {
                     if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                     progressSetDeterminate('Dijkstra gemini', ticksDone, testsTotal, { stage: 'tests' });
-                    const loaded = await loadFreshModuleMeasured(geminiSpec);
+                    const iterInput = resolveDijkstraInputForIteration(iter);
+                    const loaded = await loadFreshModuleMeasured(geminiSpec, iterInput.inputText);
                     let mod = loaded.mod;
                     geminiRefreshMs.push(loaded.refreshMs);
                     try {
@@ -2872,10 +2894,11 @@ def capstone_run_local_generator(args, out_dir):
                     if (typeof buildLocalDijkstraVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
                         const payloads = [];
                         for (let iter = 0; iter < safeIterations; iter++) {
+                            const iterInput = resolveDijkstraInputForIteration(iter);
                             payloads.push(buildLocalDijkstraVisualization({
-                                inputText,
+                                inputText: iterInput.inputText,
                                 iteration: iter + 1,
-                                seed: null,
+                                seed: iterInput.seed,
                                 solverSolutions: [
                                     { name: 'Dijkstra Baseline', output: baselineOutputsByIteration[iter] || '' },
                                     { name: 'Dijkstra ChatGPT', output: llmOutputsByIteration[iter] || '' },
@@ -2991,6 +3014,32 @@ def capstone_run_local_generator(args, out_dir):
             ]);
             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
 
+            const resolveVf3InputForIteration = (iterIndex) => {
+                const generated = getLocalGeneratedIterationInput('vf3', iterIndex);
+                const generatedFiles = generated && Array.isArray(generated.selectedFiles) ? generated.selectedFiles : null;
+                const generatedPattern = generatedFiles && generatedFiles[0] ? generatedFiles[0] : null;
+                const generatedTarget = generatedFiles && generatedFiles[1] ? generatedFiles[1] : null;
+                const generatedPatternPath = generatedPattern && generatedPattern.path ? String(generatedPattern.path) : '';
+                const generatedTargetPath = generatedTarget && generatedTarget.path ? String(generatedTarget.path) : '';
+
+                let patternTextForIter = patternText;
+                let targetTextForIter = targetText;
+                if (generatedPatternPath && _localInMemoryRepoFiles.has(generatedPatternPath)) {
+                    patternTextForIter = String(_localInMemoryRepoFiles.get(generatedPatternPath) || '');
+                }
+                if (generatedTargetPath && _localInMemoryRepoFiles.has(generatedTargetPath)) {
+                    targetTextForIter = String(_localInMemoryRepoFiles.get(generatedTargetPath) || '');
+                }
+                return {
+                    patternText: String(patternTextForIter || ''),
+                    targetText: String(targetTextForIter || ''),
+                    seed: generated && Object.prototype.hasOwnProperty.call(generated, 'seed')
+                        ? generated.seed
+                        : null
+                };
+            };
+            const firstVf3Input = resolveVf3InputForIteration(0);
+
             const baselineSpecFallback = {
                 id: 'vf3_baseline',
                 scriptPath: 'wasm/vf3_baseline.js',
@@ -3019,10 +3068,10 @@ def capstone_run_local_generator(args, out_dir):
                 ? await getLocalWasmModuleSpec('vf3_chatgpt', chatgptSpecFallback)
                 : chatgptSpecFallback;
 
-            const writeInputs = (mod) => {
+            const writeInputs = (mod, inputForRun = firstVf3Input) => {
                 ensureEmscriptenDir(mod, '/inputs');
-                writeEmscriptenTextFile(mod, patternFsPath, patternText);
-                writeEmscriptenTextFile(mod, targetFsPath, targetText);
+                writeEmscriptenTextFile(mod, patternFsPath, String(inputForRun && inputForRun.patternText ? inputForRun.patternText : ''));
+                writeEmscriptenTextFile(mod, targetFsPath, String(inputForRun && inputForRun.targetText ? inputForRun.targetText : ''));
             };
 
             // IMPORTANT: these compiled WASM programs are invoked via `callMain()`. If the underlying C++
@@ -3038,27 +3087,27 @@ def capstone_run_local_generator(args, out_dir):
                 } catch (_) {}
             };
 
-            const loadFreshModule = async (spec, label, done, total, stage) => {
+            const loadFreshModule = async (spec, label, done, total, stage, inputForRun = firstVf3Input) => {
                 if (label) {
                     const current = Number.isFinite(Number(done)) ? Number(done) : 0;
                     const denom = Number.isFinite(Number(total)) ? Number(total) : 1;
                     progressSetDeterminate(label, current, Math.max(1, denom), { stage });
                 }
                 const mod = await getFreshEmscriptenModule(spec);
-                writeInputs(mod);
+                writeInputs(mod, inputForRun);
                 return mod;
             };
-            const loadFreshModuleMeasured = async (spec, label, done, total, stage) => {
+            const loadFreshModuleMeasured = async (spec, label, done, total, stage, inputForRun = firstVf3Input) => {
                 const t0 = runTimerNowMs();
-                const mod = await loadFreshModule(spec, label, done, total, stage);
+                const mod = await loadFreshModule(spec, label, done, total, stage, inputForRun);
                 await flushEmscriptenWorkerFsOps(mod);
                 const t1 = runTimerNowMs();
                 return { mod, refreshMs: Math.max(0, t1 - t0) };
             };
 
             try {
-                const warmupSolver = async (title, spec, labelFirst, argsFirst, labelAll, argsAll, setupDoneRef) => {
-                    let mod = await loadFreshModule(spec, `Loading ${title} WASM...`, setupDoneRef.value, setupTotal, 'setup');
+                const warmupSolver = async (title, spec, labelFirst, argsFirst, labelAll, argsAll, setupDoneRef, inputForRun) => {
+                    let mod = await loadFreshModule(spec, `Loading ${title} WASM...`, setupDoneRef.value, setupTotal, 'setup', inputForRun || firstVf3Input);
                     try {
                         for (let i = 0; i < safeWarmup; i++) {
                             const steps = [
@@ -3095,7 +3144,8 @@ def capstone_run_local_generator(args, out_dir):
                         ['-r', '0', '-F', patternFsPath, targetFsPath],
                         'VF3 baseline all',
                         ['-r', '0', patternFsPath, targetFsPath],
-                        setupDoneRef
+                        setupDoneRef,
+                        firstVf3Input
                     );
                     await warmupSolver(
                         'VF3 Gemini',
@@ -3104,7 +3154,8 @@ def capstone_run_local_generator(args, out_dir):
                         ['--first-only', patternFsPath, targetFsPath],
                         'VF3 Gemini all',
                         [patternFsPath, targetFsPath],
-                        setupDoneRef
+                        setupDoneRef,
+                        firstVf3Input
                     );
                     await warmupSolver(
                         'VF3 ChatGPT',
@@ -3113,7 +3164,8 @@ def capstone_run_local_generator(args, out_dir):
                         ['--first-only', patternFsPath, targetFsPath],
                         'VF3 ChatGPT all',
                         [patternFsPath, targetFsPath],
-                        setupDoneRef
+                        setupDoneRef,
+                        firstVf3Input
                     );
                     if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                 } else {
@@ -3186,10 +3238,10 @@ def capstone_run_local_generator(args, out_dir):
                             lower.includes('unreachable');
                     };
 
-                    const runStepMeasuredFresh = async (iter, stepLabel, args, times, captureStdout = null, heapArr = null, refreshArr = null) => {
+                    const runStepMeasuredFresh = async (iter, stepLabel, args, times, captureStdout = null, heapArr = null, refreshArr = null, inputForRun = firstVf3Input) => {
                         for (let attempt = 0; attempt < 2; attempt++) {
                             if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                            const loaded = await loadFreshModuleMeasured(spec, `Loading ${title} WASM...`, ticksDone, testsTotal, 'tests');
+                            const loaded = await loadFreshModuleMeasured(spec, `Loading ${title} WASM...`, ticksDone, testsTotal, 'tests', inputForRun);
                             let mod = loaded.mod;
                             if (refreshArr) refreshArr.push(loaded.refreshMs);
                             try {
@@ -3226,12 +3278,13 @@ def capstone_run_local_generator(args, out_dir):
                     };
                     for (let iter = 0; iter < safeIterations; iter++) {
                         if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                        const iterInput = resolveVf3InputForIteration(iter);
 
                         progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
                         const captureFirstThisIter = captureFirst
                             ? ((stdout) => captureFirst(stdout, iter))
                             : null;
-                        const firstRes = await runStepMeasuredFresh(iter, labelFirst, argsFirst, timesFirst, captureFirstThisIter, heapsFirst, refreshFirst);
+                        const firstRes = await runStepMeasuredFresh(iter, labelFirst, argsFirst, timesFirst, captureFirstThisIter, heapsFirst, refreshFirst, iterInput);
                         if (firstRes && firstRes.status === 'aborted') return firstRes;
                         ticksDone++;
                         progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
@@ -3243,7 +3296,7 @@ def capstone_run_local_generator(args, out_dir):
                         const captureAllThisIter = captureAll
                             ? ((stdout) => captureAll(stdout, iter))
                             : null;
-                        const allRes = await runStepMeasuredFresh(iter, labelAll, argsAll, timesAll, captureAllThisIter, heapsAll, refreshAll);
+                        const allRes = await runStepMeasuredFresh(iter, labelAll, argsAll, timesAll, captureAllThisIter, heapsAll, refreshAll, iterInput);
                         if (allRes && allRes.status === 'aborted') return allRes;
                         ticksDone++;
                         progressSetDeterminate(title, ticksDone, testsTotal, { stage: 'tests' });
@@ -3353,7 +3406,8 @@ def capstone_run_local_generator(args, out_dir):
                             'Loading VF3 visualization baseline...',
                             ticksDone,
                             testsTotal,
-                            'tests'
+                            'tests',
+                            firstVf3Input
                         );
                         const visRes = await runEmscriptenMain(visMod, ['-u', '-s', '-r', '0', patternFsPath, targetFsPath], {
                             captureOptions: {
@@ -3417,11 +3471,12 @@ def capstone_run_local_generator(args, out_dir):
                     if (typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function') {
                         const payloads = [];
                         for (let iter = 0; iter < safeIterations; iter++) {
+                            const iterInput = resolveVf3InputForIteration(iter);
                             payloads.push(
                                 buildLocalSubgraphLikeVisualization({
                                     algorithm: 'vf3',
-                                    patternText,
-                                    targetText,
+                                    patternText: iterInput.patternText,
+                                    targetText: iterInput.targetText,
                                     patternFormat: 'vf',
                                     targetFormat: 'vf',
                                     mappingSources: [
@@ -3440,7 +3495,7 @@ def capstone_run_local_generator(args, out_dir):
                                         baseResult
                                     ],
                                     iteration: iter + 1,
-                                    seed: null
+                                    seed: iterInput.seed
                                 })
                             );
                         }
@@ -3555,8 +3610,8 @@ def capstone_run_local_generator(args, out_dir):
             });
 
             const useVertexLabelledLad = baselineFormatFlag === 'vertexlabelledlad';
-            const ladPatternText = useVertexLabelledLad ? dual.lad.patternText : dual.ladUnlabelled.patternText;
-            const ladTargetText = useVertexLabelledLad ? dual.lad.targetText : dual.ladUnlabelled.targetText;
+            const defaultLadPatternText = useVertexLabelledLad ? dual.lad.patternText : dual.ladUnlabelled.patternText;
+            const defaultLadTargetText = useVertexLabelledLad ? dual.lad.targetText : dual.ladUnlabelled.targetText;
 
             const patternName = sanitizeFsFilename(
                 useVertexLabelledLad ? 'pattern_vertexlabelled.lad' : (patternFile.name || 'pattern.lad')
@@ -3566,6 +3621,54 @@ def capstone_run_local_generator(args, out_dir):
             );
             const patternFsPath = `/inputs/${patternName}`;
             const targetFsPath = `/inputs/${targetName}`;
+
+            const resolveGlasgowInputForIteration = (iterIndex) => {
+                const generated = getLocalGeneratedIterationInput('glasgow', iterIndex);
+                const generatedFiles = generated && Array.isArray(generated.selectedFiles) ? generated.selectedFiles : null;
+                const generatedPattern = generatedFiles && generatedFiles[0] ? generatedFiles[0] : null;
+                const generatedTarget = generatedFiles && generatedFiles[1] ? generatedFiles[1] : null;
+                const generatedPatternPath = generatedPattern && generatedPattern.path ? String(generatedPattern.path) : '';
+                const generatedTargetPath = generatedTarget && generatedTarget.path ? String(generatedTarget.path) : '';
+
+                const patternFileForIter = generatedPattern || patternFile;
+                const targetFileForIter = generatedTarget || targetFile;
+                const patternFormatForIter = getLocalGraphFormatFromFile(patternFileForIter);
+                const targetFormatForIter = getLocalGraphFormatFromFile(targetFileForIter);
+
+                let patternTextForIter = patternTextRaw;
+                let targetTextForIter = targetTextRaw;
+                if (generatedPatternPath && _localInMemoryRepoFiles.has(generatedPatternPath)) {
+                    patternTextForIter = String(_localInMemoryRepoFiles.get(generatedPatternPath) || '');
+                }
+                if (generatedTargetPath && _localInMemoryRepoFiles.has(generatedTargetPath)) {
+                    targetTextForIter = String(_localInMemoryRepoFiles.get(generatedTargetPath) || '');
+                }
+
+                try {
+                    const dualForIter = buildLocalDualFormatGraphPair({
+                        patternText: patternTextForIter,
+                        targetText: targetTextForIter,
+                        patternFormat: patternFormatForIter,
+                        targetFormat: targetFormatForIter
+                    });
+                    return {
+                        ladPatternText: useVertexLabelledLad ? dualForIter.lad.patternText : dualForIter.ladUnlabelled.patternText,
+                        ladTargetText: useVertexLabelledLad ? dualForIter.lad.targetText : dualForIter.ladUnlabelled.targetText,
+                        seed: generated && Object.prototype.hasOwnProperty.call(generated, 'seed')
+                            ? generated.seed
+                            : null
+                    };
+                } catch (_) {
+                    return {
+                        ladPatternText: String(defaultLadPatternText || ''),
+                        ladTargetText: String(defaultLadTargetText || ''),
+                        seed: generated && Object.prototype.hasOwnProperty.call(generated, 'seed')
+                            ? generated.seed
+                            : null
+                    };
+                }
+            };
+            const firstGlasgowInput = resolveGlasgowInputForIteration(0);
 
             const baselineSpecFallback = {
                 id: 'glasgow_baseline',
@@ -3595,10 +3698,10 @@ def capstone_run_local_generator(args, out_dir):
                 ? await getLocalWasmModuleSpec('glasgow_gemini', geminiSpecFallback)
                 : geminiSpecFallback;
 
-            const writeInputs = (mod) => {
+            const writeInputs = (mod, inputForRun = firstGlasgowInput) => {
                 ensureEmscriptenDir(mod, '/inputs');
-                writeEmscriptenTextFile(mod, patternFsPath, ladPatternText);
-                writeEmscriptenTextFile(mod, targetFsPath, ladTargetText);
+                writeEmscriptenTextFile(mod, patternFsPath, String(inputForRun && inputForRun.ladPatternText ? inputForRun.ladPatternText : defaultLadPatternText));
+                writeEmscriptenTextFile(mod, targetFsPath, String(inputForRun && inputForRun.ladTargetText ? inputForRun.ladTargetText : defaultLadTargetText));
             };
 
             const unloadModule = (spec) => {
@@ -3606,7 +3709,7 @@ def capstone_run_local_generator(args, out_dir):
                     invalidateEmscriptenModule(spec && spec.id ? spec.id : '');
                 } catch (_) {}
             };
-            const loadFreshModule = async (spec, label, done, total, stage) => {
+            const loadFreshModule = async (spec, label, done, total, stage, inputForRun = firstGlasgowInput) => {
                 if (label) {
                     progressSetDeterminate(
                         label,
@@ -3616,12 +3719,12 @@ def capstone_run_local_generator(args, out_dir):
                     );
                 }
                 const mod = await getFreshEmscriptenModule(spec);
-                writeInputs(mod);
+                writeInputs(mod, inputForRun);
                 return mod;
             };
-            const loadFreshModuleMeasured = async (spec, label, done, total, stage) => {
+            const loadFreshModuleMeasured = async (spec, label, done, total, stage, inputForRun = firstGlasgowInput) => {
                 const t0 = runTimerNowMs();
-                const mod = await loadFreshModule(spec, label, done, total, stage);
+                const mod = await loadFreshModule(spec, label, done, total, stage, inputForRun);
                 await flushEmscriptenWorkerFsOps(mod);
                 const t1 = runTimerNowMs();
                 return { mod, refreshMs: Math.max(0, t1 - t0) };
@@ -3635,8 +3738,8 @@ def capstone_run_local_generator(args, out_dir):
             const gemArgs = [patternFsPath, targetFsPath];
 
             try {
-                const warmupSingle = async (title, spec, argsList, tickIncrementRef) => {
-                    let mod = await loadFreshModule(spec, `Loading ${title} WASM...`, tickIncrementRef.value, setupTotal, 'setup');
+                const warmupSingle = async (title, spec, argsList, tickIncrementRef, inputForRun) => {
+                    let mod = await loadFreshModule(spec, `Loading ${title} WASM...`, tickIncrementRef.value, setupTotal, 'setup', inputForRun || firstGlasgowInput);
                     try {
                         for (let i = 0; i < safeWarmup; i++) {
                             for (const stepArgs of argsList) {
@@ -3668,9 +3771,9 @@ def capstone_run_local_generator(args, out_dir):
 
                 if (safeWarmup > 0) {
                     const setupTicks = { value: 0 };
-                    let warm = await warmupSingle('Glasgow baseline', baselineSpec, [baselineFirstArgs, baselineAllArgs], setupTicks);
+                    let warm = await warmupSingle('Glasgow baseline', baselineSpec, [baselineFirstArgs, baselineAllArgs], setupTicks, firstGlasgowInput);
                     if (warm && warm.status === 'aborted') return warm;
-                    warm = await warmupSingle('Glasgow ChatGPT', chatgptSpec, [chatArgs], setupTicks);
+                    warm = await warmupSingle('Glasgow ChatGPT', chatgptSpec, [chatArgs], setupTicks, firstGlasgowInput);
                     if (warm && warm.status === 'aborted') return warm;
                     // Workflow counts Glasgow ChatGPT as first+all using one execution.
                     for (let i = 0; i < safeWarmup; i++) {
@@ -3678,7 +3781,7 @@ def capstone_run_local_generator(args, out_dir):
                         setupTicks.value = Math.min(setupTotal, setupTicks.value + 1);
                         progressSetDeterminate('Warming up: Glasgow ChatGPT', setupTicks.value, setupTotal, { stage: 'setup' });
                     }
-                    warm = await warmupSingle('Glasgow Gemini', geminiSpec, [gemArgs], setupTicks);
+                    warm = await warmupSingle('Glasgow Gemini', geminiSpec, [gemArgs], setupTicks, firstGlasgowInput);
                     if (warm && warm.status === 'aborted') return warm;
                     for (let i = 0; i < safeWarmup; i++) {
                         if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
@@ -3736,10 +3839,10 @@ def capstone_run_local_generator(args, out_dir):
                         lower.includes('unreachable');
                 };
 
-                const runOneMeasuredFresh = async (spec, title, args, storeTimes, captureStdout, heapArr = null, refreshArr = null, captureOptionsFactory = null) => {
+                const runOneMeasuredFresh = async (spec, title, args, storeTimes, captureStdout, heapArr = null, refreshArr = null, captureOptionsFactory = null, inputForRun = firstGlasgowInput) => {
                     for (let attempt = 0; attempt < 2; attempt++) {
                         if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                        const loaded = await loadFreshModuleMeasured(spec, `Loading ${title} WASM...`, ticksDone, testsTotal, 'tests');
+                        const loaded = await loadFreshModuleMeasured(spec, `Loading ${title} WASM...`, ticksDone, testsTotal, 'tests', inputForRun);
                         let mod = loaded.mod;
                         if (refreshArr) refreshArr.push(loaded.refreshMs);
                         try {
@@ -3779,6 +3882,7 @@ def capstone_run_local_generator(args, out_dir):
 
                 for (let iter = 0; iter < safeIterations; iter++) {
                     if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                    const iterInput = resolveGlasgowInputForIteration(iter);
 
                     progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
                     let latestBaselineFirst = '';
@@ -3798,7 +3902,8 @@ def capstone_run_local_generator(args, out_dir):
                             mappingLinePolicy: iter === 0 ? 'keep-first' : 'drop-all',
                             maxOutputChars: 65536,
                             maxErrorChars: 16384
-                        })
+                        }),
+                        iterInput
                     );
                     if (firstRes && firstRes.status === 'aborted') return firstRes;
                     ticksDone++;
@@ -3821,7 +3926,8 @@ def capstone_run_local_generator(args, out_dir):
                             mappingLinePolicy: 'drop-all',
                             maxOutputChars: 65536,
                             maxErrorChars: 16384
-                        })
+                        }),
+                        iterInput
                     );
                     if (allRes && allRes.status === 'aborted') return allRes;
                     ticksDone++;
@@ -3834,7 +3940,10 @@ def capstone_run_local_generator(args, out_dir):
                             baselineFirstOut: latestBaselineFirst,
                             baselineAllOut: latestBaselineAll,
                             chatOut: '',
-                            gemOut: ''
+                            gemOut: '',
+                            ladPatternText: iterInput.ladPatternText,
+                            ladTargetText: iterInput.ladTargetText,
+                            seed: iterInput.seed
                         });
                         glasgowFail++;
                         continue;
@@ -3859,7 +3968,8 @@ def capstone_run_local_generator(args, out_dir):
                             mappingLinePolicy: iter === 0 ? 'keep-first' : 'drop-all',
                             maxOutputChars: 65536,
                             maxErrorChars: 16384
-                        })
+                        }),
+                        iterInput
                     );
                     if (chatRes && chatRes.status === 'aborted') return chatRes;
                     if (chatFirst.length) {
@@ -3901,7 +4011,8 @@ def capstone_run_local_generator(args, out_dir):
                             mappingLinePolicy: iter === 0 ? 'keep-first' : 'drop-all',
                             maxOutputChars: 65536,
                             maxErrorChars: 16384
-                        })
+                        }),
+                        iterInput
                     );
                     if (gemRes && gemRes.status === 'aborted') return gemRes;
                     if (gemFirst.length) {
@@ -3928,7 +4039,10 @@ def capstone_run_local_generator(args, out_dir):
                         baselineFirstOut: latestBaselineFirst,
                         baselineAllOut: latestBaselineAll,
                         chatOut: latestChat,
-                        gemOut: latestGem
+                        gemOut: latestGem,
+                        ladPatternText: iterInput.ladPatternText,
+                        ladTargetText: iterInput.ladTargetText,
+                        seed: iterInput.seed
                     });
                 }
 
@@ -3936,13 +4050,15 @@ def capstone_run_local_generator(args, out_dir):
                 if (!extractLocalMappingsFromText(baselineVisualizationOut, 1).length && !(runCtx && runCtx.aborted)) {
                     // Match the GitHub Actions visualizer path: run baseline Glasgow once with solution-print flags.
                     let visMod = null;
+                    const visInput = resolveGlasgowInputForIteration(0);
                     try {
                         visMod = await loadFreshModule(
                             baselineSpec,
                             'Loading Glasgow visualization baseline...',
                             ticksDone,
                             testsTotal,
-                            'tests'
+                            'tests',
+                            visInput
                         );
                         const visRes = await runEmscriptenMain(
                             visMod,
@@ -4025,8 +4141,8 @@ def capstone_run_local_generator(args, out_dir):
                             payloads.push(
                                 buildLocalSubgraphLikeVisualization({
                                     algorithm: 'glasgow',
-                                    patternText: ladPatternText,
-                                    targetText: ladTargetText,
+                                    patternText: src.ladPatternText || firstGlasgowInput.ladPatternText,
+                                    targetText: src.ladTargetText || firstGlasgowInput.ladTargetText,
                                     patternFormat: 'lad',
                                     targetFormat: 'lad',
                                     mappingSources: [
@@ -4041,7 +4157,7 @@ def capstone_run_local_generator(args, out_dir):
                                         gemOut
                                     ],
                                     iteration: i + 1,
-                                    seed: null
+                                    seed: src.seed
                                 })
                             );
                         }
@@ -4129,8 +4245,8 @@ def capstone_run_local_generator(args, out_dir):
                         baselineAllOut,
                         chatOut,
                         gemOut,
-                        ladPatternText,
-                        ladTargetText
+                        ladPatternText: firstGlasgowInput.ladPatternText,
+                        ladTargetText: firstGlasgowInput.ladTargetText
                     }
                 };
             } finally {
@@ -4578,11 +4694,48 @@ def capstone_run_local_generator(args, out_dir):
             return await _legacyGetRepoFileText(path);
         };
 
+        let _localGeneratedIterationInputsByAlgo = Object.create(null);
+
+        function clearLocalGeneratedIterationInputs() {
+            _localGeneratedIterationInputsByAlgo = Object.create(null);
+        }
+
+        function setLocalGeneratedIterationInputs(algoKey, entries) {
+            const key = String(algoKey || '').trim().toLowerCase();
+            if (!key) return;
+            const list = Array.isArray(entries) ? entries : [];
+            _localGeneratedIterationInputsByAlgo[key] = list.map((entry) => {
+                const selected = Array.isArray(entry && entry.selectedFiles) ? entry.selectedFiles : [];
+                return {
+                    seed: entry && Object.prototype.hasOwnProperty.call(entry, 'seed') ? entry.seed : null,
+                    metadata: entry && entry.metadata && typeof entry.metadata === 'object' ? entry.metadata : {},
+                    selectedFiles: selected
+                        .map((f) => ({
+                            path: String(f && f.path ? f.path : ''),
+                            name: String(f && f.name ? f.name : '')
+                        }))
+                        .filter((f) => f.path)
+                };
+            });
+        }
+
+        function getLocalGeneratedIterationInput(algoKey, iterIndex) {
+            const key = String(algoKey || '').trim().toLowerCase();
+            if (!key) return null;
+            const list = _localGeneratedIterationInputsByAlgo[key];
+            if (!Array.isArray(list) || !list.length) return null;
+            const idxRaw = Number(iterIndex);
+            const idx = Number.isInteger(idxRaw) ? idxRaw : 0;
+            if (idx >= 0 && idx < list.length) return list[idx];
+            return list[list.length - 1] || null;
+        }
+
         const _legacyRunAlgorithmLocally = runAlgorithmLocally;
         runAlgorithmLocally = async function(runCtx, algoId, iterations, warmup) {
             const inputMode = (typeof getInputMode === 'function') ? getInputMode() : 'premade';
             const algoKey = String(algoId || '').trim().toLowerCase();
             if (inputMode !== 'generate') {
+                clearLocalGeneratedIterationInputs();
                 return await _legacyRunAlgorithmLocally(runCtx, algoId, iterations, warmup);
             }
 
@@ -4596,7 +4749,9 @@ def capstone_run_local_generator(args, out_dir):
 
             const prevSelectedFiles = Array.isArray(config.selectedFiles) ? config.selectedFiles.slice() : [];
             _localInMemoryRepoFiles.clear();
+            clearLocalGeneratedIterationInputs();
             try {
+                const safeIterations = Math.max(1, Math.floor(Number(iterations) || 0));
                 const session = createLocalExactGeneratorSession({
                     algorithm: algoKey,
                     n: config.generator && config.generator.n,
@@ -4604,21 +4759,27 @@ def capstone_run_local_generator(args, out_dir):
                     density: config.generator && config.generator.density,
                     seed: config.generator && config.generator.seed
                 });
-                const generated = await session.generateForRun(`${algoKey}_iter`, '1');
-                const files = Array.isArray(generated && generated.files) ? generated.files : [];
-                if (!files.length) {
-                    throw new Error('Local generator did not produce any files.');
-                }
-                for (const f of files) {
-                    const p = String(f && f.path ? f.path : '').trim();
-                    if (p) _localInMemoryRepoFiles.set(p, String(f && f.text ? f.text : ''));
+
+                const generatedRuns = [];
+                for (let iter = 1; iter <= safeIterations; iter++) {
+                    if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                    const generated = await session.generateForRun(`${algoKey}_iter`, String(iter));
+                    const files = Array.isArray(generated && generated.files) ? generated.files : [];
+                    if (!files.length) {
+                        throw new Error(`Local generator did not produce any files for iteration ${iter}.`);
+                    }
+                    generatedRuns.push(generated);
+                    for (const f of files) {
+                        const p = String(f && f.path ? f.path : '').trim();
+                        if (p) _localInMemoryRepoFiles.set(p, String(f && f.text ? f.text : ''));
+                    }
                 }
 
-                const pickByName = (needle) => files.find(f => String(f && f.name ? f.name : '').toLowerCase().includes(String(needle || '').toLowerCase()));
-                const pickByExt = (ext) => files.find(f => String(f && (f.name || f.path) ? (f.name || f.path) : '').toLowerCase().endsWith(String(ext || '').toLowerCase()));
-                const pickPatternTargetPair = (prefixNeedle, preferredExts) => {
+                const pickByName = (files, needle) => (Array.isArray(files) ? files : []).find(f => String(f && f.name ? f.name : '').toLowerCase().includes(String(needle || '').toLowerCase()));
+                const pickByExt = (files, ext) => (Array.isArray(files) ? files : []).find(f => String(f && (f.name || f.path) ? (f.name || f.path) : '').toLowerCase().endsWith(String(ext || '').toLowerCase()));
+                const pickPatternTargetPair = (files, prefixNeedle, preferredExts) => {
                     const exts = Array.isArray(preferredExts) ? preferredExts.map(e => String(e || '').toLowerCase()) : [];
-                    const candidates = files.filter(Boolean);
+                    const candidates = (Array.isArray(files) ? files : []).filter(Boolean);
                     const pickRole = (role) => {
                         const roleLower = String(role || '').toLowerCase();
                         const byPrefixAndRole = candidates.find(f => {
@@ -4643,34 +4804,76 @@ def capstone_run_local_generator(args, out_dir):
                         target: pickRole('target')
                     };
                 };
-                if (algoKey === 'dijkstra') {
-                    const input = files[0];
-                    config.selectedFiles = [{ path: String(input.path), name: String(input.name || 'dijkstra_generated.csv') }];
-                } else {
+                const normalizeSelected = (entry) => ({
+                    path: String(entry && entry.path ? entry.path : ''),
+                    name: String(entry && entry.name ? entry.name : '')
+                });
+                const buildIterationSelection = (files, selectionAlgo) => {
+                    const all = Array.isArray(files) ? files : [];
+                    if (!all.length) return null;
+                    if (selectionAlgo === 'dijkstra') {
+                        const input = all[0];
+                        return input ? [normalizeSelected(input)] : null;
+                    }
                     let pair = null;
-                    if (algoKey === 'vf3') {
-                        pair = pickPatternTargetPair('vf3', ['.vf', '.grf']);
-                    } else if (algoKey === 'glasgow') {
-                        pair = pickPatternTargetPair('glasgow', ['.lad']);
-                    } else if (algoKey === 'subgraph') {
-                        pair = pickPatternTargetPair('vf3', ['.vf', '.grf']);
-                        if (!pair || !pair.pattern || !pair.target) {
-                            pair = pickPatternTargetPair('glasgow', ['.lad']);
-                        }
+                    if (selectionAlgo === 'vf3') {
+                        pair = pickPatternTargetPair(all, 'vf3', ['.vf', '.grf']);
+                    } else if (selectionAlgo === 'glasgow') {
+                        pair = pickPatternTargetPair(all, 'glasgow', ['.lad']);
                     }
                     if (!pair || !pair.pattern || !pair.target) {
                         pair = {
-                            pattern: pickByName('pattern') || pickByExt('.lad') || pickByExt('.vf') || pickByExt('.grf') || files[0],
-                            target: pickByName('target') || files[files.length - 1]
+                            pattern: pickByName(all, 'pattern') || pickByExt(all, '.lad') || pickByExt(all, '.vf') || pickByExt(all, '.grf') || all[0],
+                            target: pickByName(all, 'target') || all[all.length - 1]
                         };
                     }
-                    const pattern = pair.pattern || files[0];
-                    const target = pair.target || files[files.length - 1];
-                    config.selectedFiles = [
-                        { path: String(pattern.path), name: String(pattern.name || 'pattern') },
-                        { path: String(target.path), name: String(target.name || 'target') }
-                    ];
+                    if (!pair.pattern || !pair.target) return null;
+                    return [normalizeSelected(pair.pattern), normalizeSelected(pair.target)];
+                };
+
+                const dijkstraEntries = [];
+                const vf3Entries = [];
+                const glasgowEntries = [];
+                const generatedSeeds = [];
+                for (const generated of generatedRuns) {
+                    const files = Array.isArray(generated && generated.files) ? generated.files : [];
+                    const metadata = generated && generated.metadata && typeof generated.metadata === 'object' ? generated.metadata : {};
+                    const seed = generated && Object.prototype.hasOwnProperty.call(generated, 'seed') ? generated.seed : null;
+                    generatedSeeds.push(seed);
+                    const dijkstraSelected = buildIterationSelection(files, 'dijkstra');
+                    if (dijkstraSelected) dijkstraEntries.push({ seed, metadata, selectedFiles: dijkstraSelected });
+                    const vf3Selected = buildIterationSelection(files, 'vf3');
+                    if (vf3Selected) vf3Entries.push({ seed, metadata, selectedFiles: vf3Selected });
+                    const glasgowSelected = buildIterationSelection(files, 'glasgow') || vf3Selected;
+                    if (glasgowSelected) glasgowEntries.push({ seed, metadata, selectedFiles: glasgowSelected });
                 }
+
+                if (algoKey === 'dijkstra') {
+                    setLocalGeneratedIterationInputs('dijkstra', dijkstraEntries);
+                } else if (algoKey === 'vf3') {
+                    setLocalGeneratedIterationInputs('vf3', vf3Entries);
+                } else if (algoKey === 'glasgow') {
+                    setLocalGeneratedIterationInputs('glasgow', glasgowEntries);
+                } else if (algoKey === 'subgraph') {
+                    setLocalGeneratedIterationInputs('vf3', vf3Entries);
+                    setLocalGeneratedIterationInputs('glasgow', glasgowEntries.length ? glasgowEntries : vf3Entries);
+                }
+
+                const primaryEntries = (() => {
+                    if (algoKey === 'dijkstra') return dijkstraEntries;
+                    if (algoKey === 'vf3') return vf3Entries;
+                    if (algoKey === 'glasgow') return glasgowEntries;
+                    if (algoKey === 'subgraph') return vf3Entries.length ? vf3Entries : glasgowEntries;
+                    return [];
+                })();
+                const firstSelectedFiles = primaryEntries.length ? primaryEntries[0].selectedFiles : [];
+                if (!firstSelectedFiles.length) {
+                    throw new Error('Local generator did not produce usable iteration inputs.');
+                }
+                config.selectedFiles = firstSelectedFiles.map((f) => ({
+                    path: String(f && f.path ? f.path : ''),
+                    name: String(f && f.name ? f.name : '')
+                }));
 
                 const localResult = await _legacyRunAlgorithmLocally(runCtx, algoKey, iterations, warmup);
                 if (localResult && localResult.status === 'success' && localResult.result && typeof localResult.result === 'object') {
@@ -4681,10 +4884,31 @@ def capstone_run_local_generator(args, out_dir):
                         density: Number.isFinite(Number(config.generator && config.generator.density)) ? Number(config.generator.density) : config.generator.density,
                         seed: session.generatedSeed
                     });
+                    if (generatedSeeds.length) {
+                        result.inputs.iteration_seeds = generatedSeeds.slice();
+                    }
                     if (algoKey !== 'dijkstra') {
                         result.inputs.k = Number.isFinite(Number(config.generator && config.generator.k)) ? Number(config.generator.k) : config.generator.k;
                     }
-                    const meta = generated && generated.metadata && typeof generated.metadata === 'object' ? generated.metadata : {};
+                    const iterationEntries = primaryEntries.length
+                        ? primaryEntries
+                        : generatedSeeds.map((seed) => ({ seed, metadata: {}, selectedFiles: firstSelectedFiles }));
+                    const entryAt = (idx) => {
+                        if (!iterationEntries.length) return null;
+                        if (idx >= 0 && idx < iterationEntries.length) return iterationEntries[idx];
+                        return iterationEntries[iterationEntries.length - 1] || null;
+                    };
+                    const seedAt = (idx) => {
+                        const entry = entryAt(idx);
+                        if (entry && Object.prototype.hasOwnProperty.call(entry, 'seed')) return entry.seed;
+                        return session.visSeed ?? session.generatedSeed;
+                    };
+                    const meta = (() => {
+                        const firstEntry = entryAt(0);
+                        return firstEntry && firstEntry.metadata && typeof firstEntry.metadata === 'object'
+                            ? firstEntry.metadata
+                            : {};
+                    })();
                     const fallbackVisCount = Math.max(1, Math.floor(Number(result && result.iterations) || 1));
                     const buildRepeatedVisualization = (factory) => {
                         if (typeof factory !== 'function') return null;
@@ -4701,13 +4925,17 @@ def capstone_run_local_generator(args, out_dir):
                         }
                         const first = result.visualization.visualization_iterations[0];
                         const noSolutions = Boolean(first && typeof first === 'object' && first.no_solutions);
-                        const hasPatternNodes = Array.isArray(meta.pattern_nodes) && meta.pattern_nodes.length > 0;
+                        const hasPatternNodes = iterationEntries.some((entry) => {
+                            const m = entry && entry.metadata && typeof entry.metadata === 'object' ? entry.metadata : {};
+                            return Array.isArray(m.pattern_nodes) && m.pattern_nodes.length > 0;
+                        });
                         return noSolutions && hasPatternNodes;
                     })();
                     if ((algoKey === 'vf3' || algoKey === 'glasgow' || algoKey === 'subgraph') && result.visualization && Array.isArray(result.visualization.visualization_iterations)) {
-                        result.visualization.seed = session.visSeed ?? session.generatedSeed;
-                        for (const v of result.visualization.visualization_iterations) {
-                            if (v && typeof v === 'object') v.seed = session.visSeed ?? session.generatedSeed;
+                        result.visualization.seed = seedAt(0);
+                        for (let i = 0; i < result.visualization.visualization_iterations.length; i++) {
+                            const v = result.visualization.visualization_iterations[i];
+                            if (v && typeof v === 'object') v.seed = seedAt(i);
                         }
                     }
                     if (
@@ -4729,7 +4957,7 @@ def capstone_run_local_generator(args, out_dir):
                                 targetFormat: 'vf',
                                 patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
                                 iteration: iterIndex + 1,
-                                seed: session.visSeed ?? session.generatedSeed
+                                seed: seedAt(iterIndex)
                             }));
                         } catch (_) {}
                     } else if (
@@ -4752,7 +4980,7 @@ def capstone_run_local_generator(args, out_dir):
                                 targetFormat: getLocalGraphFormatFromFile(targetFile),
                                 patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
                                 iteration: iterIndex + 1,
-                                seed: session.visSeed ?? session.generatedSeed
+                                seed: seedAt(iterIndex)
                             }));
                         } catch (_) {}
                     } else if (algoKey === 'glasgow' && typeof buildLocalSubgraphLikeVisualization === 'function' && typeof buildLocalVisualizationIterations === 'function' && shouldRebuildGlasgowVisualization) {
@@ -4769,18 +4997,20 @@ def capstone_run_local_generator(args, out_dir):
                                 targetFormat: getLocalGraphFormatFromFile(targetFile),
                                 patternNodes: Array.isArray(meta.pattern_nodes) ? meta.pattern_nodes : null,
                                 iteration: iterIndex + 1,
-                                seed: session.visSeed ?? session.generatedSeed
+                                seed: seedAt(iterIndex)
                             }));
                         } catch (_) {}
                     } else if (algoKey === 'dijkstra' && result.visualization && Array.isArray(result.visualization.visualization_iterations)) {
-                        result.visualization.seed = session.visSeed ?? session.generatedSeed;
-                        for (const v of result.visualization.visualization_iterations) {
-                            if (v && typeof v === 'object') v.seed = session.visSeed ?? session.generatedSeed;
+                        result.visualization.seed = seedAt(0);
+                        for (let i = 0; i < result.visualization.visualization_iterations.length; i++) {
+                            const v = result.visualization.visualization_iterations[i];
+                            if (v && typeof v === 'object') v.seed = seedAt(i);
                         }
                     }
                 }
                 return localResult;
             } finally {
+                clearLocalGeneratedIterationInputs();
                 _localInMemoryRepoFiles.clear();
                 config.selectedFiles = prevSelectedFiles;
             }
