@@ -556,10 +556,11 @@ body {
 
 .export-row {
     display: flex;
+    width: 100%;
     align-items: center;
     justify-content: flex-end;
     gap: 0;
-    margin-top: 12px;
+    margin-top: 16px;
     margin-bottom: 12px;
 }
 
