@@ -374,11 +374,19 @@ body {
     margin-bottom: 8px;
 }
 
+.solution-nav-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    margin: 0 auto;
+}
+
 .solution-controls {
     display: flex;
     align-items: center;
     gap: 10px;
-    margin: 0 auto;
+    margin: 0;
 }
 
 .iteration-controls {
@@ -406,6 +414,11 @@ body {
     font-size: 12px;
     font-weight: 600;
     margin-left: 12px;
+}
+
+.solution-cap-note {
+    font-size: 11px;
+    color: #586069;
 }
 .chart {
     position: relative;

@@ -1,3 +1,6 @@
+        let visSolutionCapReached = false;
+        const VISUALIZER_SOLUTION_CAP = 1000;
+
         function clearVisualization() {
             const panel = document.getElementById('graph-panel');
             const note = document.getElementById('graph-note');
@@ -8,6 +11,7 @@
             const graphCenterBtn = document.getElementById('graph-center-btn');
             const patternCenterBtn = document.getElementById('pattern-center-btn');
             const solutionControls = document.getElementById('solution-controls');
+            const solutionCapNote = document.getElementById('solution-cap-note');
             const solutionWarning = document.getElementById('solution-warning');
             const iterationControls = document.getElementById('iteration-controls');
             const iterationLabel = document.getElementById('iteration-label');
@@ -24,6 +28,7 @@
             graphHoverEdgeId = null;
             patternHoverEdgeId = null;
             visSolutions = [];
+            visSolutionCapReached = false;
             currentSolutionIndex = 0;
             visIterations = [];
             currentIterationIndex = 0;
@@ -34,6 +39,7 @@
             if (graphCenterBtn) graphCenterBtn.disabled = true;
             if (patternCenterBtn) patternCenterBtn.disabled = true;
             if (solutionControls) solutionControls.hidden = true;
+            if (solutionCapNote) solutionCapNote.hidden = true;
             if (solutionWarning) solutionWarning.hidden = true;
             if (iterationControls) iterationControls.hidden = true;
             if (iterationLabel) iterationLabel.textContent = 'Iteration 1';
@@ -96,13 +102,16 @@
             const prevBtn = document.getElementById('solution-prev-btn');
             const nextBtn = document.getElementById('solution-next-btn');
             const controls = document.getElementById('solution-controls');
+            const capNote = document.getElementById('solution-cap-note');
             const total = visSolutions.length;
             if (!controls) return;
             if (!total) {
                 controls.hidden = true;
+                if (capNote) capNote.hidden = true;
                 return;
             }
             controls.hidden = false;
+            if (capNote) capNote.hidden = !visSolutionCapReached;
             if (label) {
                 const current = visSolutions[currentSolutionIndex] || null;
                 const name = current && typeof current.name === 'string' ? current.name.trim() : '';
@@ -327,6 +336,7 @@
                     highlight_edges: vis.highlight_edges || []
                 }];
             }
+            visSolutionCapReached = Boolean((vis && vis.solution_cap_reached) || visSolutions.length >= VISUALIZER_SOLUTION_CAP);
             currentSolutionIndex = 0;
             if (solutionWarning) {
                 solutionWarning.hidden = !vis.no_solutions;

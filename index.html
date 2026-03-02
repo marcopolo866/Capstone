@@ -188,10 +188,13 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                             <span class="solution-label" id="iteration-label">Iteration 1</span>
                             <button class="btn btn-secondary btn-solution-nav" id="iteration-next-btn" onclick="showNextIteration()" type="button">▶</button>
                         </div>
-                        <div class="solution-controls" id="solution-controls">
-                            <button class="btn btn-secondary btn-solution-nav" id="solution-prev-btn" onclick="showPreviousSolution()" type="button">◀</button>
-                            <span class="solution-label" id="solution-label">Solution 0</span>
-                            <button class="btn btn-secondary btn-solution-nav" id="solution-next-btn" onclick="showNextSolution()" type="button">▶</button>
+                        <div class="solution-nav-block">
+                            <div class="solution-controls" id="solution-controls">
+                                <button class="btn btn-secondary btn-solution-nav" id="solution-prev-btn" onclick="showPreviousSolution()" type="button">◀</button>
+                                <span class="solution-label" id="solution-label">Solution 0</span>
+                                <button class="btn btn-secondary btn-solution-nav" id="solution-next-btn" onclick="showNextSolution()" type="button">▶</button>
+                            </div>
+                            <span class="solution-cap-note" id="solution-cap-note" hidden><em>Visualizer Caps at 1,000 Solutions</em></span>
                         </div>
                         <span class="solution-warning" id="solution-warning" hidden>No solutions found</span>
                     </div>
