@@ -5,8 +5,17 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - wasm/**
+    paths:
+      - '.github/workflows/build-wasm.yml'
+      - 'baselines/**'
+      - 'wasm/allocator_telemetry.cpp'
+      - 'wasm/vf3_baseline_main.cpp'
+      - 'src/\[CHATGPT\] Shortest Path.cpp'
+      - 'src/\[GEMINI\] Shortest Path.cpp'
+      - 'src/\[CHATGPT\] Subgraph Isomorphism.cpp'
+      - 'src/\[GEMINI\] Subgraph Isomorphism.cpp'
+      - 'src/\[CHATGPT\] Glasgow.cpp'
+      - 'src/\[GEMINI\] Glasgow.cpp'
 
 jobs:
   build-wasm:
