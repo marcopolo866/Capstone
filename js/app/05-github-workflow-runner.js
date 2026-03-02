@@ -72,7 +72,7 @@
                 if (inputMode !== 'generate') {
                     await normalizeGraphInputOrder(config.selectedAlgorithm);
                 }
-            } catch (_) {}
+            } catch (err) { console.error('[capstone] normalizeGraphInputOrder failed (file order may not be corrected):', err); }
             updateRunInfo();
 
             const inputLines = inputMode === 'generate'
@@ -708,7 +708,7 @@
                 if (!progressUpdated) {
                     const stage = (progressState && progressState.stage === 'tests') ? 'tests' : 'setup';
                     if (stage === 'setup') {
-                        const setupMaxAttempts = 24; // ~2 minutes at 5s intervals
+                        const setupMaxAttempts = 18; // ~2 minutes: first 8 polls at 5s (40s), then 10 polls at 8s (80s)
                         const phase = progressReason === 'forbidden'
                             ? 'Setting up Testing Environment (enable Checks: Read)'
                             : 'Setting up Testing Environment';
@@ -799,7 +799,7 @@
                     throw new Error(`Timed out after ${Math.round(elapsedWaitMs / 1000)}s waiting for workflow result${runSuffix}.${lastErrorText}`);
                 }
 
-                const backoffWaitMs = attempt > 96 ? 12000 : (attempt > 24 ? 8000 : waitMs);
+                const backoffWaitMs = attempt > 48 ? 12000 : (attempt > 8 ? 8000 : waitMs);
                 await delay(backoffWaitMs, runCtx && runCtx.abortController ? runCtx.abortController.signal : null);
             }
         }

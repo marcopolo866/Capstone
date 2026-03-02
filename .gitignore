@@ -29,5 +29,9 @@ __pycache__/
 .idea/
 *.DS_Store
 
+# Claude Code
+.claude/
+CLAUDE.md
+
 # Log files
 *.log

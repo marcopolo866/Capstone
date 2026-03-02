@@ -78,23 +78,23 @@ need_cmd cmake
 run_step "Updating submodules" git submodule update --init --recursive
 
 run_step "Building Dijkstra baseline" \
-  g++ -std=c++17 -O3 -I "baselines/nyaan-library" "baselines/dijkstra_main.cpp" -o "baselines/dijkstra"
+  g++ -std=c++17 -O3 -Wall -Wextra -I "baselines/nyaan-library" "baselines/dijkstra_main.cpp" -o "baselines/dijkstra"
 run_step "Building Dijkstra ChatGPT" \
-  g++ -std=c++17 -O3 "src/[CHATGPT] Shortest Path.cpp" -o "src/dijkstra_llm"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[CHATGPT] Shortest Path.cpp" -o "src/dijkstra_llm"
 run_step "Building Dijkstra Gemini" \
-  g++ -std=c++17 -O3 "src/[GEMINI] Shortest Path.cpp" -o "src/dijkstra_gemini"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[GEMINI] Shortest Path.cpp" -o "src/dijkstra_gemini"
 
 run_step "Building VF3 baseline (vf3lib)" \
   make -C baselines/vf3lib vf3 CFLAGS="-std=c++11 -O3 -DNDEBUG -Wno-deprecated"
 run_step "Building VF3 Gemini" \
-  g++ -std=c++17 -O3 "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3"
 run_step "Building VF3 ChatGPT" \
-  g++ -std=c++17 -O3 "src/[CHATGPT] Subgraph Isomorphism.cpp" -o "src/chatvf3"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[CHATGPT] Subgraph Isomorphism.cpp" -o "src/chatvf3"
 
 run_step "Building Glasgow ChatGPT" \
-  g++ -std=c++17 -O3 "src/[CHATGPT] Glasgow.cpp" -o "src/glasgow_chatgpt"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[CHATGPT] Glasgow.cpp" -o "src/glasgow_chatgpt"
 run_step "Building Glasgow Gemini" \
-  g++ -std=c++17 -O3 "src/[GEMINI] Glasgow.cpp" -o "src/glasgow_gemini"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[GEMINI] Glasgow.cpp" -o "src/glasgow_gemini"
 
 cmake_args=(
   -S "baselines/glasgow-subgraph-solver"

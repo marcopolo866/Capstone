@@ -553,3 +553,41 @@ body {
     color: #0366d6;
     margin-top: 10px;
 }
+
+.export-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #e1e4e8;
+}
+
+.error-banner {
+    background: #ffeef0;
+    color: #b31d28;
+    border: 1px solid #f97583;
+    padding: 10px 14px;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 13px;
+}
+
+.error-banner span {
+    flex: 1;
+    word-break: break-word;
+}
+
+.error-banner button {
+    background: none;
+    border: none;
+    color: #b31d28;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    padding: 0 2px;
+    flex-shrink: 0;
+}

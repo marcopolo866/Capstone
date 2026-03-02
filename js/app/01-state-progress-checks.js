@@ -23,10 +23,13 @@
             intervalId: null
         };
         
+        // Central algorithm registry. All per-algorithm metadata lives here so that
+        // adding or changing an algorithm only requires one edit in this object.
         const algorithmConfigs = {
             dijkstra: {
                 name: "Dijkstra's Algorithm",
                 requiredFiles: 1,
+                isGraphPair: false,   // single-file algorithm (graph + path query)
                 fileTypes: ['.txt', '.csv', '.grf'],
                 instructions: [
                     'Plain text format: first line is the vertex count, second line is "start,target", remaining lines are "u,v,weight" (commas or spaces).',
@@ -37,18 +40,21 @@
             glasgow: {
                 name: "Glasgow Subgraph Solver",
                 requiredFiles: 2,
+                isGraphPair: true,    // requires a pattern + target graph pair
                 fileTypes: ['.grf'],
                 fileLabels: ['Pattern File', 'Target File']
             },
             vf3: {
                 name: "VF3 Algorithm",
                 requiredFiles: 2,
+                isGraphPair: true,    // requires a subgraph + graph pair
                 fileTypes: ['.grf'],
                 fileLabels: ['Subgraph File', 'Graph File']
             },
             subgraph: {
                 name: "Subgraph Isomorphism (Combined)",
                 requiredFiles: 2,
+                isGraphPair: true,    // requires a pattern + target graph pair
                 fileTypes: ['.vf', '.lad', '.grf'],
                 fileLabels: ['Pattern File', 'Target File'],
                 instructions: [
@@ -71,11 +77,15 @@
             phase: ''
         };
 
+        // Returns the number of program executions per benchmark iteration.
+        // Used to compute progress bar steps and setup totals.
+        // NOTE: intentionally different from getEstimateTestsPerIteration() in 03-generator-estimation.js,
+        // which counts timing data points (first+all per variant) for ETA computation.
         function getTestsPerIteration(algoId) {
-            if (algoId === 'dijkstra') return 2;
-            if (algoId === 'glasgow') return 3;
-            if (algoId === 'vf3') return 3;
-            if (algoId === 'subgraph') return 6;
+            if (algoId === 'dijkstra') return 2; // baseline + chatgpt
+            if (algoId === 'glasgow') return 3;  // baseline + chatgpt + gemini
+            if (algoId === 'vf3') return 3;      // baseline + chatgpt + gemini
+            if (algoId === 'subgraph') return 6; // vf3 (3 variants) + glasgow (3 variants)
             return 0;
         }
 

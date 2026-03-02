@@ -1,5 +1,9 @@
         let visSolutionCapReached = false;
         const VISUALIZER_SOLUTION_CAP = 1000;
+        // Tracks the graph structure that graphInstance was built for.
+        // If the next iteration has an identical structure we skip the expensive
+        // destroy-and-rebuild and only swap solution highlights instead.
+        let lastRenderedVisKey = null;
 
         function clearVisualization() {
             const panel = document.getElementById('graph-panel');
@@ -29,6 +33,7 @@
             patternHoverEdgeId = null;
             visSolutions = [];
             visSolutionCapReached = false;
+            lastRenderedVisKey = null;
             currentSolutionIndex = 0;
             visIterations = [];
             currentIterationIndex = 0;
@@ -222,6 +227,35 @@
                 clearVisualization();
                 return;
             }
+
+            // Build a lightweight key representing the graph structure.
+            // If it matches the last rendered key, we skip the expensive destroy-and-rebuild
+            // and only update solution highlights in place.
+            const visKey = `n${vis.nodes.length}:e${vis.edges.length}:pc${vis.pattern_node_count || 0}:pe${Array.isArray(vis.pattern_edges) ? vis.pattern_edges.length : 0}`;
+            const canReuseInstance = graphInstance && lastRenderedVisKey !== null && visKey === lastRenderedVisKey;
+
+            if (canReuseInstance) {
+                // Fast path: same graph structure — just swap solution highlights
+                graphInstance.elements().removeClass('highlight-node highlight-edge');
+                visSolutions = Array.isArray(vis.solutions) ? vis.solutions : [];
+                if (!visSolutions.length && (Array.isArray(vis.highlight_nodes) || Array.isArray(vis.highlight_edges))) {
+                    visSolutions = [{
+                        mapping: Array.isArray(vis.pattern_nodes) ? vis.pattern_nodes : [],
+                        highlight_nodes: vis.highlight_nodes || [],
+                        highlight_edges: vis.highlight_edges || []
+                    }];
+                }
+                visSolutionCapReached = Boolean((vis && vis.solution_cap_reached) || visSolutions.length >= VISUALIZER_SOLUTION_CAP);
+                currentSolutionIndex = 0;
+                if (visSolutions.length) {
+                    applySolution(0);
+                }
+                updateIterationControls();
+                updateSolutionControls();
+                return;
+            }
+
+            // Slow path: graph structure changed — full destroy and rebuild
             if (graphInstance) {
                 graphInstance.destroy();
                 graphInstance = null;
@@ -230,6 +264,7 @@
                 patternInstance.destroy();
                 patternInstance = null;
             }
+            lastRenderedVisKey = null;
             canvas.innerHTML = '';
             if (patternCanvas) patternCanvas.innerHTML = '';
             panel.hidden = false;
@@ -449,6 +484,7 @@
                     graphInstance.fit();
                 }
             });
+            lastRenderedVisKey = visKey;
         }
         
         function buildRequestHeaders(options = {}) {

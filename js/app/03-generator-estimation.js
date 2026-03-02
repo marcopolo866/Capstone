@@ -1,7 +1,12 @@
+        // Returns the number of timing data points per benchmark iteration.
+        // Used to scale ETA estimates: matches the number of values that
+        // extractPerIterationTotalMs() sums from result.timings_ms (first + all per variant).
+        // NOTE: intentionally different from getTestsPerIteration() in 01-state-progress-checks.js,
+        // which counts program executions (not timing data points) for progress bar steps.
         function getEstimateTestsPerIteration(algoId) {
             const algo = String(algoId || '');
-            if (algo === 'dijkstra') return 2;
-            if (algo === 'glasgow' || algo === 'vf3' || algo === 'subgraph') return 6;
+            if (algo === 'dijkstra') return 2;  // baseline + llm (one timing each, no first/all split)
+            if (algo === 'glasgow' || algo === 'vf3' || algo === 'subgraph') return 6; // 3 variants × (first + all)
             return 1;
         }
 

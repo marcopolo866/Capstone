@@ -7,8 +7,6 @@
 
         function clearCharts() {
             const charts = document.getElementById('charts');
-            const runtime = document.getElementById('runtime-chart');
-            const memory = document.getElementById('memory-chart');
             if (runtimeChartInstance) {
                 runtimeChartInstance.destroy();
                 runtimeChartInstance = null;
@@ -17,9 +15,12 @@
                 memoryChartInstance.destroy();
                 memoryChartInstance = null;
             }
-            if (runtime) runtime.height = runtime.height;
-            if (memory) memory.height = memory.height;
-            if (charts) charts.hidden = true;
+            lastResult = null;
+            if (charts) {
+                const exportRow = charts.querySelector('.export-row');
+                if (exportRow) exportRow.remove();
+                charts.hidden = true;
+            }
             clearVisualization();
         }
 
@@ -121,6 +122,7 @@
 
         let runtimeChartInstance = null;
         let memoryChartInstance = null;
+        let lastResult = null; // stored for export
         let graphInstance = null;
         let patternInstance = null;
         let graphHoverEdgeId = null;
@@ -310,6 +312,80 @@
             });
         }
 
+        function triggerDownload(filename, content, mimeType) {
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function renderExportButtons(result) {
+            const charts = document.getElementById('charts');
+            if (!charts || !result) return;
+
+            // Remove any existing export row from a prior run
+            const existing = charts.querySelector('.export-row');
+            if (existing) existing.remove();
+
+            const algo = result.algorithm || 'unknown';
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const baseName = `${algo}-results-${timestamp}`;
+
+            const row = document.createElement('div');
+            row.className = 'export-row';
+
+            const jsonBtn = document.createElement('button');
+            jsonBtn.className = 'btn btn-secondary';
+            jsonBtn.textContent = 'Download JSON';
+            jsonBtn.type = 'button';
+            jsonBtn.addEventListener('click', () => {
+                const payload = {
+                    algorithm: result.algorithm || null,
+                    timings_ms: result.timings_ms || {},
+                    timings_ms_stdev: result.timings_ms_stdev || {},
+                    memory_kb: result.memory_kb || {},
+                    memory_kb_stdev: result.memory_kb_stdev || {},
+                    memory_metric_unit: result.memory_metric_unit || 'kB',
+                    memory_metric_label: result.memory_metric_label || 'Memory',
+                    iterations: result.iterations || null,
+                    exported_at: new Date().toISOString()
+                };
+                triggerDownload(`${baseName}.json`, JSON.stringify(payload, null, 2), 'application/json');
+            });
+
+            const csvBtn = document.createElement('button');
+            csvBtn.className = 'btn btn-secondary';
+            csvBtn.textContent = 'Download CSV';
+            csvBtn.type = 'button';
+            csvBtn.addEventListener('click', () => {
+                const rows = ['metric,variant,value,stdev,unit'];
+                const timings = result.timings_ms || {};
+                const timingsStdev = result.timings_ms_stdev || {};
+                const memory = result.memory_kb || {};
+                const memoryStdev = result.memory_kb_stdev || {};
+                for (const key of Object.keys(timings)) {
+                    const val = timings[key];
+                    const sd = timingsStdev[key] !== undefined ? timingsStdev[key] : '';
+                    rows.push(`runtime_ms,${key},${val},${sd},ms`);
+                }
+                for (const key of Object.keys(memory)) {
+                    const val = memory[key];
+                    const sd = memoryStdev[key] !== undefined ? memoryStdev[key] : '';
+                    rows.push(`memory,${key},${val},${sd},${result.memory_metric_unit || 'kB'}`);
+                }
+                triggerDownload(`${baseName}.csv`, rows.join('\n'), 'text/csv');
+            });
+
+            row.appendChild(jsonBtn);
+            row.appendChild(csvBtn);
+            charts.appendChild(row);
+        }
+
         function renderCharts(result) {
             const charts = document.getElementById('charts');
             if (!charts) return;
@@ -412,7 +488,9 @@
                 memoryChartInstance = hasMemory
                     ? renderBarChart('memory-chart', memoryData, memoryUnit, memoryTitle)
                     : null;
+                lastResult = result;
                 charts.hidden = false;
+                renderExportButtons(result);
                 return;
             }
 
@@ -464,7 +542,9 @@
                 memoryChartInstance = memoryData.length
                     ? renderBarChart('memory-chart', memoryData, memoryUnit, memoryTitle)
                     : null;
+                lastResult = result;
                 charts.hidden = false;
+                renderExportButtons(result);
                 return;
             }
 
@@ -515,5 +595,7 @@
             memoryChartInstance = hasMemory
                 ? renderBarChart('memory-chart', memoryData, memoryUnit, memoryTitle)
                 : null;
+            lastResult = result;
             charts.hidden = false;
+            renderExportButtons(result);
         }

@@ -107,6 +107,7 @@
                 }
             } catch (e) {
                 // default branch fallback already set to 'main'
+                console.error('[capstone] Failed to fetch repo info (branch defaults to main):', e);
             }
 
             showStatus('Connected successfully!', 'success');
@@ -208,7 +209,10 @@
         }
         
         function isGraphPairAlgorithm(algoId) {
-            return algoId === 'glasgow' || algoId === 'vf3' || algoId === 'subgraph';
+            // Prefer the registry entry so adding a new algorithm only needs one change (in algorithmConfigs).
+            const cfg = algorithmConfigs && algorithmConfigs[algoId];
+            if (cfg && typeof cfg.isGraphPair === 'boolean') return cfg.isGraphPair;
+            return algoId === 'glasgow' || algoId === 'vf3' || algoId === 'subgraph'; // fallback
         }
 
         function parseLeadingIntLine(text) {
@@ -259,7 +263,7 @@
                     graphMetricCache.set(cacheKey, result);
                     return result;
                 }
-            } catch (_) {}
+            } catch (err) { console.error('[capstone] getGraphMetrics fetch failed (node count unavailable):', err); }
 
             const result = { nodes: null, bytes };
             graphMetricCache.set(cacheKey, result);

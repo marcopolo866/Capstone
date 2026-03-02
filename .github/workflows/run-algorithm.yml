@@ -685,7 +685,7 @@ jobs:
           name: generated-graphs-${{ steps.run_subgraph_vf3.outputs.REQUEST_ID || steps.run.outputs.REQUEST_ID || github.run_id }}
           path: outputs/generated
           if-no-files-found: ignore
-          retention-days: 30
+          retention-days: 60
 
       - name: Upload visualization data
         if: always()
@@ -694,7 +694,7 @@ jobs:
           name: visualization-data-${{ steps.run_subgraph_vf3.outputs.REQUEST_ID || steps.run.outputs.REQUEST_ID || github.run_id }}
           path: outputs/visualization.json
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 90
       - name: Upload results artifact
         if: ${{ always() && env.ALGORITHM_INPUT != 'subgraph' }}
         uses: actions/upload-artifact@v4
@@ -702,4 +702,4 @@ jobs:
           name: algorithm-result
           path: outputs/result.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90

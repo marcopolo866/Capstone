@@ -32,6 +32,13 @@ jobs:
           ref: ${{ github.ref }}
           submodules: recursive
 
+      - name: Cache Emscripten SDK
+        uses: actions/cache@v4
+        with:
+          path: emsdk
+          key: emsdk-${{ runner.os }}-${{ hashFiles('emsdk/upstream/emscripten/emscripten-version.txt') }}
+          restore-keys: emsdk-${{ runner.os }}-
+
       - name: Install Emscripten SDK
         run: |
           set -euo pipefail
