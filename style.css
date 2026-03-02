@@ -557,9 +557,10 @@ body {
 .export-row {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 0;
     margin-top: 12px;
-    margin-bottom: 4px;
+    margin-bottom: 12px;
 }
 
 .error-banner {
