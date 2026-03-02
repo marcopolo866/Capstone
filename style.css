@@ -557,9 +557,8 @@ body {
 .export-row {
     display: flex;
     gap: 10px;
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid #e1e4e8;
+    margin-top: 12px;
+    margin-bottom: 4px;
 }
 
 .error-banner {

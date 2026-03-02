@@ -16,10 +16,11 @@
                 memoryChartInstance = null;
             }
             lastResult = null;
-            if (charts) {
-                const exportRow = charts.querySelector('.export-row');
-                if (exportRow) exportRow.remove();
-                charts.hidden = true;
+            if (charts) charts.hidden = true;
+            const exportRow = document.getElementById('export-row');
+            if (exportRow) {
+                exportRow.hidden = true;
+                exportRow.replaceChildren();
             }
             clearVisualization();
         }
@@ -325,19 +326,12 @@
         }
 
         function renderExportButtons(result) {
-            const charts = document.getElementById('charts');
-            if (!charts || !result) return;
-
-            // Remove any existing export row from a prior run
-            const existing = charts.querySelector('.export-row');
-            if (existing) existing.remove();
+            const exportRow = document.getElementById('export-row');
+            if (!exportRow || !result) return;
 
             const algo = result.algorithm || 'unknown';
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
             const baseName = `${algo}-results-${timestamp}`;
-
-            const row = document.createElement('div');
-            row.className = 'export-row';
 
             const jsonBtn = document.createElement('button');
             jsonBtn.className = 'btn btn-secondary';
@@ -381,9 +375,8 @@
                 triggerDownload(`${baseName}.csv`, rows.join('\n'), 'text/csv');
             });
 
-            row.appendChild(jsonBtn);
-            row.appendChild(csvBtn);
-            charts.appendChild(row);
+            exportRow.replaceChildren(jsonBtn, csvBtn);
+            exportRow.hidden = false;
         }
 
         function renderCharts(result) {
