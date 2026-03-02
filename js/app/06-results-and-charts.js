@@ -334,7 +334,7 @@
             const baseName = `${algo}-results-${timestamp}`;
 
             const jsonBtn = document.createElement('button');
-            jsonBtn.className = 'btn btn-secondary';
+            jsonBtn.className = 'btn btn-primary';
             jsonBtn.textContent = 'Download JSON';
             jsonBtn.type = 'button';
             jsonBtn.addEventListener('click', () => {
@@ -353,7 +353,7 @@
             });
 
             const csvBtn = document.createElement('button');
-            csvBtn.className = 'btn btn-secondary';
+            csvBtn.className = 'btn btn-primary';
             csvBtn.textContent = 'Download CSV';
             csvBtn.type = 'button';
             csvBtn.addEventListener('click', () => {
