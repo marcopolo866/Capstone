@@ -1,29 +1,27 @@
 /*
-Write a program in C++ that, given a large target graph, finds all instances of a smaller pattern graph within it, 
-or confirms that no instances exist. The program should accept inputs like the provided files (shown below) and must 
-support both .lad and .grf graph formats. Input files will look very similar to these references. 
-The key idea is achieving the fastest runtime possible, so take every shortcut available, including advanced pruning, 
-ordering heuristics, and constraint-based filtering. The solution should be optimized for performance over readability 
-and must scale well to large graphs. ​Just output the code as a single block to copy and paste, nothing else. 
-The program must also output how long it took to run, measured as precisely as possible in milliseconds, 
-without losing accuracy. 
-​The program must print only the following lines, in this exact order: 
-The nodes of the target graph that form each instance of the pattern graph. If multiple instances exist, 
-print one numbered list per line. If an instance does not fit on a single line, wrap the list in brackets and 
-continue on subsequent lines. The total number of distinct instances of the smaller graph found in 
-the larger target graph, printed as a single integer. The execution time of the program in milliseconds, 
+Write a program in C++ that, given a large target graph, finds all instances of a smaller pattern graph within it,
+or confirms that no instances exist. The program should accept inputs like the provided files (shown below) and must
+support both .lad and .grf graph formats. Input files will look very similar to these references.
+The key idea is achieving the fastest runtime possible, so take every shortcut available, including advanced pruning,
+ordering heuristics, and constraint-based filtering. The solution should be optimized for performance over readability
+and must scale well to large graphs. Just output the code as a single block to copy and paste, nothing else.
+The program must also output how long it took to run, measured as precisely as possible in milliseconds,
+without losing accuracy.
+The program must print only the following lines, in this exact order:
+The nodes of the target graph that form each instance of the pattern graph. If multiple instances exist,
+print one numbered list per line. If an instance does not fit on a single line, wrap the list in brackets and
+continue on subsequent lines. The total number of distinct instances of the smaller graph found in
+the larger target graph, printed as a single integer. The execution time of the program in milliseconds,
 printed on the final line.
 */
 #include <iostream>
-#include <fstream>
 #include <vector>
 #include <algorithm>
 #include <numeric>
 #include <chrono>
 #include <string>
 #include <cstdlib>
-#include <functional>
-#include <sstream>
+#include <cstdio>
 
 using namespace std;
 
@@ -39,34 +37,46 @@ static inline bool has_edge(const Graph &g, int u, int v) {
     return binary_search(a.begin(), a.end(), v);
 }
 
+// Parse ints from a text line, store into vals. Returns number parsed.
+static int parse_ints(const char *line, vector<int> &vals) {
+    vals.clear();
+    const char *p = line;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+        if (!*p) break;
+        bool neg = (*p == '-');
+        if (neg) p++;
+        if (*p < '0' || *p > '9') break;
+        int v = 0;
+        while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+        vals.push_back(neg ? -v : v);
+    }
+    return (int)vals.size();
+}
+
 Graph read_lad(const string &file) {
-    ifstream in(file);
-    if (!in) exit(1);
+    FILE *f = fopen(file.c_str(), "r");
+    if (!f) exit(1);
     Graph g;
-    in >> g.n;
+    if (fscanf(f, "%d", &g.n) != 1) { fclose(f); exit(1); }
     g.label.resize(g.n);
     g.adj.assign(g.n, {});
-    string line;
-    getline(in, line); // consume remainder of first line
+
+    char line[65536];
+    fgets(line, sizeof(line), f); // consume rest of first line
+
+    vector<int> vals;
     for (int i = 0; i < g.n; i++) {
-        if (!getline(in, line)) break;
-        if (line.empty()) {
-            g.label[i] = 0;
-            continue;
-        }
-        istringstream iss(line);
-        vector<int> vals;
-        int x;
-        while (iss >> x) vals.push_back(x);
-        if (vals.empty()) {
+        if (!fgets(line, sizeof(line), f)) break;
+        if (parse_ints(line, vals) == 0) {
             g.label[i] = 0;
             continue;
         }
 
         // Vertex-labelled LAD: "<label> <count> n1 n2 ...", zero-based neighbors.
-        if (vals.size() >= 2 && vals[1] == static_cast<int>(vals.size()) - 2) {
+        if ((int)vals.size() >= 2 && vals[1] == (int)vals.size() - 2) {
             g.label[i] = vals[0];
-            for (size_t j = 2; j < vals.size(); j++) {
+            for (int j = 2; j < (int)vals.size(); j++) {
                 int v = vals[j];
                 if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
             }
@@ -74,9 +84,9 @@ Graph read_lad(const string &file) {
         }
 
         // Unlabelled LAD: "<count> n1 n2 ...", zero-based neighbors.
-        if (vals[0] >= 0 && vals[0] == static_cast<int>(vals.size()) - 1) {
+        if (vals[0] >= 0 && vals[0] == (int)vals.size() - 1) {
             g.label[i] = 0;
-            for (size_t j = 1; j < vals.size(); j++) {
+            for (int j = 1; j < (int)vals.size(); j++) {
                 int v = vals[j];
                 if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
             }
@@ -85,24 +95,79 @@ Graph read_lad(const string &file) {
 
         // Fallback legacy format: "<label> v1 v2 ... 0", one-based neighbors.
         g.label[i] = vals[0];
-        for (size_t j = 1; j < vals.size(); j++) {
+        for (int j = 1; j < (int)vals.size(); j++) {
             int v = vals[j];
             if (v == 0) break;
             v -= 1;
             if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
         }
     }
+    fclose(f);
+
     g.deg.resize(g.n);
     for (int i = 0; i < g.n; i++) {
         sort(g.adj[i].begin(), g.adj[i].end());
         g.adj[i].erase(unique(g.adj[i].begin(), g.adj[i].end()), g.adj[i].end());
-        g.deg[i] = g.adj[i].size();
+        g.deg[i] = (int)g.adj[i].size();
     }
     return g;
 }
 
-Graph read_graph(const string &file) {
-    return read_lad(file);
+void dfs(int depth, int pn, int tn,
+         const Graph &pattern, const Graph &target,
+         const vector<int> &order,
+         vector<int> &map_p2t, vector<char> &used,
+         long long &total_instances, vector<int> &solution) {
+    if (depth == pn) {
+        for (int i = 0; i < pn; i++) {
+            solution[order[i]] = map_p2t[order[i]];
+        }
+        total_instances++;
+        cout << "Mapping: ";
+        for (int p = 0; p < pn; p++) {
+            cout << "(" << p << " -> " << solution[p] << ")";
+            if (p + 1 < pn) cout << " ";
+        }
+        cout << "\n";
+        return;
+    }
+
+    int p = order[depth];
+
+    vector<int> candidates;
+    for (int t = 0; t < tn; t++) {
+        if (!used[t] &&
+            pattern.label[p] == target.label[t] &&
+            pattern.deg[p] <= target.deg[t]) {
+            candidates.push_back(t);
+        }
+    }
+
+    sort(candidates.begin(), candidates.end(), [&target](int a, int b) {
+        if (target.deg[a] != target.deg[b])
+            return target.deg[a] > target.deg[b];
+        return a > b;
+    });
+
+    for (int t : candidates) {
+        bool ok = true;
+        for (int i = 0; i < depth && ok; i++) {
+            int pp = order[i];
+            int tt = map_p2t[pp];
+            if (has_edge(pattern, p, pp) && !has_edge(target, t, tt))
+                ok = false;
+            if (has_edge(pattern, pp, p) && !has_edge(target, tt, t))
+                ok = false;
+        }
+        if (!ok) continue;
+
+        used[t] = 1;
+        map_p2t[p] = t;
+        dfs(depth + 1, pn, tn, pattern, target, order,
+            map_p2t, used, total_instances, solution);
+        used[t] = 0;
+        map_p2t[p] = -1;
+    }
 }
 
 int main(int argc, char **argv) {
@@ -110,8 +175,8 @@ int main(int argc, char **argv) {
     auto start = chrono::high_resolution_clock::now();
 
     // Match the workflow and the other solvers: pattern first, target second.
-    Graph pattern = read_graph(argv[1]);
-    Graph target  = read_graph(argv[2]);
+    Graph pattern = read_lad(argv[1]);
+    Graph target  = read_lad(argv[2]);
 
     int pn = pattern.n, tn = target.n;
 
@@ -127,64 +192,7 @@ int main(int argc, char **argv) {
     long long total_instances = 0;
     vector<int> solution(pn, -1);
 
-    function<void(int)> dfs = [&](int depth) {
-        if (depth == pn) {
-            for (int i = 0; i < pn; i++) {
-                int p = order[i];
-                solution[p] = map_p2t[p];
-            }
-            total_instances++;
-            cout << "Mapping: ";
-            for (int p = 0; p < pn; p++) {
-                cout << "(" << p << " -> " << solution[p] << ")";
-                if (p + 1 < pn) cout << " ";
-            }
-            cout << "\n";
-            return;
-        }
-
-        int p = order[depth];
-
-        vector<int> candidates;
-        for (int t = 0; t < tn; t++) {
-            if (!used[t] &&
-                pattern.label[p] == target.label[t] &&
-                pattern.deg[p] <= target.deg[t]) {
-                candidates.push_back(t);
-            }
-        }
-
-        sort(candidates.begin(), candidates.end(), [&](int a, int b) {
-            if (target.deg[a] != target.deg[b])
-                return target.deg[a] > target.deg[b]; // higher degree first
-            return a > b; // higher index first
-        });
-
-        for (int t : candidates) {
-            if (used[t]) continue;
-            if (pattern.label[p] != target.label[t]) continue;
-            if (pattern.deg[p] > target.deg[t]) continue;
-
-            bool ok = true;
-            for (int i = 0; i < depth && ok; i++) {
-                int pp = order[i];
-                int tt = map_p2t[pp];
-                if (has_edge(pattern, p, pp) && !has_edge(target, t, tt))
-                    ok = false;
-                if (!has_edge(pattern, p, pp) && has_edge(target, t, tt))
-                    ok = false;
-            }
-            if (!ok) continue;
-
-            used[t] = 1;
-            map_p2t[p] = t;
-            dfs(depth + 1);
-            used[t] = 0;
-            map_p2t[p] = -1;
-        }
-    };
-
-    dfs(0);
+    dfs(0, pn, tn, pattern, target, order, map_p2t, used, total_instances, solution);
 
     auto end = chrono::high_resolution_clock::now();
     long long ms =
@@ -192,7 +200,6 @@ int main(int argc, char **argv) {
 
     cout << total_instances << "\n";
     cout << "Time: " << ms << "\n";
-
 
     return 0;
 }

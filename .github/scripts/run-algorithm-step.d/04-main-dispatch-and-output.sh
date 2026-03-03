@@ -422,13 +422,13 @@ case "$ALGORITHM" in
             EXIT_CODE=1
             break
           fi
-          if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "${FILES[0]}" "${FILES[1]}"; then
+          if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --format lad "${FILES[0]}" "${FILES[1]}"; then
             echo "[Warmup] Glasgow first failed." >> outputs/result.txt
             EXIT_CODE=1
             break
           fi
           progress_setup_tick
-          if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
+          if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
             echo "[Warmup] Glasgow all failed." >> outputs/result.txt
             EXIT_CODE=1
             break
@@ -450,10 +450,10 @@ case "$ALGORITHM" in
           progress_setup_tick
         done
       else
-        if ! warmup_only "Glasgow first" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "${FILES[0]}" "${FILES[1]}"; then
+        if ! warmup_only "Glasgow first" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --format lad "${FILES[0]}" "${FILES[1]}"; then
           EXIT_CODE=1
         fi
-        if ! warmup_only "Glasgow all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
+        if ! warmup_only "Glasgow all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
           EXIT_CODE=1
         fi
         if ! warmup_only "Glasgow ChatGPT" ./src/glasgow_chatgpt "${FILES[0]}" "${FILES[1]}"; then
@@ -518,7 +518,7 @@ case "$ALGORITHM" in
 
       baseline_ok=1
       progress_set_phase "Glasgow baseline"
-      if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format lad "${FILES[0]}" "${FILES[1]}"; then
+      if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --format lad "${FILES[0]}" "${FILES[1]}"; then
         EXIT_CODE=1
         echo "[Glasgow Subgraph Solver] first-solution run failed." >> outputs/result.txt
         baseline_ok=0
@@ -528,7 +528,7 @@ case "$ALGORITHM" in
         progress_tick
       fi
       if [ "$baseline_ok" -eq 1 ]; then
-        if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
+        if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
           EXIT_CODE=1
           echo "[Glasgow Subgraph Solver] all-solutions run failed." >> outputs/result.txt
           baseline_ok=0
@@ -1219,13 +1219,13 @@ case "$ALGORITHM" in
             break
           fi
           progress_setup_tick
-          if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
+          if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
             echo "[Warmup] Subgraph Glasgow baseline first failed." >> outputs/result.txt
             EXIT_CODE=1
             break
           fi
           progress_setup_tick
-          if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
+          if ! run_capture out dur ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --count-solutions --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
             echo "[Warmup] Subgraph Glasgow baseline all failed." >> outputs/result.txt
             EXIT_CODE=1
             break
@@ -1260,10 +1260,10 @@ case "$ALGORITHM" in
         if ! warmup_only "Subgraph VF3 Gemini" ./src/vf3 "$vf_pattern" "$vf_target"; then
           EXIT_CODE=1
         fi
-        if ! warmup_only "Subgraph Glasgow baseline first" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
+        if ! warmup_only "Subgraph Glasgow baseline first" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
           EXIT_CODE=1
         fi
-        if ! warmup_only "Subgraph Glasgow baseline all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
+        if ! warmup_only "Subgraph Glasgow baseline all" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --count-solutions --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
           EXIT_CODE=1
         fi
         if ! warmup_only "Subgraph Glasgow ChatGPT" ./src/glasgow_chatgpt "$lad_pattern" "$lad_target"; then
@@ -1461,7 +1461,7 @@ case "$ALGORITHM" in
       if [ -z "${baseline_count:-}" ]; then
         baseline_count="$(python -c "import sys; from pathlib import Path; iter_idx=sys.argv[1]; path=Path('outputs/subgraph_baseline_counts.csv'); lines=path.read_text(encoding='utf-8').splitlines() if path.exists() else []; matches=[p for p in ([s.strip() for s in line.split(',')] for line in lines) if len(p)>=2 and p[0]==str(iter_idx)]; print(matches[0][1] if matches else '')" "$i" 2>/dev/null)"
       fi
-      if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
+      if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
         EXIT_CODE=1
         echo "[Subgraph Glasgow] first-solution run failed." >> outputs/result.txt
         glasgow_ok=0
@@ -1471,7 +1471,7 @@ case "$ALGORITHM" in
         progress_tick
       fi
       if [ "$glasgow_ok" -eq 1 ]; then
-        if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --induced --count-solutions --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
+        if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --non-induced --count-solutions --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
           EXIT_CODE=1
           echo "[Subgraph Glasgow] all-solutions run failed." >> outputs/result.txt
           glasgow_ok=0
@@ -2198,7 +2198,7 @@ def build_visualization(pattern_path, target_path, pattern_nodes, iteration_inde
         if solver.exists():
             solver_cmd = [
                 str(solver),
-                "--induced",
+                "--non-induced",
                 "--format",
                 "lad",
                 "--print-all-solutions",

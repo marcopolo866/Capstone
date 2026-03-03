@@ -3141,9 +3141,9 @@ def capstone_run_local_generator(args, out_dir):
                         'VF3 baseline',
                         baselineSpec,
                         'VF3 baseline first',
-                        ['-r', '0', '-F', patternFsPath, targetFsPath],
+                        ['-u', '-r', '0', '-F', patternFsPath, targetFsPath],
                         'VF3 baseline all',
-                        ['-r', '0', patternFsPath, targetFsPath],
+                        ['-u', '-r', '0', patternFsPath, targetFsPath],
                         setupDoneRef,
                         firstVf3Input
                     );
@@ -3151,9 +3151,9 @@ def capstone_run_local_generator(args, out_dir):
                         'VF3 Gemini',
                         geminiSpec,
                         'VF3 Gemini first',
-                        ['--first-only', patternFsPath, targetFsPath],
+                        ['--non-induced', '--first-only', patternFsPath, targetFsPath],
                         'VF3 Gemini all',
-                        [patternFsPath, targetFsPath],
+                        ['--non-induced', patternFsPath, targetFsPath],
                         setupDoneRef,
                         firstVf3Input
                     );
@@ -3161,9 +3161,9 @@ def capstone_run_local_generator(args, out_dir):
                         'VF3 ChatGPT',
                         chatgptSpec,
                         'VF3 ChatGPT first',
-                        ['--first-only', patternFsPath, targetFsPath],
+                        ['--non-induced', '--first-only', patternFsPath, targetFsPath],
                         'VF3 ChatGPT all',
-                        [patternFsPath, targetFsPath],
+                        ['--non-induced', patternFsPath, targetFsPath],
                         setupDoneRef,
                         firstVf3Input
                     );
@@ -3309,9 +3309,9 @@ def capstone_run_local_generator(args, out_dir):
                     title: 'VF3 baseline',
                     spec: baselineSpec,
                     labelFirst: 'VF3 baseline first',
-                    argsFirst: ['-r', '0', '-F', patternFsPath, targetFsPath],
+                    argsFirst: ['-u', '-r', '0', '-F', patternFsPath, targetFsPath],
                     labelAll: 'VF3 baseline all',
-                    argsAll: ['-r', '0', patternFsPath, targetFsPath],
+                    argsAll: ['-u', '-r', '0', patternFsPath, targetFsPath],
                     timesFirst: baseFirst,
                     timesAll: baseAll,
                     heapsFirst: baseFirstHeapKiB,
@@ -3340,9 +3340,9 @@ def capstone_run_local_generator(args, out_dir):
                     title: 'VF3 Gemini',
                     spec: geminiSpec,
                     labelFirst: 'VF3 Gemini first',
-                    argsFirst: ['--first-only', patternFsPath, targetFsPath],
+                    argsFirst: ['--non-induced', '--first-only', patternFsPath, targetFsPath],
                     labelAll: 'VF3 Gemini all',
-                    argsAll: [patternFsPath, targetFsPath],
+                    argsAll: ['--non-induced', patternFsPath, targetFsPath],
                     timesFirst: gemFirst,
                     timesAll: gemAll,
                     heapsFirst: gemFirstHeapKiB,
@@ -3370,9 +3370,9 @@ def capstone_run_local_generator(args, out_dir):
                     title: 'VF3 ChatGPT',
                     spec: chatgptSpec,
                     labelFirst: 'VF3 ChatGPT first',
-                    argsFirst: ['--first-only', patternFsPath, targetFsPath],
+                    argsFirst: ['--non-induced', '--first-only', patternFsPath, targetFsPath],
                     labelAll: 'VF3 ChatGPT all',
-                    argsAll: [patternFsPath, targetFsPath],
+                    argsAll: ['--non-induced', patternFsPath, targetFsPath],
                     timesFirst: chatFirst,
                     timesAll: chatAll,
                     heapsFirst: chatFirstHeapKiB,
@@ -3450,9 +3450,63 @@ def capstone_run_local_generator(args, out_dir):
                 const resolvedMemoryMetricInfo = memoryMetricInfo || getDefaultWasmMemoryMetricInfo();
                 const memoryPrefix = formatWasmMemoryStatsPrefix(resolvedMemoryMetricInfo);
 
+                // Compute per-iteration match_counts: compare ChatGPT and Gemini counts to baseline.
+                // VF3 output format: first number on the first non-empty line is the solution count.
+                const extractVf3Count = (stdout) => {
+                    const text = String(stdout || '').replace(/\r/g, '');
+                    for (const ln of text.split('\n')) {
+                        const trimmed = ln.trim();
+                        if (!trimmed) continue;
+                        const m = trimmed.match(/^(-?\d+)/);
+                        if (m) {
+                            const n = Number(m[1]);
+                            if (Number.isInteger(n)) return n;
+                        }
+                        break;
+                    }
+                    return extractLocalSolutionCount(stdout);
+                };
+
+                let vf3Success = 0;
+                let vf3Fail = 0;
+                let chatMatchCount = 0;
+                let chatTotalCount = 0;
+                let chatMismatchCount = 0;
+                let gemMatchCount = 0;
+                let gemTotalCount = 0;
+                let gemMismatchCount = 0;
+
+                for (let iter = 0; iter < safeIterations; iter++) {
+                    const baselineCount = extractVf3Count(baseAllVisualizationByIter[iter] || '');
+                    if (!Number.isInteger(baselineCount)) {
+                        vf3Fail++;
+                        continue;
+                    }
+                    vf3Success++;
+
+                    chatTotalCount++;
+                    const chatCount = extractVf3Count(chatAllVisualizationByIter[iter] || '');
+                    if (Number.isInteger(chatCount) && chatCount === baselineCount) {
+                        chatMatchCount++;
+                    } else {
+                        chatMismatchCount++;
+                    }
+
+                    gemTotalCount++;
+                    const gemCount = extractVf3Count(gemAllVisualizationByIter[iter] || '');
+                    if (Number.isInteger(gemCount) && gemCount === baselineCount) {
+                        gemMatchCount++;
+                    } else {
+                        gemMismatchCount++;
+                    }
+                }
+
                 const lines = [];
-                const addSection = (title, _result, firstStats, allStats, firstMemStats, allMemStats) => {
+                const addSection = (title, _result, firstStats, allStats, firstMemStats, allMemStats, matchInfo = null) => {
                     lines.push(`[${title}]`);
+                    if (matchInfo && Number.isInteger(matchInfo.matches) && Number.isInteger(matchInfo.total)) {
+                        lines.push(`Matches: ${matchInfo.matches}/${matchInfo.total} (mismatches: ${matchInfo.mismatches})`);
+                    }
                     if (firstStats && allStats) {
                         lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
                     }
@@ -3463,8 +3517,10 @@ def capstone_run_local_generator(args, out_dir):
                 };
 
                 addSection('VF3 baseline', baseResult, sBaseFirst, sBaseAll, mBaseFirst, mBaseAll);
-                addSection('VF3 Gemini', gemResult, sGemFirst, sGemAll, mGemFirst, mGemAll);
-                addSection('VF3 ChatGPT', chatResult, sChatFirst, sChatAll, mChatFirst, mChatAll);
+                addSection('VF3 Gemini', gemResult, sGemFirst, sGemAll, mGemFirst, mGemAll,
+                    { matches: gemMatchCount, total: gemTotalCount, mismatches: gemMismatchCount });
+                addSection('VF3 ChatGPT', chatResult, sChatFirst, sChatAll, mChatFirst, mChatAll,
+                    { matches: chatMatchCount, total: chatTotalCount, mismatches: chatMismatchCount });
 
                 let visualization = null;
                 try {
@@ -3556,6 +3612,11 @@ def capstone_run_local_generator(args, out_dir):
                 if (!Object.keys(result.memory_kb_stdev).length) delete result.memory_kb_stdev;
                 if (!Object.keys(result.local_wasm_module_refresh_ms).length) delete result.local_wasm_module_refresh_ms;
                 if (!Object.keys(result.local_wasm_module_refresh_ms_stdev).length) delete result.local_wasm_module_refresh_ms_stdev;
+                result.match_counts = {
+                    baseline: { success: vf3Success, failed: vf3Fail },
+                    chatgpt: { matches: chatMatchCount, total: chatTotalCount, mismatches: chatMismatchCount },
+                    gemini: { matches: gemMatchCount, total: gemTotalCount, mismatches: gemMismatchCount }
+                };
                 if (visualization) {
                     result.visualization = visualization;
                 }
@@ -3732,8 +3793,8 @@ def capstone_run_local_generator(args, out_dir):
 
             const abortSignal = runCtx && runCtx.abortController ? runCtx.abortController.signal : null;
 
-            const baselineFirstArgs = ['--induced', '--format', baselineFormatFlag, patternFsPath, targetFsPath];
-            const baselineAllArgs = ['--induced', '--count-solutions', '--format', baselineFormatFlag, patternFsPath, targetFsPath];
+            const baselineFirstArgs = ['--non-induced', '--format', baselineFormatFlag, patternFsPath, targetFsPath];
+            const baselineAllArgs = ['--count-solutions', '--non-induced', '--format', baselineFormatFlag, patternFsPath, targetFsPath];
             const chatArgs = [patternFsPath, targetFsPath];
             const gemArgs = [patternFsPath, targetFsPath];
 
@@ -4063,7 +4124,6 @@ def capstone_run_local_generator(args, out_dir):
                         const visRes = await runEmscriptenMain(
                             visMod,
                             [
-                                '--induced',
                                 '--format',
                                 baselineFormatFlag,
                                 '--print-all-solutions',
@@ -4122,8 +4182,11 @@ def capstone_run_local_generator(args, out_dir):
                 if (mBaseFirst && mBaseAll) lines.push(...formatStatsMsFirstAll(memoryPrefix, mBaseFirst, mBaseAll));
                 lines.push('');
 
-                const addLlmSection = (title, _match, _total, _mismatch, firstStats, allStats, firstMemStats, allMemStats) => {
+                const addLlmSection = (title, match, total, mismatch, firstStats, allStats, firstMemStats, allMemStats) => {
                     lines.push(`[${title}]`);
+                    if (Number.isInteger(match) && Number.isInteger(total)) {
+                        lines.push(`Matches: ${match}/${total} (mismatches: ${mismatch})`);
+                    }
                     if (firstStats && allStats) lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
                     if (firstMemStats && allMemStats) lines.push(...formatStatsMsFirstAll(memoryPrefix, firstMemStats, allMemStats));
                     lines.push('');
