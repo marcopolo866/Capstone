@@ -3793,8 +3793,8 @@ def capstone_run_local_generator(args, out_dir):
 
             const abortSignal = runCtx && runCtx.abortController ? runCtx.abortController.signal : null;
 
-            const baselineFirstArgs = ['--non-induced', '--format', baselineFormatFlag, patternFsPath, targetFsPath];
-            const baselineAllArgs = ['--count-solutions', '--non-induced', '--format', baselineFormatFlag, patternFsPath, targetFsPath];
+            const baselineFirstArgs = ['--format', baselineFormatFlag, patternFsPath, targetFsPath];
+            const baselineAllArgs = ['--count-solutions', '--format', baselineFormatFlag, patternFsPath, targetFsPath];
             const chatArgs = [patternFsPath, targetFsPath];
             const gemArgs = [patternFsPath, targetFsPath];
 

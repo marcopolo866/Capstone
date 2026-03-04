@@ -59,29 +59,51 @@ bool read_lad(const string& filename, Graph& g) {
     g.matrix.assign(g.n, vector<bool>(g.n, false));
     g.label.assign(g.n, 0);
 
+    // Pass 1: read all vertex lines, detect format.
+    // Standard LAD: every line satisfies vals[0] == vals.size()-1.
+    // Vertex-labelled LAD (write_lad output): vals[0]=label, vals[1]=count; any line
+    // where label != degree+1 will fail the standard check.
+    vector<vector<int>> all_vals(g.n);
+    bool vertex_labelled = false;
     vector<int> vals;
     for (int i = 0; i < g.n; ++i) {
         if (!fgets(line, sizeof(line), f)) break;
-        if (parse_ints(line, vals) == 0) continue;
+        parse_ints(line, all_vals[i]);
+        if (!all_vals[i].empty() && all_vals[i][0] != (int)all_vals[i].size() - 1)
+            vertex_labelled = true;
+    }
+    fclose(f);
 
-        int start = 1;
-        int count = 0;
-        if ((int)vals.size() >= 2 && vals[1] == (int)vals.size() - 2) {
-            g.label[i] = vals[0];
-            count = vals[1];
+    // Pass 2: parse adjacency using detected format.
+    for (int i = 0; i < g.n; ++i) {
+        auto& v = all_vals[i];
+        if (v.empty()) continue;
+        int count, start;
+        if (vertex_labelled) {
+            g.label[i] = v[0];
+            count = (v.size() >= 2) ? v[1] : 0;
             start = 2;
         } else {
-            count = vals[0];
+            count = v[0];
+            start = 1;
         }
-        for (int j = 0; j < count && start + j < (int)vals.size(); ++j) {
-            int neighbor = vals[start + j];
+        for (int j = 0; j < count && start + j < (int)v.size(); ++j) {
+            int neighbor = v[start + j];
             if (neighbor >= 0 && neighbor < g.n && neighbor != i) {
                 g.adj[i].push_back(neighbor);
                 g.matrix[i][neighbor] = true;
             }
         }
     }
-    fclose(f);
+    // Make graph undirected: add reverse edges
+    for (int i = 0; i < g.n; ++i) {
+        for (int j : g.adj[i]) {
+            if (!g.matrix[j][i]) {
+                g.adj[j].push_back(i);
+                g.matrix[j][i] = true;
+            }
+        }
+    }
     return true;
 }
 

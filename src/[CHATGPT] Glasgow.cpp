@@ -65,45 +65,49 @@ Graph read_lad(const string &file) {
     char line[65536];
     fgets(line, sizeof(line), f); // consume rest of first line
 
-    vector<int> vals;
+    // Pass 1: read all vertex lines, detect format.
+    // Standard LAD: every line satisfies vals[0] == vals.size()-1.
+    // Vertex-labelled LAD (write_lad output): vals[0]=label, vals[1]=count; any line
+    // where label != degree+1 will fail the standard check.
+    vector<vector<int>> all_vals(g.n);
+    bool vertex_labelled = false;
+    vector<int> tmp;
     for (int i = 0; i < g.n; i++) {
         if (!fgets(line, sizeof(line), f)) break;
-        if (parse_ints(line, vals) == 0) {
-            g.label[i] = 0;
-            continue;
-        }
-
-        // Vertex-labelled LAD: "<label> <count> n1 n2 ...", zero-based neighbors.
-        if ((int)vals.size() >= 2 && vals[1] == (int)vals.size() - 2) {
-            g.label[i] = vals[0];
-            for (int j = 2; j < (int)vals.size(); j++) {
-                int v = vals[j];
-                if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
-            }
-            continue;
-        }
-
-        // Unlabelled LAD: "<count> n1 n2 ...", zero-based neighbors.
-        if (vals[0] >= 0 && vals[0] == (int)vals.size() - 1) {
-            g.label[i] = 0;
-            for (int j = 1; j < (int)vals.size(); j++) {
-                int v = vals[j];
-                if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
-            }
-            continue;
-        }
-
-        // Fallback legacy format: "<label> v1 v2 ... 0", one-based neighbors.
-        g.label[i] = vals[0];
-        for (int j = 1; j < (int)vals.size(); j++) {
-            int v = vals[j];
-            if (v == 0) break;
-            v -= 1;
-            if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
-        }
+        parse_ints(line, tmp);
+        all_vals[i] = tmp;
+        if (!tmp.empty() && tmp[0] != (int)tmp.size() - 1)
+            vertex_labelled = true;
     }
     fclose(f);
 
+    // Pass 2: parse adjacency using detected format.
+    for (int i = 0; i < g.n; i++) {
+        auto& vals = all_vals[i];
+        if (vals.empty()) { g.label[i] = 0; continue; }
+        if (vertex_labelled) {
+            // Vertex-labelled: vals[0]=label, vals[1]=count, vals[2..]=neighbors
+            g.label[i] = vals[0];
+            int count = (vals.size() >= 2) ? vals[1] : 0;
+            for (int j = 2; j <= count + 1 && j < (int)vals.size(); j++) {
+                int v = vals[j];
+                if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
+            }
+        } else {
+            // Standard: vals[0]=count, vals[1..]=neighbors
+            g.label[i] = 0;
+            int count = vals[0];
+            for (int j = 1; j <= count && j < (int)vals.size(); j++) {
+                int v = vals[j];
+                if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
+            }
+        }
+    }
+
+    // Make graph undirected: add reverse edges, then sort+dedup
+    for (int i = 0; i < g.n; i++) {
+        for (int v : g.adj[i]) g.adj[v].push_back(i);
+    }
     g.deg.resize(g.n);
     for (int i = 0; i < g.n; i++) {
         sort(g.adj[i].begin(), g.adj[i].end());
