@@ -1842,11 +1842,10 @@ def capstone_run_local_generator(args, out_dir):
                 }
             }
 
-            // Priority 3: Count mapping lines (handles both "mapping =" and "mapping :")
-            const mappingCount = lines.filter(l => /\bmapping\s*[=:]/i.test(l)).length;
-            if (mappingCount > 0) return mappingCount;
+            // Priority 3: Standalone integer on its own line (scan from end)
+            // This avoids interpreting non-count outputs as a single "mapping" entry.
 
-            // Priority 4: Standalone integer on its own line (scan from end)
+            // Priority 3 continued: scan for standalone integer on its own line (scan from end)
             for (let i = lines.length - 1; i >= 0; i--) {
                 if (/^-?\d+$/.test(lines[i])) {
                     const n = Number(lines[i]);
@@ -3838,8 +3837,9 @@ def capstone_run_local_generator(args, out_dir):
 
             const baselineFirstArgs = ['--format', baselineFormatFlag, patternFsPath, targetFsPath];
             const baselineAllArgs = ['--count-solutions', '--format', baselineFormatFlag, patternFsPath, targetFsPath];
-            const chatArgs = [patternFsPath, targetFsPath];
-            const gemArgs = [patternFsPath, targetFsPath];
+            const glasgowAllArgs = ['--count-solutions', '--format', baselineFormatFlag];
+            const chatArgs = [...glasgowAllArgs, patternFsPath, targetFsPath];
+            const gemArgs = [...glasgowAllArgs, patternFsPath, targetFsPath];
 
             try {
                 const warmupSingle = async (title, spec, argsList, tickIncrementRef, inputForRun) => {
@@ -4046,6 +4046,7 @@ def capstone_run_local_generator(args, out_dir):
                     const referenceCount = (vf3RefCount !== null) ? vf3RefCount : glasgowBaselineCount;
 
                     if (referenceCount === null) {
+                        console.warn('[runGlasgowLocally] Missing baseline reference count for iteration', iter + 1);
                         iterationVisualizationSources.push({
                             baselineFirstOut: latestBaselineFirst,
                             baselineAllOut: latestBaselineAll,
@@ -4101,7 +4102,14 @@ def capstone_run_local_generator(args, out_dir):
                     progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
                     const chatCount = extractRobustSolutionCount(latestChat);
                     if (chatCount !== null && chatCount === referenceCount) chatMatch++;
-                    else chatMismatch++;
+                    else {
+                        if (chatCount === null) {
+                            console.warn('[runGlasgowLocally] Unable to parse Glasgow ChatGPT count', {
+                                iteration: iter + 1
+                            });
+                        }
+                        chatMismatch++;
+                    }
 
                     progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
                     gemTotal++;
@@ -4144,7 +4152,14 @@ def capstone_run_local_generator(args, out_dir):
                     progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
                     const gemCount = extractRobustSolutionCount(latestGem);
                     if (gemCount !== null && gemCount === referenceCount) gemMatch++;
-                    else gemMismatch++;
+                    else {
+                        if (gemCount === null) {
+                            console.warn('[runGlasgowLocally] Unable to parse Glasgow Gemini count', {
+                                iteration: iter + 1
+                            });
+                        }
+                        gemMismatch++;
+                    }
                     iterationVisualizationSources.push({
                         baselineFirstOut: latestBaselineFirst,
                         baselineAllOut: latestBaselineAll,
@@ -4884,11 +4899,25 @@ def capstone_run_local_generator(args, out_dir):
                     if (!files.length) {
                         throw new Error(`Local generator did not produce any files for iteration ${iter}.`);
                     }
-                    generatedRuns.push(generated);
+                    const iterScopedFiles = [];
+                    const iterPrefix = `__local/generated/${algoKey}/iter_${iter}`;
                     for (const f of files) {
                         const p = String(f && f.path ? f.path : '').trim();
-                        if (p) _localInMemoryRepoFiles.set(p, String(f && f.text ? f.text : ''));
+                        if (!p) continue;
+                        const scopedPath = `${iterPrefix}/${p.replace(/^[\\/]+/, '')}`;
+                        const text = String(f && f.text ? f.text : '');
+                        const n = {
+                            name: String(f && f.name ? f.name : ''),
+                            path: scopedPath,
+                            text
+                        };
+                        iterScopedFiles.push(n);
+                        _localInMemoryRepoFiles.set(scopedPath, text);
                     }
+                    generatedRuns.push({
+                        ...generated,
+                        files: iterScopedFiles
+                    });
                 }
 
                 const pickByName = (files, needle) => (Array.isArray(files) ? files : []).find(f => String(f && f.name ? f.name : '').toLowerCase().includes(String(needle || '').toLowerCase()));
