@@ -1818,6 +1818,45 @@ def capstone_run_local_generator(args, out_dir):
             return null;
         }
 
+        function extractRobustSolutionCount(text) {
+            const lines = String(text || '').replace(/\r/g, '')
+                .split('\n').map(line => String(line || '').trim()).filter(Boolean);
+            if (!lines.length) return null;
+
+            // Priority 1: Explicit solution_count keyword (= or :)
+            for (let i = lines.length - 1; i >= 0; i--) {
+                let m = lines[i].match(/\bsolution[_\s-]*count\b\s*[=:]\s*(-?\d+)\b/i);
+                if (m) {
+                    const n = Number(m[1]);
+                    if (Number.isInteger(n)) return n;
+                }
+            }
+
+            // Priority 2: Other keyword phrases ("N solutions", "solutions: N", "count: N")
+            for (let i = lines.length - 1; i >= 0; i--) {
+                let m = lines[i].match(/\b(?:solutions?|count)\b[^0-9-]*(-?\d+)\b/i);
+                if (!m) m = lines[i].match(/\b(-?\d+)\s+solutions?\b/i);
+                if (m) {
+                    const n = Number(m[1]);
+                    if (Number.isInteger(n)) return n;
+                }
+            }
+
+            // Priority 3: Count mapping lines (handles both "mapping =" and "mapping :")
+            const mappingCount = lines.filter(l => /\bmapping\s*[=:]/i.test(l)).length;
+            if (mappingCount > 0) return mappingCount;
+
+            // Priority 4: Standalone integer on its own line (scan from end)
+            for (let i = lines.length - 1; i >= 0; i--) {
+                if (/^-?\d+$/.test(lines[i])) {
+                    const n = Number(lines[i]);
+                    if (Number.isInteger(n)) return n;
+                }
+            }
+
+            return null;
+        }
+
         function extractLocalCountTimeMs(text) {
             const raw = String(text || '').replace(/\r/g, '');
             const lines = raw.split('\n').map(line => String(line || '').trim()).filter(Boolean);
@@ -3621,7 +3660,11 @@ def capstone_run_local_generator(args, out_dir):
                     result.visualization = visualization;
                 }
 
-                return { status: 'success', output: lines.join('\n'), result };
+                const vf3BaselineCounts = baseAllVisualizationByIter.map(out => {
+                    const n = extractVf3Count(out || '');
+                    return Number.isInteger(n) ? n : null;
+                });
+                return { status: 'success', output: lines.join('\n'), result, _vf3BaselineCounts: vf3BaselineCounts };
             } finally {
                 // Drop cached modules at the end of each local run to keep memory stable between runs.
                 try { invalidateEmscriptenModule(baselineSpec.id); } catch (_) {}
@@ -3995,8 +4038,14 @@ def capstone_run_local_generator(args, out_dir):
                     progressSetDeterminate('Glasgow baseline', ticksDone, testsTotal, { stage: 'tests' });
                     await delay(0, abortSignal);
 
-                    const baselineCount = extractLocalSolutionCount(latestBaselineAll);
-                    if (baselineCount === null) {
+                    // Prefer VF3 baseline count as cross-solver reference; fall back to Glasgow baseline
+                    const vf3RefCount = (options.vf3BaselineCounts && options.vf3BaselineCounts[iter] !== undefined)
+                        ? options.vf3BaselineCounts[iter]
+                        : null;
+                    const glasgowBaselineCount = extractLocalSolutionCount(latestBaselineAll);
+                    const referenceCount = (vf3RefCount !== null) ? vf3RefCount : glasgowBaselineCount;
+
+                    if (referenceCount === null) {
                         iterationVisualizationSources.push({
                             baselineFirstOut: latestBaselineFirst,
                             baselineAllOut: latestBaselineAll,
@@ -4050,8 +4099,8 @@ def capstone_run_local_generator(args, out_dir):
                     await delay(0, abortSignal);
                     ticksDone++;
                     progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
-                    const chatParsed = extractLocalCountTimeMs(latestChat);
-                    if (chatParsed && Number.isInteger(chatParsed.count) && chatParsed.count === baselineCount) chatMatch++;
+                    const chatCount = extractRobustSolutionCount(latestChat);
+                    if (chatCount !== null && chatCount === referenceCount) chatMatch++;
                     else chatMismatch++;
 
                     progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
@@ -4093,8 +4142,8 @@ def capstone_run_local_generator(args, out_dir):
                     await delay(0, abortSignal);
                     ticksDone++;
                     progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
-                    const gemParsed = extractLocalCountTimeMs(latestGem);
-                    if (gemParsed && Number.isInteger(gemParsed.count) && gemParsed.count === baselineCount) gemMatch++;
+                    const gemCount = extractRobustSolutionCount(latestGem);
+                    if (gemCount !== null && gemCount === referenceCount) gemMatch++;
                     else gemMismatch++;
                     iterationVisualizationSources.push({
                         baselineFirstOut: latestBaselineFirst,
@@ -4175,8 +4224,9 @@ def capstone_run_local_generator(args, out_dir):
                 const memoryPrefix = formatWasmMemoryStatsPrefix(resolvedMemoryMetricInfo);
 
                 const lines = [];
+                const usingVf3Ref = options.vf3BaselineCounts && options.vf3BaselineCounts.length > 0;
                 const failureSuffix = glasgowFail > 0 ? `, ${glasgowFail} failed` : '';
-                lines.push('[Glasgow Subgraph Solver]');
+                lines.push(usingVf3Ref ? '[Glasgow Subgraph Solver] (compared against VF3 baseline count)' : '[Glasgow Subgraph Solver]');
                 lines.push(`${glasgowSuccess} iterations ran successfully${failureSuffix}`);
                 if (sBaseFirst && sBaseAll) lines.push(...formatStatsMsFirstAll('Runtime (ms): ', sBaseFirst, sBaseAll));
                 if (mBaseFirst && mBaseAll) lines.push(...formatStatsMsFirstAll(memoryPrefix, mBaseFirst, mBaseAll));
@@ -4392,13 +4442,16 @@ def capstone_run_local_generator(args, out_dir):
                 const vf3Run = await runVf3Locally(runCtx, safeIterations, safeWarmup);
                 if (vf3Run && vf3Run.status === 'aborted') return vf3Run;
 
+                const vf3BaselineCounts = (vf3Run && vf3Run._vf3BaselineCounts) ? vf3Run._vf3BaselineCounts : null;
+
                 config.selectedFiles = [
                     { path: ladPatternPath, name: 'subgraph_pattern.lad' },
                     { path: ladTargetPath, name: 'subgraph_target.lad' }
                 ];
                 const glasgowRun = await runGlasgowLocally(runCtx, safeIterations, safeWarmup, {
                     baselineFormatFlag: 'vertexlabelledlad',
-                    resultAlgorithm: 'glasgow'
+                    resultAlgorithm: 'glasgow',
+                    vf3BaselineCounts
                 });
                 if (glasgowRun && glasgowRun.status === 'aborted') return glasgowRun;
 
