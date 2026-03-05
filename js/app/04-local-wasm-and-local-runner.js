@@ -1819,9 +1819,11 @@ def capstone_run_local_generator(args, out_dir):
         }
 
         function extractRobustSolutionCount(text) {
-            const lines = String(text || '').replace(/\r/g, '')
-                .split('\n').map(line => String(line || '').trim()).filter(Boolean);
-            if (!lines.length) return null;
+            const normalized = String(text || '').replace(/\r/g, '');
+            const lines = normalized.split('\n').map(line => String(line || '').trim()).filter(Boolean);
+            if (!lines.length) return 0;
+
+            const mappingCount = extractLocalMappingsFromText(normalized, Math.max(1, lines.length)).length;
 
             // Priority 1: Explicit solution_count keyword (= or :)
             for (let i = lines.length - 1; i >= 0; i--) {
@@ -1842,10 +1844,7 @@ def capstone_run_local_generator(args, out_dir):
                 }
             }
 
-            // Priority 3: Standalone integer on its own line (scan from end)
-            // This avoids interpreting non-count outputs as a single "mapping" entry.
-
-            // Priority 3 continued: scan for standalone integer on its own line (scan from end)
+            // Priority 3: Standalone integer on its own line (scan from end).
             for (let i = lines.length - 1; i >= 0; i--) {
                 if (/^-?\d+$/.test(lines[i])) {
                     const n = Number(lines[i]);
@@ -1853,7 +1852,9 @@ def capstone_run_local_generator(args, out_dir):
                 }
             }
 
-            return null;
+            // Priority 4: Fall back to counting mapping-style lines (workflow behavior),
+            // then return 0 when output exists but does not include a numeric count.
+            return mappingCount > 0 ? mappingCount : 0;
         }
 
         function extractLocalCountTimeMs(text) {
@@ -4003,8 +4004,7 @@ def capstone_run_local_generator(args, out_dir):
                         baseFirstHeapKiB,
                         baseFirstRefreshMs,
                         () => ({
-                            mappingLinePolicy: iter === 0 ? 'keep-first' : 'drop-all',
-                            maxOutputChars: 65536,
+                            maxOutputChars: 0,
                             maxErrorChars: 16384
                         }),
                         iterInput
@@ -4027,8 +4027,7 @@ def capstone_run_local_generator(args, out_dir):
                         baseAllHeapKiB,
                         baseAllRefreshMs,
                         () => ({
-                            mappingLinePolicy: 'drop-all',
-                            maxOutputChars: 65536,
+                            maxOutputChars: 0,
                             maxErrorChars: 16384
                         }),
                         iterInput
@@ -4076,8 +4075,7 @@ def capstone_run_local_generator(args, out_dir):
                         chatFirstHeapKiB,
                         chatFirstRefreshMs,
                         () => ({
-                            mappingLinePolicy: iter === 0 ? 'keep-first' : 'drop-all',
-                            maxOutputChars: 65536,
+                            maxOutputChars: 0,
                             maxErrorChars: 16384
                         }),
                         iterInput
@@ -4126,8 +4124,7 @@ def capstone_run_local_generator(args, out_dir):
                         gemFirstHeapKiB,
                         gemFirstRefreshMs,
                         () => ({
-                            mappingLinePolicy: iter === 0 ? 'keep-first' : 'drop-all',
-                            maxOutputChars: 65536,
+                            maxOutputChars: 0,
                             maxErrorChars: 16384
                         }),
                         iterInput
