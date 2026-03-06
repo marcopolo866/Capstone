@@ -463,7 +463,7 @@ int main(int argc, char **argv) {
     cin.tie(nullptr);
 
     bool first_only = false;
-    bool induced = true;
+    bool induced = false;
     vector<string> positional;
     positional.reserve(static_cast<size_t>(max(0, argc - 1)));
     for (int i = 1; i < argc; ++i) {

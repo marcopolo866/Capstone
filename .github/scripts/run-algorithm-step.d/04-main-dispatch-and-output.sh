@@ -1,4 +1,10 @@
 EXIT_CODE=0
+solver_failure_messages=()
+record_solver_failure() {
+  local solver="$1"
+  local iter="$2"
+  solver_failure_messages+=("[$solver] failed on iteration [$iter]")
+}
 
 case "$ALGORITHM" in
   dijkstra)
@@ -118,6 +124,7 @@ case "$ALGORITHM" in
         if ! run_capture_rss out dur rss ./baselines/dijkstra "${FILES[0]}"; then
           EXIT_CODE=1
           echo "[Dijkstra Baseline] failed to run." >> outputs/result.txt
+          record_solver_failure "Dijkstra Baseline" "$i"
           break
         fi
         dijkstra_generated_files[$i]="${FILES[0]}"
@@ -181,6 +188,7 @@ case "$ALGORITHM" in
         if ! run_capture_rss out dur rss ./src/dijkstra_llm "$dijkstra_input_file"; then
           EXIT_CODE=1
           echo "[Dijkstra ChatGPT] failed to run." >> outputs/result.txt
+          record_solver_failure "Dijkstra ChatGPT" "$i"
           break
         fi
         baseline_norm="${dijkstra_baseline_norm_by_iter[$i]-}"
@@ -262,6 +270,7 @@ case "$ALGORITHM" in
         if ! run_capture_rss out dur rss ./src/dijkstra_gemini "$dijkstra_input_file"; then
           EXIT_CODE=1
           echo "[Dijkstra Gemini] failed to run." >> outputs/result.txt
+          record_solver_failure "Dijkstra Gemini" "$i"
           break
         fi
         baseline_norm="${dijkstra_baseline_norm_by_iter[$i]-}"
@@ -521,6 +530,7 @@ case "$ALGORITHM" in
       if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format lad "${FILES[0]}" "${FILES[1]}"; then
         EXIT_CODE=1
         echo "[Glasgow Subgraph Solver] first-solution run failed." >> outputs/result.txt
+        record_solver_failure "Glasgow baseline" "$i"
         baseline_ok=0
       else
         first_times+=("$dur")
@@ -531,6 +541,7 @@ case "$ALGORITHM" in
         if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format lad "${FILES[0]}" "${FILES[1]}"; then
           EXIT_CODE=1
           echo "[Glasgow Subgraph Solver] all-solutions run failed." >> outputs/result.txt
+          record_solver_failure "Glasgow baseline" "$i"
           baseline_ok=0
         else
           all_times+=("$dur")
@@ -539,6 +550,7 @@ case "$ALGORITHM" in
           baseline_count="$(extract_solution_count "$out")"
           if [ -z "${baseline_count:-}" ]; then
             echo "[Glasgow Subgraph Solver] could not parse solution count." >> outputs/result.txt
+            record_solver_failure "Glasgow baseline" "$i"
             baseline_ok=0
             EXIT_CODE=1
           fi
@@ -559,6 +571,7 @@ case "$ALGORITHM" in
       if ! run_capture_rss out dur rss ./src/glasgow_chatgpt "${FILES[0]}" "${FILES[1]}"; then
         EXIT_CODE=1
         echo "[Glasgow ChatGPT] run failed." >> outputs/result.txt
+        record_solver_failure "Glasgow ChatGPT" "$i"
         chat_ok=0
       else
         chat_first_times+=("$dur")
@@ -573,6 +586,7 @@ case "$ALGORITHM" in
         else
           chat_ok=0
           echo "[Glasgow ChatGPT] could not parse solution count/time." >> outputs/result.txt
+          record_solver_failure "Glasgow ChatGPT" "$i"
         fi
       fi
       if [ "$chat_ok" -eq 1 ] && [ -n "${chat_count:-}" ] && [ "$chat_count" = "$baseline_count" ]; then
@@ -588,6 +602,7 @@ case "$ALGORITHM" in
       if ! run_capture_rss out dur rss ./src/glasgow_gemini "${FILES[0]}" "${FILES[1]}"; then
         EXIT_CODE=1
         echo "[Glasgow Gemini] run failed." >> outputs/result.txt
+        record_solver_failure "Glasgow Gemini" "$i"
         gem_ok=0
       else
         gem_first_times+=("$dur")
@@ -602,6 +617,7 @@ case "$ALGORITHM" in
         else
           gem_ok=0
           echo "[Glasgow Gemini] could not parse solution count/time." >> outputs/result.txt
+          record_solver_failure "Glasgow Gemini" "$i"
         fi
       fi
       if [ "$gem_ok" -eq 1 ] && [ -n "${gem_count:-}" ] && [ "$gem_count" = "$baseline_count" ]; then
@@ -799,13 +815,13 @@ case "$ALGORITHM" in
             break
           fi
           progress_setup_tick
-          if ! run_capture out dur ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
+          if ! run_capture out dur ./src/chatvf3 --non-induced "${FILES[0]}" "${FILES[1]}"; then
             echo "[Warmup] VF3 ChatGPT all failed." >> outputs/result.txt
             EXIT_CODE=1
             break
           fi
           progress_setup_tick
-          if ! run_capture out dur ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+          if ! run_capture out dur ./src/vf3 --non-induced "${FILES[0]}" "${FILES[1]}"; then
             echo "[Warmup] VF3 Gemini all failed." >> outputs/result.txt
             EXIT_CODE=1
             break
@@ -816,10 +832,10 @@ case "$ALGORITHM" in
         if ! warmup_only "VF3 baseline all" ./baselines/vf3lib/bin/vf3 -u -r 0 "${FILES[0]}" "${FILES[1]}"; then
           EXIT_CODE=1
         fi
-        if ! warmup_only "VF3 ChatGPT all" ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
+        if ! warmup_only "VF3 ChatGPT all" ./src/chatvf3 --non-induced "${FILES[0]}" "${FILES[1]}"; then
           EXIT_CODE=1
         fi
-        if ! warmup_only "VF3 Gemini all" ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+        if ! warmup_only "VF3 Gemini all" ./src/vf3 --non-induced "${FILES[0]}" "${FILES[1]}"; then
           EXIT_CODE=1
         fi
       fi
@@ -919,6 +935,7 @@ case "$ALGORITHM" in
         read baseline_count base_first_ms base_all_ms <<< "$(extract_solution_times_ms "$out")"
         if [ -z "${baseline_count:-}" ] || [ -z "${base_first_ms:-}" ] || [ -z "${base_all_ms:-}" ]; then
           echo "[VF3 baseline] could not parse solution timings." >> outputs/result.txt
+          record_solver_failure "VF3 baseline" "$i"
           baseline_ok=0
           EXIT_CODE=1
         else
@@ -931,6 +948,7 @@ case "$ALGORITHM" in
       fi
 
       if [ "$baseline_ok" -ne 1 ]; then
+        record_solver_failure "VF3 baseline" "$i"
         vf3_fail=$((vf3_fail + 1))
         continue
       fi
@@ -941,15 +959,17 @@ case "$ALGORITHM" in
       vf3_chatgpt_total=$((vf3_chatgpt_total + 1))
       chat_ok=1
       chat_count=""
-      if ! run_capture_rss out dur rss ./src/chatvf3 "${FILES[0]}" "${FILES[1]}"; then
+      if ! run_capture_rss out dur rss ./src/chatvf3 --non-induced "${FILES[0]}" "${FILES[1]}"; then
         EXIT_CODE=1
         echo "[VF3 ChatGPT] all-solutions run failed." >> outputs/result.txt
+        record_solver_failure "VF3 ChatGPT" "$i"
         chat_ok=0
       else
         read chat_count chat_first_ms chat_all_ms <<< "$(extract_solution_times_ms "$out")"
         if [ -z "${chat_count:-}" ] || [ -z "${chat_first_ms:-}" ] || [ -z "${chat_all_ms:-}" ]; then
           EXIT_CODE=1
           echo "[VF3 ChatGPT] could not parse solution timings." >> outputs/result.txt
+          record_solver_failure "VF3 ChatGPT" "$i"
           chat_ok=0
         else
           chat_first_times+=("$chat_first_ms")
@@ -969,15 +989,17 @@ case "$ALGORITHM" in
       vf3_gemini_total=$((vf3_gemini_total + 1))
       gem_ok=1
       gem_count=""
-      if ! run_capture_rss out dur rss ./src/vf3 "${FILES[0]}" "${FILES[1]}"; then
+      if ! run_capture_rss out dur rss ./src/vf3 --non-induced "${FILES[0]}" "${FILES[1]}"; then
         EXIT_CODE=1
         echo "[VF3 Gemini] all-solutions run failed." >> outputs/result.txt
+        record_solver_failure "VF3 Gemini" "$i"
         gem_ok=0
       else
         read gem_count gem_first_ms gem_all_ms <<< "$(extract_solution_times_ms "$out")"
         if [ -z "${gem_count:-}" ] || [ -z "${gem_first_ms:-}" ] || [ -z "${gem_all_ms:-}" ]; then
           EXIT_CODE=1
           echo "[VF3 Gemini] could not parse solution timings." >> outputs/result.txt
+          record_solver_failure "VF3 Gemini" "$i"
           gem_ok=0
         else
           gem_first_times+=("$gem_first_ms")
@@ -1207,13 +1229,13 @@ case "$ALGORITHM" in
             break
           fi
           progress_setup_tick
-          if ! run_capture out dur ./src/chatvf3 "$vf_pattern" "$vf_target"; then
+          if ! run_capture out dur ./src/chatvf3 --non-induced "$vf_pattern" "$vf_target"; then
             echo "[Warmup] Subgraph VF3 ChatGPT failed." >> outputs/result.txt
             EXIT_CODE=1
             break
           fi
           progress_setup_tick
-          if ! run_capture out dur ./src/vf3 "$vf_pattern" "$vf_target"; then
+          if ! run_capture out dur ./src/vf3 --non-induced "$vf_pattern" "$vf_target"; then
             echo "[Warmup] Subgraph VF3 Gemini failed." >> outputs/result.txt
             EXIT_CODE=1
             break
@@ -1254,10 +1276,10 @@ case "$ALGORITHM" in
         if ! warmup_only "Subgraph VF3 baseline" ./baselines/vf3lib/bin/vf3 -u -r 0 "$vf_pattern" "$vf_target"; then
           EXIT_CODE=1
         fi
-        if ! warmup_only "Subgraph VF3 ChatGPT" ./src/chatvf3 "$vf_pattern" "$vf_target"; then
+        if ! warmup_only "Subgraph VF3 ChatGPT" ./src/chatvf3 --non-induced "$vf_pattern" "$vf_target"; then
           EXIT_CODE=1
         fi
-        if ! warmup_only "Subgraph VF3 Gemini" ./src/vf3 "$vf_pattern" "$vf_target"; then
+        if ! warmup_only "Subgraph VF3 Gemini" ./src/vf3 --non-induced "$vf_pattern" "$vf_target"; then
           EXIT_CODE=1
         fi
         if ! warmup_only "Subgraph Glasgow baseline first" ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
@@ -1344,6 +1366,7 @@ case "$ALGORITHM" in
     rss=""
 
     for ((i=1; i<=ITERATIONS; i++)); do
+      baseline_count=""
       if [ "$INPUT_MODE" = "generate" ]; then
         if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ]; then
           if ! generate_graphs_for_run "subgraph_iter" "$i"; then
@@ -1371,11 +1394,13 @@ case "$ALGORITHM" in
         if ! run_capture_rss out dur rss ./baselines/vf3lib/bin/vf3 -u -r 0 "$vf_pattern" "$vf_target"; then
         EXIT_CODE=1
         echo "[Subgraph VF3 baseline] run failed." >> outputs/result.txt
+        record_solver_failure "Subgraph VF3 baseline" "$i"
         baseline_ok=0
         else
           read baseline_count base_first_ms base_all_ms <<< "$(extract_solution_times_ms "$out")"
           if [ -z "${baseline_count:-}" ] || [ -z "${base_first_ms:-}" ] || [ -z "${base_all_ms:-}" ]; then
             echo "[Subgraph VF3 baseline] could not parse solution timings." >> outputs/result.txt
+            record_solver_failure "Subgraph VF3 baseline" "$i"
             baseline_ok=0
             EXIT_CODE=1
           else
@@ -1388,6 +1413,7 @@ case "$ALGORITHM" in
         fi
 
         if [ "$baseline_ok" -ne 1 ]; then
+          record_solver_failure "Subgraph VF3 baseline" "$i"
           vf3_fail=$((vf3_fail + 1))
           continue
         fi
@@ -1399,15 +1425,17 @@ case "$ALGORITHM" in
         vf3_chatgpt_total=$((vf3_chatgpt_total + 1))
         chat_ok=1
         chat_count=""
-        if ! run_capture_rss out dur rss ./src/chatvf3 "$vf_pattern" "$vf_target"; then
+        if ! run_capture_rss out dur rss ./src/chatvf3 --non-induced "$vf_pattern" "$vf_target"; then
           EXIT_CODE=1
           echo "[Subgraph VF3 ChatGPT] all-solutions run failed." >> outputs/result.txt
+          record_solver_failure "Subgraph VF3 ChatGPT" "$i"
           chat_ok=0
         else
           read chat_count chat_first_ms chat_all_ms <<< "$(extract_solution_times_ms "$out")"
           if [ -z "${chat_count:-}" ] || [ -z "${chat_first_ms:-}" ] || [ -z "${chat_all_ms:-}" ]; then
             EXIT_CODE=1
             echo "[Subgraph VF3 ChatGPT] could not parse solution timings." >> outputs/result.txt
+            record_solver_failure "Subgraph VF3 ChatGPT" "$i"
             chat_ok=0
           else
             chat_first_times+=("$chat_first_ms")
@@ -1427,15 +1455,17 @@ case "$ALGORITHM" in
         vf3_gemini_total=$((vf3_gemini_total + 1))
         gem_ok=1
         gem_count=""
-        if ! run_capture_rss out dur rss ./src/vf3 "$vf_pattern" "$vf_target"; then
+        if ! run_capture_rss out dur rss ./src/vf3 --non-induced "$vf_pattern" "$vf_target"; then
           EXIT_CODE=1
           echo "[Subgraph VF3 Gemini] all-solutions run failed." >> outputs/result.txt
+          record_solver_failure "Subgraph VF3 Gemini" "$i"
           gem_ok=0
         else
           read gem_count gem_first_ms gem_all_ms <<< "$(extract_solution_times_ms "$out")"
           if [ -z "${gem_count:-}" ] || [ -z "${gem_first_ms:-}" ] || [ -z "${gem_all_ms:-}" ]; then
             EXIT_CODE=1
             echo "[Subgraph VF3 Gemini] could not parse solution timings." >> outputs/result.txt
+            record_solver_failure "Subgraph VF3 Gemini" "$i"
             gem_ok=0
           else
             gem_first_times+=("$gem_first_ms")
@@ -1464,6 +1494,7 @@ case "$ALGORITHM" in
       if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
         EXIT_CODE=1
         echo "[Subgraph Glasgow] first-solution run failed." >> outputs/result.txt
+        record_solver_failure "Subgraph Glasgow baseline" "$i"
         glasgow_ok=0
       else
         g_first_times+=("$dur")
@@ -1474,6 +1505,7 @@ case "$ALGORITHM" in
         if ! run_capture_rss out dur rss ./baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver --count-solutions --format vertexlabelledlad "$lad_pattern" "$lad_target"; then
           EXIT_CODE=1
           echo "[Subgraph Glasgow] all-solutions run failed." >> outputs/result.txt
+          record_solver_failure "Subgraph Glasgow baseline" "$i"
           glasgow_ok=0
         else
           g_all_times+=("$dur")
@@ -1482,6 +1514,7 @@ case "$ALGORITHM" in
           glasgow_count="$(extract_solution_count "$out")"
           if [ -z "${glasgow_count:-}" ]; then
             echo "[Subgraph Glasgow] could not parse solution count." >> outputs/result.txt
+            record_solver_failure "Subgraph Glasgow baseline" "$i"
             glasgow_ok=0
             EXIT_CODE=1
           fi
@@ -1496,6 +1529,7 @@ case "$ALGORITHM" in
           fi
       else
         glasgow_fail=$((glasgow_fail + 1))
+        glasgow_baseline_mismatch=$((glasgow_baseline_mismatch + 1))
       fi
 
       progress_set_phase "Subgraph Glasgow ChatGPT"
@@ -1505,6 +1539,7 @@ case "$ALGORITHM" in
       if ! run_capture_rss out dur rss ./src/glasgow_chatgpt "$lad_pattern" "$lad_target"; then
         EXIT_CODE=1
         echo "[Subgraph Glasgow ChatGPT] run failed." >> outputs/result.txt
+        record_solver_failure "Subgraph Glasgow ChatGPT" "$i"
         chat_ok=0
       else
         g_chat_first_times+=("$dur")
@@ -1513,12 +1548,13 @@ case "$ALGORITHM" in
         g_chat_all_rsses+=("$rss")
         progress_tick
         progress_tick
-        parsed="$(extract_count_time_ms <<< "$out")"
+        parsed="$(extract_count_time_ms "$lad_pattern" "$lad_target" <<< "$out")"
         if [ -n "${parsed:-}" ]; then
           read chat_count _ _ <<< "$parsed"
         else
           chat_count="0"
           echo "[Subgraph Glasgow ChatGPT] could not parse solution count/time; defaulting to 0." >> outputs/result.txt
+          record_solver_failure "Subgraph Glasgow ChatGPT" "$i"
         fi
       fi
       if [ "$chat_ok" -eq 1 ] && [ -n "${chat_count:-}" ] && [ "$chat_count" = "$baseline_count" ]; then
@@ -1534,6 +1570,7 @@ case "$ALGORITHM" in
       if ! run_capture_rss out dur rss ./src/glasgow_gemini "$lad_pattern" "$lad_target"; then
         EXIT_CODE=1
         echo "[Subgraph Glasgow Gemini] run failed." >> outputs/result.txt
+        record_solver_failure "Subgraph Glasgow Gemini" "$i"
         gem_ok=0
       else
         g_gem_first_times+=("$dur")
@@ -1542,12 +1579,13 @@ case "$ALGORITHM" in
         g_gem_all_rsses+=("$rss")
         progress_tick
         progress_tick
-        parsed="$(extract_count_time_ms <<< "$out")"
+        parsed="$(extract_count_time_ms "$lad_pattern" "$lad_target" <<< "$out")"
         if [ -n "${parsed:-}" ]; then
           read gem_count _ _ <<< "$parsed"
         else
           gem_count="0"
           echo "[Subgraph Glasgow Gemini] could not parse solution count/time; defaulting to 0." >> outputs/result.txt
+          record_solver_failure "Subgraph Glasgow Gemini" "$i"
         fi
       fi
       if [ "$gem_ok" -eq 1 ] && [ -n "${gem_count:-}" ] && [ "$gem_count" = "$baseline_count" ]; then
@@ -1821,17 +1859,23 @@ esac
 
 VISUALIZATION_FILE="outputs/visualization.json"
 rm -f "$VISUALIZATION_FILE"
-if [ "$INPUT_MODE" = "generate" ] && [ -n "${SEED_USED:-}" ] && [ "${SUBGRAPH_PHASE:-}" != "glasgow" ]; then
-  if [ -z "${VIS_SEED:-}" ]; then
+if [ -z "${VIS_SEED:-}" ]; then
+  if [ -n "${SEED_USED:-}" ]; then
     VIS_SEED="$SEED_USED"
+  else
+    VIS_SEED="0"
   fi
-  export VIS_SEED
-  export ALGORITHM
-  export GENERATOR_N
-  export GENERATOR_K
-  export GENERATOR_DENSITY
-  export ITERATIONS
-  python - <<'PY'
+fi
+export VIS_SEED
+export ALGORITHM
+export GENERATOR_N
+export GENERATOR_K
+export GENERATOR_DENSITY
+export ITERATIONS
+export INPUT_MODE
+export INPUT_FILES
+export SUBGRAPH_PHASE
+python - <<'PY'
 import csv
 import heapq
 import json
@@ -1842,6 +1886,10 @@ from pathlib import Path
 
 algo = os.environ.get("ALGORITHM", "")
 iterations_raw = os.environ.get("ITERATIONS", "1")
+input_mode = os.environ.get("INPUT_MODE", "")
+input_files_raw = os.environ.get("INPUT_FILES", "")
+subgraph_phase = os.environ.get("SUBGRAPH_PHASE", "").strip().lower()
+vis_seed_raw = os.environ.get("VIS_SEED", "")
 out_path = Path("outputs/visualization.json")
 out_dir = Path("outputs/visualization")
 out_dir.mkdir(parents=True, exist_ok=True)
@@ -1855,6 +1903,46 @@ except (TypeError, ValueError):
     iterations = 1
 if iterations < 1:
     iterations = 1
+
+def split_input_files(raw: str):
+    return [Path(part.strip()) for part in str(raw or "").split(",") if part.strip()]
+
+def fallback_iteration_files(iter_idx: int):
+    files = split_input_files(input_files_raw)
+    if algo == "dijkstra":
+        if files and files[0].exists():
+            return None, files[0], None
+        return None
+    if algo == "glasgow":
+        if len(files) >= 2 and files[0].exists() and files[1].exists():
+            return files[0], files[1], None
+        return None
+    if algo == "vf3":
+        if len(files) >= 2 and files[0].exists() and files[1].exists():
+            return files[0], files[1], None
+        return None
+    if algo == "subgraph":
+        vf_pattern = Path("outputs/converted/pattern.vf")
+        vf_target = Path("outputs/converted/target.vf")
+        if vf_pattern.exists() and vf_target.exists():
+            return vf_pattern, vf_target, None
+        if len(files) >= 2 and files[0].exists() and files[1].exists():
+            return files[0], files[1], None
+        if input_mode == "generate" and subgraph_phase == "glasgow":
+            meta = Path(f"outputs/generated/subgraph/subgraph_iter/iter_{iter_idx}/metadata.json")
+            if meta.exists():
+                try:
+                    payload = json.loads(meta.read_text(encoding="utf-8"))
+                    vf_files = [Path(p) for p in payload.get("files", []) if str(p).lower().endswith(".vf")]
+                    if len(vf_files) >= 2:
+                        p = next((x for x in vf_files if "pattern" in x.name), vf_files[0])
+                        t = next((x for x in vf_files if "target" in x.name), vf_files[-1])
+                        if p.exists() and t.exists():
+                            return p, t, payload.get("pattern_nodes")
+                except Exception:
+                    pass
+        return None
+    return None
 
 def load_metadata(iter_idx: int):
     if algo == "dijkstra":
@@ -2401,6 +2489,28 @@ for i in range(1, iterations + 1):
         vis_iterations.append(vis_payload)
 
 if not vis_iterations:
+    try:
+        vis_seed = int(vis_seed_raw)
+    except (TypeError, ValueError):
+        vis_seed = None
+    for i in range(1, iterations + 1):
+        fallback = fallback_iteration_files(i)
+        if not fallback:
+            continue
+        pattern_path, target_path, pattern_nodes = fallback
+        if target_path is None or not Path(target_path).exists():
+            continue
+        if pattern_path is not None and not Path(pattern_path).exists():
+            continue
+        seed_value = (vis_seed + (i - 1)) if isinstance(vis_seed, int) else None
+        try:
+            vis_payload = build_visualization(pattern_path, target_path, pattern_nodes, i, seed_value)
+        except Exception:
+            continue
+        if vis_payload:
+            vis_iterations.append(vis_payload)
+
+if not vis_iterations:
     out_path.write_text(
         json.dumps(
             {
@@ -2419,9 +2529,40 @@ payload = dict(vis_iterations[0])
 payload["visualization_iterations"] = vis_iterations
 out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 PY
-  if [ ! -s "$VISUALIZATION_FILE" ]; then
-    echo "[Visualization] visualization.json was not generated." >> outputs/result.txt
-  fi
+if [ ! -s "$VISUALIZATION_FILE" ]; then
+  echo "[Visualization] visualization.json was not generated." >> outputs/result.txt
+fi
+
+eq_not_identical_selected="$(python - <<'PY'
+import json
+from pathlib import Path
+path = Path("outputs/equivalence_report.jsonl")
+count = 0
+if path.exists():
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if record.get("selected_for_solver") and not record.get("equivalent", False):
+            count += 1
+print(count)
+PY
+)"
+if [[ "${eq_not_identical_selected:-0}" =~ ^[0-9]+$ ]] && [ "${eq_not_identical_selected}" -gt 0 ]; then
+  echo "[Equivalence] Graphs were not mathematically identical for one or more selected solver inputs." >> outputs/result.txt
+fi
+
+if [ "${#solver_failure_messages[@]}" -gt 0 ]; then
+  {
+    for msg in "${solver_failure_messages[@]}"; do
+      echo "$msg"
+    done
+    echo
+  } >> outputs/result.txt
 fi
 
 finish_run

@@ -53,6 +53,36 @@ if vis_path.exists():
 else:
     if input_mode == "generate":
         data["visualization_error"] = "Visualization data missing"
+
+equivalence_path = Path("outputs/equivalence_report.jsonl")
+equivalence_records = []
+if equivalence_path.exists():
+    for raw in equivalence_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            equivalence_records.append(json.loads(line))
+        except json.JSONDecodeError:
+            equivalence_records.append(
+                {
+                    "algorithm": algorithm,
+                    "selected_for_solver": False,
+                    "equivalent": False,
+                    "note": "equivalence_record_parse_failed",
+                    "raw": line[:2000],
+                }
+            )
+if equivalence_records:
+    selected = [r for r in equivalence_records if bool(r.get("selected_for_solver"))]
+    selected_failures = [r for r in selected if not bool(r.get("equivalent"))]
+    data["equivalence_check"] = {
+        "applies": True,
+        "records": equivalence_records,
+        "selected_for_solver_count": len(selected),
+        "selected_for_solver_failures": len(selected_failures),
+        "graphs_not_mathematically_identical": len(selected_failures) > 0,
+    }
 inputs = {"input_mode": input_mode, "input_files": input_files}
 if gen_n:
     try:
@@ -628,6 +658,34 @@ if algorithm == "subgraph" and os.environ.get("SUBGRAPH_PHASE", "").strip().lowe
                     merged = dict(previous.get(key, {}))
                     merged.update(data.get(key, {}))
                     data[key] = merged
+            if "equivalence_check" in previous and "equivalence_check" not in data:
+                data["equivalence_check"] = previous.get("equivalence_check")
+            elif "equivalence_check" in previous and "equivalence_check" in data:
+                prev_eq = previous.get("equivalence_check")
+                cur_eq = data.get("equivalence_check")
+                if isinstance(prev_eq, dict) and isinstance(cur_eq, dict):
+                    prev_records = prev_eq.get("records") if isinstance(prev_eq.get("records"), list) else []
+                    cur_records = cur_eq.get("records") if isinstance(cur_eq.get("records"), list) else []
+                    merged_records = []
+                    seen = set()
+                    for rec in prev_records + cur_records:
+                        try:
+                            key = json.dumps(rec, sort_keys=True)
+                        except TypeError:
+                            key = str(rec)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        merged_records.append(rec)
+                    selected = [r for r in merged_records if isinstance(r, dict) and bool(r.get("selected_for_solver"))]
+                    selected_failures = [r for r in selected if not bool(r.get("equivalent"))]
+                    data["equivalence_check"] = {
+                        "applies": True,
+                        "records": merged_records,
+                        "selected_for_solver_count": len(selected),
+                        "selected_for_solver_failures": len(selected_failures),
+                        "graphs_not_mathematically_identical": len(selected_failures) > 0,
+                    }
             if "subgraph_phase" in previous and data.get("subgraph_phase") == "glasgow":
                 data["subgraph_phase_prev"] = previous.get("subgraph_phase")
 Path("outputs/result.json").write_text(

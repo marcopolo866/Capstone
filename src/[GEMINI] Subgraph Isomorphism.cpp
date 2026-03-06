@@ -252,7 +252,7 @@ struct State {
 
 long long match_count = 0;
 bool first_only_mode = false;
-bool induced_mode = true;
+bool induced_mode = false;
 double first_solution_sec = -1.0;
 chrono::steady_clock::time_point solve_start_time;
 
@@ -401,7 +401,7 @@ int main(int argc, char** argv) {
     cin.tie(NULL);
 
     bool first_only = false;
-    bool induced = true;
+    bool induced = false;
     vector<string> positional;
     positional.reserve(static_cast<size_t>(max(0, argc - 1)));
     for (int i = 1; i < argc; ++i) {

@@ -315,6 +315,8 @@ PY
 }
 
 extract_count_time_ms() {
+  local _pattern_path="${1:-}"
+  local _target_path="${2:-}"
   python - <<'PY'
 import re
 import sys
@@ -329,6 +331,10 @@ for raw in sys.stdin:
   if not line:
     continue
   saw_any = True
+  pairs = re.findall(r"(\d+)\s*->\s*(\d+)", line)
+  if pairs:
+    mapping_count += 1
+    continue
   if "Mapping:" in line:
     mapping_count += 1
     continue
@@ -357,6 +363,7 @@ if not saw_any:
   # Glasgow ChatGPT prints nothing when no solution is found.
   print("0 0 0")
   raise SystemExit(0)
+
 if count is None:
   count = mapping_count
 if time_ms is None:
@@ -584,4 +591,3 @@ print(
 )
 PY
 }
-

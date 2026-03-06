@@ -1776,6 +1776,85 @@ def capstone_run_local_generator(args, out_dir):
             };
         }
 
+        function buildLocalUndirectedEdgeSet(adj) {
+            const set = new Set();
+            const list = Array.isArray(adj) ? adj : [];
+            for (let i = 0; i < list.length; i++) {
+                const neighbors = Array.isArray(list[i]) ? list[i] : [];
+                for (const rawV of neighbors) {
+                    const v = Number(rawV);
+                    if (!Number.isInteger(v) || v < 0 || v >= list.length || v === i) continue;
+                    const a = i < v ? i : v;
+                    const b = i < v ? v : i;
+                    set.add(`${a}:${b}`);
+                }
+            }
+            return set;
+        }
+
+        function compareLocalParsedGraphs(vfParsed, ladParsed, graphName) {
+            const vfAdj = Array.isArray(vfParsed && vfParsed.adj) ? vfParsed.adj : [];
+            const ladAdj = Array.isArray(ladParsed && ladParsed.adj) ? ladParsed.adj : [];
+            const vfLabels = Array.isArray(vfParsed && vfParsed.labels) ? vfParsed.labels : [];
+            const ladLabels = Array.isArray(ladParsed && ladParsed.labels) ? ladParsed.labels : [];
+            const nVf = vfAdj.length;
+            const nLad = ladAdj.length;
+            const n = Math.min(nVf, nLad);
+            const labelMismatches = [];
+            for (let i = 0; i < n; i++) {
+                const lVf = Number.isFinite(Number(vfLabels[i])) ? Number(vfLabels[i]) : 0;
+                const lLad = Number.isFinite(Number(ladLabels[i])) ? Number(ladLabels[i]) : 0;
+                if (lVf !== lLad) {
+                    labelMismatches.push({ node: i, vf_label: lVf, lad_label: lLad });
+                }
+            }
+            const vfEdges = buildLocalUndirectedEdgeSet(vfAdj);
+            const ladEdges = buildLocalUndirectedEdgeSet(ladAdj);
+            const missingEdges = [];
+            for (const e of vfEdges) {
+                if (!ladEdges.has(e)) missingEdges.push(e);
+            }
+            const extraEdges = [];
+            for (const e of ladEdges) {
+                if (!vfEdges.has(e)) extraEdges.push(e);
+            }
+            const equivalent = nVf === nLad && !labelMismatches.length && !missingEdges.length && !extraEdges.length;
+            return {
+                graph: graphName,
+                equivalent,
+                node_count_vf: nVf,
+                node_count_lad: nLad,
+                label_mismatch_count: labelMismatches.length,
+                label_mismatch_samples: labelMismatches.slice(0, 10),
+                missing_edges_count: missingEdges.length,
+                missing_edge_samples: missingEdges.slice(0, 10).map((k) => k.split(':').map(Number)),
+                extra_edges_count: extraEdges.length,
+                extra_edge_samples: extraEdges.slice(0, 10).map((k) => k.split(':').map(Number))
+            };
+        }
+
+        function buildLocalVfLadEquivalenceReport(opts = {}) {
+            const vfPatternText = String(opts.vfPatternText || '');
+            const vfTargetText = String(opts.vfTargetText || '');
+            const ladPatternText = String(opts.ladPatternText || '');
+            const ladTargetText = String(opts.ladTargetText || '');
+            const patternCmp = compareLocalParsedGraphs(parseLocalVf(vfPatternText), parseLocalLad(ladPatternText), 'pattern');
+            const targetCmp = compareLocalParsedGraphs(parseLocalVf(vfTargetText), parseLocalLad(ladTargetText), 'target');
+            const equivalent = !!(patternCmp.equivalent && targetCmp.equivalent);
+            const summary = equivalent
+                ? 'vf and lad encodings are mathematically identical for pattern and target.'
+                : [
+                    patternCmp.equivalent ? null : `pattern: nodes(vf=${patternCmp.node_count_vf},lad=${patternCmp.node_count_lad}), label_mismatches=${patternCmp.label_mismatch_count}, missing_edges=${patternCmp.missing_edges_count}, extra_edges=${patternCmp.extra_edges_count}`,
+                    targetCmp.equivalent ? null : `target: nodes(vf=${targetCmp.node_count_vf},lad=${targetCmp.node_count_lad}), label_mismatches=${targetCmp.label_mismatch_count}, missing_edges=${targetCmp.missing_edges_count}, extra_edges=${targetCmp.extra_edges_count}`
+                ].filter(Boolean).join('; ');
+            return {
+                equivalent,
+                summary,
+                pattern: patternCmp,
+                target: targetCmp
+            };
+        }
+
         function extractLocalSolutionCount(text) {
             const lines = String(text || '')
                 .replace(/\r/g, '')
@@ -3682,6 +3761,155 @@ def capstone_run_local_generator(args, out_dir):
             const resultAlgorithm = String(
                 (options && options.resultAlgorithm) || 'glasgow'
             ).trim().toLowerCase() || 'glasgow';
+            const enforceInducedCount = false;
+            const preferVf3GeneratedInputs = Boolean(options && options.forceUseVf3GeneratedInputs);
+            const hashText32 = (text) => {
+                const s = String(text || '');
+                let h = 2166136261 >>> 0;
+                for (let i = 0; i < s.length; i++) {
+                    h ^= s.charCodeAt(i);
+                    h = Math.imul(h, 16777619) >>> 0;
+                }
+                return (`00000000${h.toString(16)}`).slice(-8);
+            };
+            const makeLadSignature = (ladPatternText, ladTargetText) => ({
+                patternHash: hashText32(ladPatternText),
+                targetHash: hashText32(ladTargetText),
+                patternLength: String(ladPatternText || '').length,
+                targetLength: String(ladTargetText || '').length
+            });
+            const buildUndirectedEdgeSet = (adj) => {
+                const set = new Set();
+                const list = Array.isArray(adj) ? adj : [];
+                for (let i = 0; i < list.length; i++) {
+                    const neighbors = Array.isArray(list[i]) ? list[i] : [];
+                    for (const rawV of neighbors) {
+                        const v = Number(rawV);
+                        if (!Number.isInteger(v) || v < 0 || v >= list.length || v === i) continue;
+                        const a = i < v ? i : v;
+                        const b = i < v ? v : i;
+                        set.add(`${a}:${b}`);
+                    }
+                }
+                return set;
+            };
+            const isInducedMapping = (mapping, patternEdgeSet, targetEdgeSet, patternSize) => {
+                if (!mapping || typeof mapping !== 'object') return false;
+                const values = [];
+                for (let i = 0; i < patternSize; i++) {
+                    if (!Object.prototype.hasOwnProperty.call(mapping, i)) return false;
+                    const mapped = Number(mapping[i]);
+                    if (!Number.isInteger(mapped) || mapped < 0) return false;
+                    values.push(mapped);
+                }
+                if (new Set(values).size !== values.length) return false;
+                for (let i = 0; i < patternSize; i++) {
+                    const mi = Number(mapping[i]);
+                    for (let j = i + 1; j < patternSize; j++) {
+                        const mj = Number(mapping[j]);
+                        const patternKey = `${i}:${j}`;
+                        const a = mi < mj ? mi : mj;
+                        const b = mi < mj ? mj : mi;
+                        const targetKey = `${a}:${b}`;
+                        const patternHas = patternEdgeSet.has(patternKey);
+                        const targetHas = targetEdgeSet.has(targetKey);
+                        if (patternHas !== targetHas) return false;
+                    }
+                }
+                return true;
+            };
+            const countInducedMappingsFromOutput = (text, ladPatternText, ladTargetText) => {
+                const pParsed = parseLocalLad(ladPatternText || '');
+                const tParsed = parseLocalLad(ladTargetText || '');
+                const pAdj = pParsed && Array.isArray(pParsed.adj) ? pParsed.adj : [];
+                const tAdj = tParsed && Array.isArray(tParsed.adj) ? tParsed.adj : [];
+                const pN = pAdj.length;
+                if (!pN || !tAdj.length) return 0;
+                const patternEdgeSet = buildUndirectedEdgeSet(pAdj);
+                const targetEdgeSet = buildUndirectedEdgeSet(tAdj);
+                let count = 0;
+                const seen = new Set();
+                const lines = String(text || '').replace(/\r/g, '').split('\n');
+                for (const rawLine of lines) {
+                    const line = String(rawLine || '').trim();
+                    if (!line || !/^mapping\s*:/i.test(line)) continue;
+                    const pairs = Array.from(line.matchAll(/\(\s*(\d+)\s*->\s*(\d+)\s*\)/g));
+                    if (!pairs.length) continue;
+                    const mapping = {};
+                    for (const pair of pairs) {
+                        mapping[Number(pair[1])] = Number(pair[2]);
+                    }
+                    const key = JSON.stringify(mapping);
+                    if (key === '{}' || seen.has(key)) continue;
+                    seen.add(key);
+                    if (isInducedMapping(mapping, patternEdgeSet, targetEdgeSet, pN)) {
+                        count++;
+                    }
+                }
+                return count;
+            };
+            const parseGlasgowOutputCount = (text, context = null) => {
+                const normalized = String(text || '').replace(/\r/g, '');
+                const lines = normalized.split('\n').map(line => String(line || '').trim()).filter(Boolean);
+                if (!lines.length) return { count: 0, parsed: false, reason: 'empty' };
+
+                for (let i = lines.length - 1; i >= 0; i--) {
+                    let m = lines[i].match(/\bsolution[_\s-]*count\b\s*(?:=|:)\s*(-?\d+)\b/i);
+                    if (m) {
+                        const n = Number(m[1]);
+                        if (Number.isInteger(n)) return { count: n, parsed: true, reason: 'solution_count' };
+                    }
+                }
+
+                for (let i = lines.length - 1; i >= 0; i--) {
+                    let m = lines[i].match(/\b(?:solutions?|count)\b[^0-9-]*(-?\d+)\b/i);
+                    if (!m) m = lines[i].match(/\b(-?\d+)\s+solutions?\b/i);
+                    if (m) {
+                        const n = Number(m[1]);
+                        if (Number.isInteger(n)) return { count: n, parsed: true, reason: 'keyword' };
+                    }
+                }
+
+                for (let i = lines.length - 1; i >= 0; i--) {
+                    if (/^-?\d+$/.test(lines[i])) {
+                        const n = Number(lines[i]);
+                        if (Number.isInteger(n)) return { count: n, parsed: true, reason: 'single_integer' };
+                    }
+                }
+
+                if (
+                    enforceInducedCount &&
+                    context &&
+                    typeof context === 'object' &&
+                    context.ladPatternText &&
+                    context.ladTargetText
+                ) {
+                    const inducedCount = countInducedMappingsFromOutput(
+                        normalized,
+                        context.ladPatternText,
+                        context.ladTargetText
+                    );
+                    if (Number.isInteger(inducedCount) && inducedCount >= 0) {
+                        return { count: inducedCount, parsed: true, reason: 'induced_mapping_filter' };
+                    }
+                }
+
+                const mappingCount = extractLocalMappingsFromText(normalized, Math.max(1, lines.length)).length;
+                if (mappingCount > 0) return { count: mappingCount, parsed: true, reason: 'mapping_fallback' };
+
+                return { count: 0, parsed: false, reason: 'unrecognized_format' };
+            };
+            const summarizeOutputText = (text, maxSnippet = 600) => {
+                const raw = String(text || '').replace(/\r/g, '');
+                const length = raw.length;
+                return {
+                    length,
+                    head: raw.slice(0, maxSnippet),
+                    tail: raw.slice(-maxSnippet),
+                    mappingLines: extractLocalMappingsFromText(raw, 1).length,
+                    truncated: length > maxSnippet * 2
+                };
+            };
 
             const patternFile = (config.selectedFiles && config.selectedFiles[0]) ? config.selectedFiles[0] : null;
             const targetFile = (config.selectedFiles && config.selectedFiles[1]) ? config.selectedFiles[1] : null;
@@ -3712,6 +3940,12 @@ def capstone_run_local_generator(args, out_dir):
                 patternFormat,
                 targetFormat
             });
+            const directEquivalenceReport = buildLocalVfLadEquivalenceReport({
+                vfPatternText: dual.vf.patternText,
+                vfTargetText: dual.vf.targetText,
+                ladPatternText: dual.lad.patternText,
+                ladTargetText: dual.lad.targetText
+            });
 
             const useVertexLabelledLad = baselineFormatFlag === 'vertexlabelledlad';
             const defaultLadPatternText = useVertexLabelledLad ? dual.lad.patternText : dual.ladUnlabelled.patternText;
@@ -3727,12 +3961,19 @@ def capstone_run_local_generator(args, out_dir):
             const targetFsPath = `/inputs/${targetName}`;
 
             const resolveGlasgowInputForIteration = (iterIndex) => {
-                const generated = getLocalGeneratedIterationInput('glasgow', iterIndex);
+                const generatedPrimary = getLocalGeneratedIterationInput(preferVf3GeneratedInputs ? 'vf3' : 'glasgow', iterIndex);
+                const generatedFallback = preferVf3GeneratedInputs
+                    ? getLocalGeneratedIterationInput('glasgow', iterIndex)
+                    : null;
+                const generated = generatedPrimary || generatedFallback;
                 const generatedFiles = generated && Array.isArray(generated.selectedFiles) ? generated.selectedFiles : null;
                 const generatedPattern = generatedFiles && generatedFiles[0] ? generatedFiles[0] : null;
                 const generatedTarget = generatedFiles && generatedFiles[1] ? generatedFiles[1] : null;
                 const generatedPatternPath = generatedPattern && generatedPattern.path ? String(generatedPattern.path) : '';
                 const generatedTargetPath = generatedTarget && generatedTarget.path ? String(generatedTarget.path) : '';
+                const inputSource = generatedPrimary
+                    ? (preferVf3GeneratedInputs ? 'vf3_generated' : 'glasgow_generated')
+                    : (generatedFallback ? 'glasgow_generated_fallback' : 'selected_files');
 
                 const patternFileForIter = generatedPattern || patternFile;
                 const targetFileForIter = generatedTarget || targetFile;
@@ -3760,7 +4001,12 @@ def capstone_run_local_generator(args, out_dir):
                         ladTargetText: useVertexLabelledLad ? dualForIter.lad.targetText : dualForIter.ladUnlabelled.targetText,
                         seed: generated && Object.prototype.hasOwnProperty.call(generated, 'seed')
                             ? generated.seed
-                            : null
+                            : null,
+                        inputSource,
+                        inputSignature: makeLadSignature(
+                            useVertexLabelledLad ? dualForIter.lad.patternText : dualForIter.ladUnlabelled.patternText,
+                            useVertexLabelledLad ? dualForIter.lad.targetText : dualForIter.ladUnlabelled.targetText
+                        )
                     };
                 } catch (_) {
                     return {
@@ -3768,7 +4014,9 @@ def capstone_run_local_generator(args, out_dir):
                         ladTargetText: String(defaultLadTargetText || ''),
                         seed: generated && Object.prototype.hasOwnProperty.call(generated, 'seed')
                             ? generated.seed
-                            : null
+                            : null,
+                        inputSource,
+                        inputSignature: makeLadSignature(defaultLadPatternText, defaultLadTargetText)
                     };
                 }
             };
@@ -3836,11 +4084,11 @@ def capstone_run_local_generator(args, out_dir):
 
             const abortSignal = runCtx && runCtx.abortController ? runCtx.abortController.signal : null;
 
-            const baselineFirstArgs = ['--format', baselineFormatFlag, patternFsPath, targetFsPath];
-            const baselineAllArgs = ['--count-solutions', '--format', baselineFormatFlag, patternFsPath, targetFsPath];
-            const glasgowAllArgs = ['--count-solutions', '--format', baselineFormatFlag];
-            const chatArgs = [...glasgowAllArgs, patternFsPath, targetFsPath];
-            const gemArgs = [...glasgowAllArgs, patternFsPath, targetFsPath];
+            const inducedArgs = enforceInducedCount ? ['--induced'] : [];
+            const baselineFirstArgs = [...inducedArgs, '--format', baselineFormatFlag, patternFsPath, targetFsPath];
+            const baselineAllArgs = ['--count-solutions', ...inducedArgs, '--format', baselineFormatFlag, patternFsPath, targetFsPath];
+            const chatArgs = [patternFsPath, targetFsPath];
+            const gemArgs = [patternFsPath, targetFsPath];
 
             try {
                 const warmupSingle = async (title, spec, argsList, tickIncrementRef, inputForRun) => {
@@ -3911,6 +4159,7 @@ def capstone_run_local_generator(args, out_dir):
                 const chatAllHeapKiB = [];
                 const gemFirstHeapKiB = [];
                 const gemAllHeapKiB = [];
+                const glasgowDiagnostics = [];
                 const baseFirstRefreshMs = [];
                 const baseAllRefreshMs = [];
                 const chatFirstRefreshMs = [];
@@ -4098,12 +4347,19 @@ def capstone_run_local_generator(args, out_dir):
                     await delay(0, abortSignal);
                     ticksDone++;
                     progressSetDeterminate('Glasgow ChatGPT', ticksDone, testsTotal, { stage: 'tests' });
-                    const chatCount = extractRobustSolutionCount(latestChat);
+                    const chatParse = parseGlasgowOutputCount(latestChat, iterInput);
+                    const chatCount = chatParse.count;
                     if (chatCount !== null && chatCount === referenceCount) chatMatch++;
                     else {
                         if (chatCount === null) {
                             console.warn('[runGlasgowLocally] Unable to parse Glasgow ChatGPT count', {
                                 iteration: iter + 1
+                            });
+                        } else if (!chatParse.parsed) {
+                            console.warn('[runGlasgowLocally] Unrecognized Glasgow ChatGPT output format', {
+                                iteration: iter + 1,
+                                reason: chatParse.reason,
+                                length: String(latestChat || '').length
                             });
                         }
                         chatMismatch++;
@@ -4147,16 +4403,52 @@ def capstone_run_local_generator(args, out_dir):
                     await delay(0, abortSignal);
                     ticksDone++;
                     progressSetDeterminate('Glasgow Gemini', ticksDone, testsTotal, { stage: 'tests' });
-                    const gemCount = extractRobustSolutionCount(latestGem);
+                    const gemParse = parseGlasgowOutputCount(latestGem, iterInput);
+                    const gemCount = gemParse.count;
                     if (gemCount !== null && gemCount === referenceCount) gemMatch++;
                     else {
                         if (gemCount === null) {
                             console.warn('[runGlasgowLocally] Unable to parse Glasgow Gemini count', {
                                 iteration: iter + 1
                             });
+                        } else if (!gemParse.parsed) {
+                            console.warn('[runGlasgowLocally] Unrecognized Glasgow Gemini output format', {
+                                iteration: iter + 1,
+                                reason: gemParse.reason,
+                                length: String(latestGem || '').length
+                            });
                         }
                         gemMismatch++;
                     }
+                    glasgowDiagnostics.push({
+                        iteration: iter + 1,
+                        referenceCount,
+                        referenceSource: (options && options.vf3BaselineCounts && options.vf3BaselineCounts[iter] !== undefined) ? 'vf3' : 'glasgow',
+                        baseline: {
+                            count: referenceCount,
+                            parse: parseGlasgowOutputCount(latestBaselineAll, iterInput)
+                        },
+                        chat: {
+                            count: chatCount,
+                            parsed: chatParse.parsed,
+                            reason: chatParse.reason,
+                            output: summarizeOutputText(latestChat),
+                            match: chatCount !== null && chatCount === referenceCount
+                        },
+                        gem: {
+                            count: gemCount,
+                            parsed: gemParse.parsed,
+                            reason: gemParse.reason,
+                            output: summarizeOutputText(latestGem),
+                            match: gemCount !== null && gemCount === referenceCount
+                        },
+                        seeds: {
+                            iterSeed: iterInput && Object.prototype.hasOwnProperty.call(iterInput, 'seed') ? iterInput.seed : null,
+                            iteration: iter + 1
+                        },
+                        inputSource: iterInput && iterInput.inputSource ? iterInput.inputSource : 'selected_files',
+                        inputSignature: (iterInput && iterInput.inputSignature) ? iterInput.inputSignature : null
+                    });
                     iterationVisualizationSources.push({
                         baselineFirstOut: latestBaselineFirst,
                         baselineAllOut: latestBaselineAll,
@@ -4185,6 +4477,7 @@ def capstone_run_local_generator(args, out_dir):
                         const visRes = await runEmscriptenMain(
                             visMod,
                             [
+                                ...(enforceInducedCount ? ['--induced'] : []),
                                 '--format',
                                 baselineFormatFlag,
                                 '--print-all-solutions',
@@ -4372,7 +4665,8 @@ def capstone_run_local_generator(args, out_dir):
                         gemOut,
                         ladPatternText: firstGlasgowInput.ladPatternText,
                         ladTargetText: firstGlasgowInput.ladTargetText
-                    }
+                    },
+                    _glasgowIterationDiagnostics: glasgowDiagnostics
                 };
             } finally {
                 try { invalidateEmscriptenModule(baselineSpec.id); } catch (_) {}
@@ -4463,7 +4757,9 @@ def capstone_run_local_generator(args, out_dir):
                 const glasgowRun = await runGlasgowLocally(runCtx, safeIterations, safeWarmup, {
                     baselineFormatFlag: 'vertexlabelledlad',
                     resultAlgorithm: 'glasgow',
-                    vf3BaselineCounts
+                    vf3BaselineCounts,
+                    forceUseVf3GeneratedInputs: true,
+                    enforceInducedCount: false
                 });
                 if (glasgowRun && glasgowRun.status === 'aborted') return glasgowRun;
 
@@ -4603,6 +4899,32 @@ def capstone_run_local_generator(args, out_dir):
                 }
                 if (visualization) {
                     result.visualization = visualization;
+                }
+                if (glasgowRun && Array.isArray(glasgowRun._glasgowIterationDiagnostics)) {
+                    result._glasgowIterationDiagnostics = glasgowRun._glasgowIterationDiagnostics;
+                }
+                result.equivalence_check = {
+                    applies: true,
+                    records: [
+                        {
+                            algorithm: 'subgraph',
+                            variant: 'premade_translation',
+                            iteration: 1,
+                            attempt: 1,
+                            seed: null,
+                            selected_for_solver: true,
+                            equivalent: !!(directEquivalenceReport && directEquivalenceReport.equivalent),
+                            note: String(directEquivalenceReport && directEquivalenceReport.summary ? directEquivalenceReport.summary : ''),
+                            details: directEquivalenceReport
+                        }
+                    ],
+                    selected_for_solver_count: 1,
+                    selected_for_solver_failures: (directEquivalenceReport && directEquivalenceReport.equivalent) ? 0 : 1,
+                    graphs_not_mathematically_identical: !(directEquivalenceReport && directEquivalenceReport.equivalent)
+                };
+                if (!(directEquivalenceReport && directEquivalenceReport.equivalent)) {
+                    const out = String(result.output || '').replace(/\s+$/, '');
+                    result.output = `${out}\n[Equivalence] Graphs were not mathematically identical for one or more selected solver inputs.`;
                 }
 
                 return {
@@ -4889,32 +5211,103 @@ def capstone_run_local_generator(args, out_dir):
                 });
 
                 const generatedRuns = [];
+                const equivalenceRecords = [];
                 for (let iter = 1; iter <= safeIterations; iter++) {
                     if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
-                    const generated = await session.generateForRun(`${algoKey}_iter`, String(iter));
-                    const files = Array.isArray(generated && generated.files) ? generated.files : [];
-                    if (!files.length) {
-                        throw new Error(`Local generator did not produce any files for iteration ${iter}.`);
+                    const maxAttempts = algoKey === 'subgraph' ? 10 : 1;
+                    let acceptedRun = null;
+                    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                        if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
+                        const generated = await session.generateForRun(`${algoKey}_iter`, String(iter));
+                        const files = Array.isArray(generated && generated.files) ? generated.files : [];
+                        if (!files.length) {
+                            const selected = attempt === maxAttempts;
+                            const details = { equivalent: false, summary: 'local_generator_produced_no_files' };
+                            equivalenceRecords.push({
+                                algorithm: algoKey,
+                                variant: `${algoKey}_iter`,
+                                iteration: iter,
+                                attempt,
+                                seed: generated && Object.prototype.hasOwnProperty.call(generated, 'seed') ? generated.seed : null,
+                                selected_for_solver: selected,
+                                equivalent: false,
+                                note: details.summary,
+                                details
+                            });
+                            if (selected) {
+                                throw new Error(`Local generator did not produce any files for iteration ${iter} after ${maxAttempts} attempts.`);
+                            }
+                            continue;
+                        }
+                        const iterScopedFiles = [];
+                        const iterPrefix = `__local/generated/${algoKey}/iter_${iter}/attempt_${attempt}`;
+                        for (const f of files) {
+                            const p = String(f && f.path ? f.path : '').trim();
+                            if (!p) continue;
+                            const scopedPath = `${iterPrefix}/${p.replace(/^[\\/]+/, '')}`;
+                            const text = String(f && f.text ? f.text : '');
+                            const n = {
+                                name: String(f && f.name ? f.name : ''),
+                                path: scopedPath,
+                                text
+                            };
+                            iterScopedFiles.push(n);
+                            _localInMemoryRepoFiles.set(scopedPath, text);
+                        }
+                        if (algoKey !== 'subgraph') {
+                            acceptedRun = {
+                                ...generated,
+                                files: iterScopedFiles
+                            };
+                            break;
+                        }
+
+                        const pickRoleFile = (entries, roleNeedle, ext) => (Array.isArray(entries) ? entries : []).find((entry) => {
+                            const name = String(entry && (entry.name || entry.path) ? (entry.name || entry.path) : '').toLowerCase();
+                            return name.includes(roleNeedle) && name.endsWith(ext);
+                        });
+                        const vfPattern = pickRoleFile(iterScopedFiles, 'pattern', '.vf');
+                        const vfTarget = pickRoleFile(iterScopedFiles, 'target', '.vf');
+                        const ladPattern = pickRoleFile(iterScopedFiles, 'pattern', '.lad');
+                        const ladTarget = pickRoleFile(iterScopedFiles, 'target', '.lad');
+
+                        let details = null;
+                        if (vfPattern && vfTarget && ladPattern && ladTarget) {
+                            details = buildLocalVfLadEquivalenceReport({
+                                vfPatternText: String(vfPattern.text || ''),
+                                vfTargetText: String(vfTarget.text || ''),
+                                ladPatternText: String(ladPattern.text || ''),
+                                ladTargetText: String(ladTarget.text || '')
+                            });
+                        } else {
+                            details = { equivalent: false, summary: 'missing_expected_vf_or_lad_files' };
+                        }
+
+                        const equivalent = !!(details && details.equivalent);
+                        const selected = equivalent || attempt === maxAttempts;
+                        equivalenceRecords.push({
+                            algorithm: algoKey,
+                            variant: `${algoKey}_iter`,
+                            iteration: iter,
+                            attempt,
+                            seed: generated && Object.prototype.hasOwnProperty.call(generated, 'seed') ? generated.seed : null,
+                            selected_for_solver: selected,
+                            equivalent,
+                            note: String(details && details.summary ? details.summary : ''),
+                            details
+                        });
+                        if (selected) {
+                            acceptedRun = {
+                                ...generated,
+                                files: iterScopedFiles
+                            };
+                            break;
+                        }
                     }
-                    const iterScopedFiles = [];
-                    const iterPrefix = `__local/generated/${algoKey}/iter_${iter}`;
-                    for (const f of files) {
-                        const p = String(f && f.path ? f.path : '').trim();
-                        if (!p) continue;
-                        const scopedPath = `${iterPrefix}/${p.replace(/^[\\/]+/, '')}`;
-                        const text = String(f && f.text ? f.text : '');
-                        const n = {
-                            name: String(f && f.name ? f.name : ''),
-                            path: scopedPath,
-                            text
-                        };
-                        iterScopedFiles.push(n);
-                        _localInMemoryRepoFiles.set(scopedPath, text);
+                    if (!acceptedRun) {
+                        throw new Error(`Local generator failed to produce usable inputs for iteration ${iter}.`);
                     }
-                    generatedRuns.push({
-                        ...generated,
-                        files: iterScopedFiles
-                    });
+                    generatedRuns.push(acceptedRun);
                 }
 
                 const pickByName = (files, needle) => (Array.isArray(files) ? files : []).find(f => String(f && f.name ? f.name : '').toLowerCase().includes(String(needle || '').toLowerCase()));
@@ -5032,6 +5425,21 @@ def capstone_run_local_generator(args, out_dir):
                     if (algoKey !== 'dijkstra') {
                         result.inputs.k = Number.isFinite(Number(config.generator && config.generator.k)) ? Number(config.generator.k) : config.generator.k;
                     }
+                    if (algoKey === 'subgraph' && equivalenceRecords.length) {
+                        const selected = equivalenceRecords.filter((r) => r && r.selected_for_solver);
+                        const selectedFailures = selected.filter((r) => !r.equivalent);
+                        result.equivalence_check = {
+                            applies: true,
+                            records: equivalenceRecords,
+                            selected_for_solver_count: selected.length,
+                            selected_for_solver_failures: selectedFailures.length,
+                            graphs_not_mathematically_identical: selectedFailures.length > 0
+                        };
+                        if (selectedFailures.length > 0) {
+                            const out = String(result.output || '').replace(/\s+$/, '');
+                            result.output = `${out}\n[Equivalence] Graphs were not mathematically identical for one or more selected solver inputs.`;
+                        }
+                    }
                     const iterationEntries = primaryEntries.length
                         ? primaryEntries
                         : generatedSeeds.map((seed) => ({ seed, metadata: {}, selectedFiles: firstSelectedFiles }));
@@ -5142,7 +5550,24 @@ def capstone_run_local_generator(args, out_dir):
                                 seed: seedAt(iterIndex)
                             }));
                         } catch (_) {}
-                    } else if (algoKey === 'dijkstra' && result.visualization && Array.isArray(result.visualization.visualization_iterations)) {
+                    } else if (
+                        algoKey === 'dijkstra' &&
+                        typeof buildLocalDijkstraVisualization === 'function' &&
+                        typeof buildLocalVisualizationIterations === 'function' &&
+                        (!result.visualization || !Array.isArray(result.visualization.visualization_iterations) || !result.visualization.visualization_iterations.length)
+                    ) {
+                        try {
+                            const inputFile = config.selectedFiles[0];
+                            const inputText = inputFile && inputFile.path ? (_localInMemoryRepoFiles.get(inputFile.path) || '') : '';
+                            result.visualization = buildRepeatedVisualization((iterIndex) => buildLocalDijkstraVisualization({
+                                inputText,
+                                iteration: iterIndex + 1,
+                                seed: seedAt(iterIndex),
+                                solverSolutions: []
+                            }));
+                        } catch (_) {}
+                    }
+                    if (algoKey === 'dijkstra' && result.visualization && Array.isArray(result.visualization.visualization_iterations)) {
                         result.visualization.seed = seedAt(0);
                         for (let i = 0; i < result.visualization.visualization_iterations.length; i++) {
                             const v = result.visualization.visualization_iterations[i];
