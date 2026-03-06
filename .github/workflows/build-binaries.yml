@@ -11,6 +11,7 @@ on:
       - 'baselines/vf3lib/**'
       - 'baselines/glasgow-subgraph-solver/**'
       - 'src/**'
+      - 'scripts/check-glasgow-parity.py'
       - '.github/workflows/build-binaries.yml'
       - '.gitmodules'
 
@@ -87,6 +88,11 @@ jobs:
             src/glasgow_gemini \
             baselines/vf3lib/bin/vf3 \
             baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver
+
+      - name: Check Glasgow parity
+        run: |
+          set -euo pipefail
+          python3 scripts/check-glasgow-parity.py
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4

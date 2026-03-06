@@ -74,6 +74,14 @@ need_cmd git
 need_cmd g++
 need_cmd make
 need_cmd cmake
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="python"
+else
+  echo "Missing required command: python3 (or python)" >&2
+  exit 1
+fi
 
 run_step "Updating submodules" git submodule update --init --recursive
 
@@ -122,6 +130,8 @@ reset_glasgow_build_dir_if_needed "$expected_generator"
 run_step "Configuring Glasgow baseline" cmake "${cmake_args[@]}"
 run_step "Building Glasgow baseline" \
   cmake --build "baselines/glasgow-subgraph-solver/build" --config Release --parallel
+run_step "Checking Glasgow parity" \
+  "$PYTHON_BIN" "scripts/check-glasgow-parity.py"
 
 expected_outputs=(
   "baselines/dijkstra"

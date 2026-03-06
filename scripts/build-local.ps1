@@ -69,6 +69,14 @@ Require-Command git
 Require-Command g++
 Require-Command make
 Require-Command cmake
+$PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+if (-not $PythonCommand) {
+    $PythonCommand = Get-Command py -ErrorAction SilentlyContinue
+}
+if (-not $PythonCommand) {
+    throw "Missing required command: python (or py)"
+}
+$PythonExe = $PythonCommand.Source
 
 Invoke-Step "Updating submodules" { git submodule update --init --recursive }
 
@@ -117,6 +125,9 @@ Invoke-Step "Configuring Glasgow baseline" {
 }
 Invoke-Step "Building Glasgow baseline" {
     cmake --build "baselines/glasgow-subgraph-solver/build" --config Release --parallel
+}
+Invoke-Step "Checking Glasgow parity" {
+    & $PythonExe "scripts/check-glasgow-parity.py"
 }
 
 $expectedOutputs = @(

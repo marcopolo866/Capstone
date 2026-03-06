@@ -1,209 +1,242 @@
-/*
-Write a program in C++ that, given a large target graph, finds all instances of a smaller pattern graph within it,
-or confirms that no instances exist. The program should accept inputs like the provided files (shown below) and must
-support both .lad and .grf graph formats. Input files will look very similar to these references.
-The key idea is achieving the fastest runtime possible, so take every shortcut available, including advanced pruning,
-ordering heuristics, and constraint-based filtering. The solution should be optimized for performance over readability
-and must scale well to large graphs. Just output the code as a single block to copy and paste, nothing else.
-The program must also output how long it took to run, measured as precisely as possible in milliseconds,
-without losing accuracy.
-The program must print only the following lines, in this exact order:
-The nodes of the target graph that form each instance of the pattern graph. If multiple instances exist,
-print one numbered list per line. If an instance does not fit on a single line, wrap the list in brackets and
-continue on subsequent lines. The total number of distinct instances of the smaller graph found in
-the larger target graph, printed as a single integer. The execution time of the program in milliseconds,
-printed on the final line.
-*/
-#include <iostream>
-#include <vector>
 #include <algorithm>
-#include <numeric>
 #include <chrono>
+#include <functional>
+#include <fstream>
+#include <iostream>
+#include <numeric>
+#include <sstream>
 #include <string>
-#include <cstdlib>
-#include <cstdio>
-
-using namespace std;
+#include <vector>
 
 struct Graph {
-    int n;
-    vector<int> label;
-    vector<vector<int>> adj;
-    vector<int> deg;
+    int n = 0;
+    std::vector<int> labels;
+    std::vector<std::vector<int>> adj;
+    std::vector<std::vector<unsigned char>> matrix;
+    std::vector<int> degree;
 };
 
-static inline bool has_edge(const Graph &g, int u, int v) {
-    const auto &a = g.adj[u];
-    return binary_search(a.begin(), a.end(), v);
+static std::vector<int> parse_ints(const std::string &line) {
+    std::vector<int> out;
+    std::istringstream iss(line);
+    int v = 0;
+    while (iss >> v) out.push_back(v);
+    return out;
 }
 
-// Parse ints from a text line, store into vals. Returns number parsed.
-static int parse_ints(const char *line, vector<int> &vals) {
-    vals.clear();
-    const char *p = line;
-    while (*p) {
-        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
-        if (!*p) break;
-        bool neg = (*p == '-');
-        if (neg) p++;
-        if (*p < '0' || *p > '9') break;
-        int v = 0;
-        while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
-        vals.push_back(neg ? -v : v);
+static void finalize_graph(Graph &g) {
+    g.matrix.assign(g.n, std::vector<unsigned char>(g.n, 0));
+    for (int u = 0; u < g.n; ++u) {
+        for (int v : g.adj[u]) {
+            if (v >= 0 && v < g.n && v != u) {
+                g.matrix[u][v] = 1;
+                g.matrix[v][u] = 1;
+            }
+        }
     }
-    return (int)vals.size();
+    g.degree.assign(g.n, 0);
+    for (int u = 0; u < g.n; ++u) {
+        g.adj[u].clear();
+        for (int v = 0; v < g.n; ++v) {
+            if (g.matrix[u][v]) g.adj[u].push_back(v);
+        }
+        g.degree[u] = static_cast<int>(g.adj[u].size());
+    }
 }
 
-Graph read_lad(const string &file) {
-    FILE *f = fopen(file.c_str(), "r");
-    if (!f) exit(1);
-    Graph g;
-    if (fscanf(f, "%d", &g.n) != 1) { fclose(f); exit(1); }
-    g.label.resize(g.n);
+static bool read_lad(const std::string &path, Graph &g) {
+    std::ifstream in(path);
+    if (!in) return false;
+
+    std::string line;
+    int n = -1;
+    while (std::getline(in, line)) {
+        auto vals = parse_ints(line);
+        if (vals.empty()) continue;
+        n = vals[0];
+        break;
+    }
+    if (n <= 0) return false;
+
+    g = Graph{};
+    g.n = n;
+    g.labels.assign(g.n, 0);
     g.adj.assign(g.n, {});
 
-    char line[65536];
-    fgets(line, sizeof(line), f); // consume rest of first line
-
-    // Pass 1: read all vertex lines, detect format.
-    // Standard LAD: every line satisfies vals[0] == vals.size()-1.
-    // Vertex-labelled LAD (write_lad output): vals[0]=label, vals[1]=count; any line
-    // where label != degree+1 will fail the standard check.
-    vector<vector<int>> all_vals(g.n);
-    bool vertex_labelled = false;
-    vector<int> tmp;
-    for (int i = 0; i < g.n; i++) {
-        if (!fgets(line, sizeof(line), f)) break;
-        parse_ints(line, tmp);
-        all_vals[i] = tmp;
-        if (!tmp.empty() && tmp[0] != (int)tmp.size() - 1)
-            vertex_labelled = true;
+    std::vector<std::vector<int>> rows;
+    rows.reserve(g.n);
+    while (static_cast<int>(rows.size()) < g.n && std::getline(in, line)) {
+        auto vals = parse_ints(line);
+        if (vals.empty()) continue;
+        rows.push_back(std::move(vals));
     }
-    fclose(f);
+    while (static_cast<int>(rows.size()) < g.n) rows.push_back({});
 
-    // Pass 2: parse adjacency using detected format.
-    for (int i = 0; i < g.n; i++) {
-        auto& vals = all_vals[i];
-        if (vals.empty()) { g.label[i] = 0; continue; }
-        if (vertex_labelled) {
-            // Vertex-labelled: vals[0]=label, vals[1]=count, vals[2..]=neighbors
-            g.label[i] = vals[0];
-            int count = (vals.size() >= 2) ? vals[1] : 0;
-            for (int j = 2; j <= count + 1 && j < (int)vals.size(); j++) {
-                int v = vals[j];
-                if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
-            }
-        } else {
-            // Standard: vals[0]=count, vals[1..]=neighbors
-            g.label[i] = 0;
-            int count = vals[0];
-            for (int j = 1; j <= count && j < (int)vals.size(); j++) {
-                int v = vals[j];
-                if (v >= 0 && v < g.n && v != i) g.adj[i].push_back(v);
+    int vertex_votes = 0;
+    int standard_votes = 0;
+    for (const auto &row : rows) {
+        if (row.empty()) continue;
+        const bool std_shape =
+            row[0] >= 0 && row[0] <= static_cast<int>(row.size()) - 1;
+        const bool vtx_shape =
+            row.size() >= 2 && row[1] >= 0 && row[1] <= static_cast<int>(row.size()) - 2;
+        if (std_shape && !vtx_shape) {
+            ++standard_votes;
+        } else if (!std_shape && vtx_shape) {
+            ++vertex_votes;
+        } else if (std_shape && vtx_shape) {
+            const bool std_exact = (row[0] == static_cast<int>(row.size()) - 1);
+            const bool vtx_exact = (row[1] == static_cast<int>(row.size()) - 2);
+            if (std_exact && !vtx_exact) {
+                ++standard_votes;
+            } else if (!std_exact && vtx_exact) {
+                ++vertex_votes;
             }
         }
     }
 
-    // Make graph undirected: add reverse edges, then sort+dedup
-    for (int i = 0; i < g.n; i++) {
-        for (int v : g.adj[i]) g.adj[v].push_back(i);
+    bool vertex_labelled = vertex_votes > standard_votes;
+    if (vertex_votes == standard_votes) {
+        for (const auto &row : rows) {
+            if (!row.empty() && row[0] != static_cast<int>(row.size()) - 1) {
+                vertex_labelled = true;
+                break;
+            }
+        }
     }
-    g.deg.resize(g.n);
-    for (int i = 0; i < g.n; i++) {
-        sort(g.adj[i].begin(), g.adj[i].end());
-        g.adj[i].erase(unique(g.adj[i].begin(), g.adj[i].end()), g.adj[i].end());
-        g.deg[i] = (int)g.adj[i].size();
+
+    for (int u = 0; u < g.n; ++u) {
+        const auto &row = rows[u];
+        if (row.empty()) continue;
+        int start = 1;
+        int count = row[0];
+        if (vertex_labelled) {
+            g.labels[u] = row[0];
+            count = (row.size() >= 2) ? row[1] : 0;
+            start = 2;
+        }
+        for (int i = 0; i < count && (start + i) < static_cast<int>(row.size()); ++i) {
+            const int v = row[start + i];
+            if (v >= 0 && v < g.n && v != u) g.adj[u].push_back(v);
+        }
     }
-    return g;
+    finalize_graph(g);
+    return true;
 }
 
-void dfs(int depth, int pn, int tn,
-         const Graph &pattern, const Graph &target,
-         const vector<int> &order,
-         vector<int> &map_p2t, vector<char> &used,
-         long long &total_instances, vector<int> &solution) {
-    if (depth == pn) {
-        for (int i = 0; i < pn; i++) {
-            solution[order[i]] = map_p2t[order[i]];
-        }
-        total_instances++;
-        cout << "Mapping: ";
-        for (int p = 0; p < pn; p++) {
-            cout << "(" << p << " -> " << solution[p] << ")";
-            if (p + 1 < pn) cout << " ";
-        }
-        cout << "\n";
-        return;
-    }
+static bool read_grf(const std::string &path, Graph &g) {
+    std::ifstream in(path);
+    if (!in) return false;
 
-    int p = order[depth];
+    int n = -1;
+    if (!(in >> n) || n <= 0) return false;
 
-    vector<int> candidates;
-    for (int t = 0; t < tn; t++) {
-        if (!used[t] &&
-            pattern.label[p] == target.label[t] &&
-            pattern.deg[p] <= target.deg[t]) {
-            candidates.push_back(t);
+    g = Graph{};
+    g.n = n;
+    g.labels.assign(g.n, 0);
+    g.adj.assign(g.n, {});
+
+    int u = -1, v = -1;
+    while (in >> u >> v) {
+        if (u >= 0 && u < g.n && v >= 0 && v < g.n && u != v) {
+            g.adj[u].push_back(v);
+            g.adj[v].push_back(u);
         }
     }
+    finalize_graph(g);
+    return true;
+}
 
-    sort(candidates.begin(), candidates.end(), [&target](int a, int b) {
-        if (target.deg[a] != target.deg[b])
-            return target.deg[a] > target.deg[b];
-        return a > b;
-    });
-
-    for (int t : candidates) {
-        bool ok = true;
-        for (int i = 0; i < depth && ok; i++) {
-            int pp = order[i];
-            int tt = map_p2t[pp];
-            if (has_edge(pattern, p, pp) && !has_edge(target, t, tt))
-                ok = false;
-            if (has_edge(pattern, pp, p) && !has_edge(target, tt, t))
-                ok = false;
-        }
-        if (!ok) continue;
-
-        used[t] = 1;
-        map_p2t[p] = t;
-        dfs(depth + 1, pn, tn, pattern, target, order,
-            map_p2t, used, total_instances, solution);
-        used[t] = 0;
-        map_p2t[p] = -1;
-    }
+static bool read_graph(const std::string &path, Graph &g) {
+    const auto dot = path.find_last_of('.');
+    const std::string ext = (dot == std::string::npos) ? "" : path.substr(dot + 1);
+    if (ext == "grf") return read_grf(path, g);
+    return read_lad(path, g);
 }
 
 int main(int argc, char **argv) {
     if (argc < 3) return 1;
-    auto start = chrono::high_resolution_clock::now();
+    const auto t0 = std::chrono::high_resolution_clock::now();
 
-    // Match the workflow and the other solvers: pattern first, target second.
-    Graph pattern = read_lad(argv[1]);
-    Graph target  = read_lad(argv[2]);
+    Graph pattern, target;
+    if (!read_graph(argv[1], pattern) || !read_graph(argv[2], target)) return 1;
 
-    int pn = pattern.n, tn = target.n;
+    if (pattern.n > target.n) {
+        const auto t1 = std::chrono::high_resolution_clock::now();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        std::cout << 0 << '\n';
+        std::cout << "Time: " << ms << '\n';
+        return 0;
+    }
 
-    vector<int> order(pn);
-    iota(order.begin(), order.end(), 0);
-    sort(order.begin(), order.end(), [&](int a, int b) {
-        return pattern.deg[a] > pattern.deg[b];
+    std::vector<std::vector<int>> domain(pattern.n);
+    for (int p = 0; p < pattern.n; ++p) {
+        for (int t = 0; t < target.n; ++t) {
+            if (pattern.labels[p] == target.labels[t] && pattern.degree[p] <= target.degree[t]) {
+                domain[p].push_back(t);
+            }
+        }
+        if (domain[p].empty()) {
+            const auto t1 = std::chrono::high_resolution_clock::now();
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+            std::cout << 0 << '\n';
+            std::cout << "Time: " << ms << '\n';
+            return 0;
+        }
+    }
+
+    std::vector<int> order(pattern.n);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        if (domain[a].size() != domain[b].size()) return domain[a].size() < domain[b].size();
+        if (pattern.degree[a] != pattern.degree[b]) return pattern.degree[a] > pattern.degree[b];
+        return a < b;
     });
 
-    vector<int> map_p2t(pn, -1);
-    vector<char> used(tn, 0);
+    std::vector<int> p_to_t(pattern.n, -1);
+    std::vector<unsigned char> used_t(target.n, 0);
+    long long total = 0;
 
-    long long total_instances = 0;
-    vector<int> solution(pn, -1);
+    std::function<void(int)> search = [&](int depth) {
+        if (depth == pattern.n) {
+            ++total;
+            std::cout << "Mapping: ";
+            for (int p = 0; p < pattern.n; ++p) {
+                if (p) std::cout << ' ';
+                std::cout << '(' << p << " -> " << p_to_t[p] << ')';
+            }
+            std::cout << '\n';
+            return;
+        }
 
-    dfs(0, pn, tn, pattern, target, order, map_p2t, used, total_instances, solution);
+        const int p = order[depth];
+        for (int t : domain[p]) {
+            if (used_t[t]) continue;
 
-    auto end = chrono::high_resolution_clock::now();
-    long long ms =
-        chrono::duration_cast<chrono::milliseconds>(end - start).count();
+            bool ok = true;
+            for (int d = 0; d < depth; ++d) {
+                const int pp = order[d];
+                const int tt = p_to_t[pp];
+                if (pattern.matrix[p][pp] && !target.matrix[t][tt]) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (!ok) continue;
 
-    cout << total_instances << "\n";
-    cout << "Time: " << ms << "\n";
+            p_to_t[p] = t;
+            used_t[t] = 1;
+            search(depth + 1);
+            used_t[t] = 0;
+            p_to_t[p] = -1;
+        }
+    };
 
+    search(0);
+
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    std::cout << total << '\n';
+    std::cout << "Time: " << ms << '\n';
     return 0;
 }

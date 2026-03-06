@@ -1,195 +1,242 @@
-#include <iostream>
-#include <vector>
-#include <string>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <numeric>
+#include <string>
+#include <vector>
 
-using namespace std;
-
-// Optimized structure for fast adjacency checks
 struct Graph {
-    int n;
-    vector<vector<int>> adj;
-    vector<vector<bool>> matrix;
-    vector<int> label;
+    int n = 0;
+    std::vector<int> label;
+    std::vector<int> degree;
+    std::vector<std::vector<int>> adj;
 };
 
-// Parse ints from a text line into vals. Returns number of ints parsed.
-static int parse_ints(const char *line, vector<int> &vals) {
+static bool has_edge(const Graph &g, int u, int v) {
+    const auto &a = g.adj[u];
+    return std::binary_search(a.begin(), a.end(), v);
+}
+
+static int parse_line_ints(const char *line, std::vector<int> &vals) {
     vals.clear();
     const char *p = line;
     while (*p) {
-        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
         if (!*p) break;
         bool neg = (*p == '-');
-        if (neg) p++;
+        if (neg) ++p;
         if (*p < '0' || *p > '9') break;
         int v = 0;
         while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
         vals.push_back(neg ? -v : v);
     }
-    return (int)vals.size();
+    return static_cast<int>(vals.size());
 }
 
-// Parser for .lad format
-bool read_lad(const string& filename, Graph& g) {
-    FILE *f = fopen(filename.c_str(), "r");
+static void finalize_graph(Graph &g) {
+    for (int u = 0; u < g.n; ++u) {
+        std::sort(g.adj[u].begin(), g.adj[u].end());
+        g.adj[u].erase(std::unique(g.adj[u].begin(), g.adj[u].end()), g.adj[u].end());
+    }
+    for (int u = 0; u < g.n; ++u) {
+        for (int v : g.adj[u]) {
+            if (v >= 0 && v < g.n && v != u) g.adj[v].push_back(u);
+        }
+    }
+    for (int u = 0; u < g.n; ++u) {
+        std::sort(g.adj[u].begin(), g.adj[u].end());
+        g.adj[u].erase(std::unique(g.adj[u].begin(), g.adj[u].end()), g.adj[u].end());
+    }
+    g.degree.assign(g.n, 0);
+    for (int u = 0; u < g.n; ++u) g.degree[u] = static_cast<int>(g.adj[u].size());
+}
+
+static bool read_lad(const std::string &filename, Graph &g) {
+    FILE *f = std::fopen(filename.c_str(), "r");
     if (!f) return false;
 
+    g = Graph{};
     char line[65536];
-    // Skip comment/bracket lines
-    while (true) {
-        int c = fgetc(f);
-        if (c == EOF) { fclose(f); return false; }
-        if (c == '[' || c == '\r' || c == '\n') {
-            // consume rest of line
-            while (c != '\n' && c != EOF) c = fgetc(f);
-        } else {
-            ungetc(c, f);
+    std::vector<int> vals;
+
+    while (std::fgets(line, sizeof(line), f)) {
+        if (parse_line_ints(line, vals) > 0) {
+            g.n = vals[0];
             break;
         }
     }
-
-    if (fscanf(f, "%d", &g.n) != 1) { fclose(f); return false; }
-    fgets(line, sizeof(line), f); // consume rest of n line
-
-    g.adj.resize(g.n);
-    g.matrix.assign(g.n, vector<bool>(g.n, false));
-    g.label.assign(g.n, 0);
-
-    // Pass 1: read all vertex lines, detect format.
-    // Standard LAD: every line satisfies vals[0] == vals.size()-1.
-    // Vertex-labelled LAD (write_lad output): vals[0]=label, vals[1]=count; any line
-    // where label != degree+1 will fail the standard check.
-    vector<vector<int>> all_vals(g.n);
-    bool vertex_labelled = false;
-    vector<int> vals;
-    for (int i = 0; i < g.n; ++i) {
-        if (!fgets(line, sizeof(line), f)) break;
-        parse_ints(line, all_vals[i]);
-        if (!all_vals[i].empty() && all_vals[i][0] != (int)all_vals[i].size() - 1)
-            vertex_labelled = true;
+    if (g.n <= 0) {
+        std::fclose(f);
+        return false;
     }
-    fclose(f);
 
-    // Pass 2: parse adjacency using detected format.
+    g.label.assign(g.n, 0);
+    g.adj.assign(g.n, {});
+
+    std::vector<std::vector<int>> rows(g.n);
+    int got = 0;
+    while (got < g.n && std::fgets(line, sizeof(line), f)) {
+        if (parse_line_ints(line, vals) <= 0) continue;
+        rows[got++] = vals;
+    }
+    std::fclose(f);
+
+    int vertex_votes = 0;
+    int standard_votes = 0;
     for (int i = 0; i < g.n; ++i) {
-        auto& v = all_vals[i];
-        if (v.empty()) continue;
-        int count, start;
+        const auto &row = rows[i];
+        if (row.empty()) continue;
+        const bool std_shape =
+            row[0] >= 0 && row[0] <= static_cast<int>(row.size()) - 1;
+        const bool vtx_shape =
+            row.size() >= 2 && row[1] >= 0 && row[1] <= static_cast<int>(row.size()) - 2;
+        if (std_shape && !vtx_shape) {
+            ++standard_votes;
+        } else if (!std_shape && vtx_shape) {
+            ++vertex_votes;
+        } else if (std_shape && vtx_shape) {
+            const bool std_exact = (row[0] == static_cast<int>(row.size()) - 1);
+            const bool vtx_exact = (row[1] == static_cast<int>(row.size()) - 2);
+            if (std_exact && !vtx_exact) {
+                ++standard_votes;
+            } else if (!std_exact && vtx_exact) {
+                ++vertex_votes;
+            }
+        }
+    }
+
+    bool vertex_labelled = vertex_votes > standard_votes;
+    if (vertex_votes == standard_votes) {
+        for (int i = 0; i < g.n; ++i) {
+            if (!rows[i].empty() && rows[i][0] != static_cast<int>(rows[i].size()) - 1) {
+                vertex_labelled = true;
+                break;
+            }
+        }
+    }
+
+    for (int u = 0; u < g.n; ++u) {
+        const auto &row = rows[u];
+        if (row.empty()) continue;
+        int start = 1;
+        int count = row[0];
         if (vertex_labelled) {
-            g.label[i] = v[0];
-            count = (v.size() >= 2) ? v[1] : 0;
+            g.label[u] = row[0];
+            count = (row.size() >= 2) ? row[1] : 0;
             start = 2;
-        } else {
-            count = v[0];
-            start = 1;
         }
-        for (int j = 0; j < count && start + j < (int)v.size(); ++j) {
-            int neighbor = v[start + j];
-            if (neighbor >= 0 && neighbor < g.n && neighbor != i) {
-                g.adj[i].push_back(neighbor);
-                g.matrix[i][neighbor] = true;
-            }
+        for (int j = 0; j < count && start + j < static_cast<int>(row.size()); ++j) {
+            int v = row[start + j];
+            if (v >= 0 && v < g.n && v != u) g.adj[u].push_back(v);
         }
     }
-    // Make graph undirected: add reverse edges
-    for (int i = 0; i < g.n; ++i) {
-        for (int j : g.adj[i]) {
-            if (!g.matrix[j][i]) {
-                g.adj[j].push_back(i);
-                g.matrix[j][i] = true;
-            }
-        }
-    }
+
+    finalize_graph(g);
     return true;
 }
 
-// Parser for .grf format
-bool read_grf(const string& filename, Graph& g) {
-    FILE *f = fopen(filename.c_str(), "r");
+static bool read_grf(const std::string &filename, Graph &g) {
+    FILE *f = std::fopen(filename.c_str(), "r");
     if (!f) return false;
-    if (fscanf(f, "%d", &g.n) != 1) { fclose(f); return false; }
-    g.adj.resize(g.n);
-    g.matrix.assign(g.n, vector<bool>(g.n, false));
-    g.label.assign(g.n, 0);
-    int u, v;
-    while (fscanf(f, "%d %d", &u, &v) == 2) {
-        if (u < g.n && v < g.n) {
-            g.adj[u].push_back(v);
-            g.matrix[u][v] = true;
-            g.adj[v].push_back(u);
-            g.matrix[v][u] = true;
-        }
+
+    g = Graph{};
+    if (std::fscanf(f, "%d", &g.n) != 1 || g.n <= 0) {
+        std::fclose(f);
+        return false;
     }
-    fclose(f);
+
+    g.label.assign(g.n, 0);
+    g.adj.assign(g.n, {});
+
+    int u = -1, v = -1;
+    while (std::fscanf(f, "%d %d", &u, &v) == 2) {
+        if (u >= 0 && u < g.n && v >= 0 && v < g.n && u != v) g.adj[u].push_back(v);
+    }
+    std::fclose(f);
+
+    finalize_graph(g);
     return true;
 }
 
-int total_instances = 0;
-vector<int> mapping;
-vector<bool> used;
+static bool read_graph(const std::string &path, Graph &g) {
+    const auto dot = path.find_last_of('.');
+    const std::string ext = (dot == std::string::npos) ? "" : path.substr(dot + 1);
+    if (ext == "grf") return read_grf(path, g);
+    return read_lad(path, g);
+}
 
-void backtrack(int p_idx, const Graph& p, const Graph& t) {
-    if (p_idx == p.n) {
-        total_instances++;
-        cout << "Mapping: ";
-        for (int i = 0; i < p.n; ++i) {
-            cout << "(" << i << " -> " << mapping[i] << ")" << (i == p.n - 1 ? "" : " ");
-        }
-        cout << endl;
-        return;
+int main(int argc, char **argv) {
+    if (argc < 3) return 1;
+    const auto started = std::chrono::high_resolution_clock::now();
+
+    Graph pattern, target;
+    if (!read_graph(argv[1], pattern) || !read_graph(argv[2], target)) return 1;
+
+    if (pattern.n > target.n) {
+        const auto done = std::chrono::high_resolution_clock::now();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(done - started).count();
+        std::cout << 0 << '\n';
+        std::cout << "Time: " << ms << '\n';
+        return 0;
     }
 
-    for (int v = 0; v < t.n; ++v) {
-        if (!used[v]) {
-            if (p.label[p_idx] != t.label[v]) continue;
-            // Advanced Pruning: Degree constraint (pattern node degree <= target node degree)
-            if (t.adj[v].size() < p.adj[p_idx].size()) continue;
+    std::vector<int> order(pattern.n);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        if (pattern.degree[a] != pattern.degree[b]) return pattern.degree[a] > pattern.degree[b];
+        return a < b;
+    });
+
+    std::vector<int> map_p_to_t(pattern.n, -1);
+    std::vector<unsigned char> used_t(target.n, 0);
+    long long total_instances = 0;
+
+    std::function<void(int)> dfs = [&](int depth) {
+        if (depth == pattern.n) {
+            ++total_instances;
+            std::cout << "Mapping: ";
+            for (int p = 0; p < pattern.n; ++p) {
+                if (p) std::cout << ' ';
+                std::cout << '(' << p << " -> " << map_p_to_t[p] << ')';
+            }
+            std::cout << '\n';
+            return;
+        }
+
+        const int p = order[depth];
+        for (int t = 0; t < target.n; ++t) {
+            if (used_t[t]) continue;
+            if (pattern.label[p] != target.label[t]) continue;
+            if (pattern.degree[p] > target.degree[t]) continue;
 
             bool ok = true;
-            // Constraint-based filtering: Check if existing mappings preserve edges (non-induced)
-            for (int prev_p = 0; prev_p < p_idx; ++prev_p) {
-                if (p.matrix[p_idx][prev_p] && !t.matrix[v][mapping[prev_p]]) { ok = false; break; }
-                if (p.matrix[prev_p][p_idx] && !t.matrix[mapping[prev_p]][v]) { ok = false; break; }
+            for (int i = 0; i < depth; ++i) {
+                const int pp = order[i];
+                const int tt = map_p_to_t[pp];
+                if (has_edge(pattern, p, pp) && !has_edge(target, t, tt)) {
+                    ok = false;
+                    break;
+                }
             }
+            if (!ok) continue;
 
-            if (ok) {
-                used[v] = true;
-                mapping[p_idx] = v;
-                backtrack(p_idx + 1, p, t);
-                used[v] = false;
-            }
+            used_t[t] = 1;
+            map_p_to_t[p] = t;
+            dfs(depth + 1);
+            map_p_to_t[p] = -1;
+            used_t[t] = 0;
         }
-    }
-}
-
-int main(int argc, char** argv) {
-    if (argc < 3) return 1;
-    Graph pattern, target;
-    string p_file = argv[1], t_file = argv[2];
-
-    auto get_ext = [&](string f) {
-        size_t dot = f.find_last_of(".");
-        return (dot == string::npos) ? "" : f.substr(dot + 1);
     };
 
-    if (get_ext(p_file) == "lad") read_lad(p_file, pattern); else read_grf(p_file, pattern);
-    if (get_ext(t_file) == "lad") read_lad(t_file, target); else read_grf(t_file, target);
+    dfs(0);
 
-    mapping.resize(pattern.n);
-    used.assign(target.n, false);
-
-    auto start = chrono::high_resolution_clock::now();
-    backtrack(0, pattern, target);
-    auto end = chrono::high_resolution_clock::now();
-
-    auto duration = chrono::duration_cast<chrono::milliseconds>(end - start).count();
-
-    cout << total_instances << endl;
-    cout << "Time: " << duration << endl;
-
+    const auto done = std::chrono::high_resolution_clock::now();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(done - started).count();
+    std::cout << total_instances << '\n';
+    std::cout << "Time: " << ms << '\n';
     return 0;
 }
