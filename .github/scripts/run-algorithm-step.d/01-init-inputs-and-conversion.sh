@@ -229,7 +229,7 @@ append_equivalence_record() {
   local generation_ok="$6"
   local eq_json="$7"
   local note="$8"
-  printf '%s' "$eq_json" | python - "$EQUIVALENCE_REPORT_FILE" "$ALGORITHM" "$variant" "$iter_tag" "$attempt" "$seed" "$selected_for_solver" "$generation_ok" "$note" <<'PY'
+  python - "$EQUIVALENCE_REPORT_FILE" "$ALGORITHM" "$variant" "$iter_tag" "$attempt" "$seed" "$selected_for_solver" "$generation_ok" "$note" "$eq_json" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -243,7 +243,7 @@ seed_raw = sys.argv[6]
 selected = str(sys.argv[7]).strip().lower() == "true"
 generation_ok = str(sys.argv[8]).strip().lower() == "true"
 note = sys.argv[9]
-raw = sys.stdin.read().strip()
+raw = sys.argv[10].strip() if len(sys.argv) > 10 else ""
 details = {}
 if raw:
     try:

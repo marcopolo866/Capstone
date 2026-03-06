@@ -809,7 +809,7 @@ case "$ALGORITHM" in
             EXIT_CODE=1
             break
           fi
-          if ! run_capture out dur ./baselines/vf3lib/bin/vf3 -u -r 0 "${FILES[0]}" "${FILES[1]}"; then
+          if ! run_capture out dur ./baselines/vf3lib/bin/vf3 -u -r 0 -e "${FILES[0]}" "${FILES[1]}"; then
             echo "[Warmup] VF3 baseline all failed." >> outputs/result.txt
             EXIT_CODE=1
             break
@@ -829,7 +829,7 @@ case "$ALGORITHM" in
           progress_setup_tick
         done
       else
-        if ! warmup_only "VF3 baseline all" ./baselines/vf3lib/bin/vf3 -u -r 0 "${FILES[0]}" "${FILES[1]}"; then
+        if ! warmup_only "VF3 baseline all" ./baselines/vf3lib/bin/vf3 -u -r 0 -e "${FILES[0]}" "${FILES[1]}"; then
           EXIT_CODE=1
         fi
         if ! warmup_only "VF3 ChatGPT all" ./src/chatvf3 --non-induced "${FILES[0]}" "${FILES[1]}"; then
@@ -901,7 +901,7 @@ case "$ALGORITHM" in
           fi
         fi
         vf3_err_tmp=""
-        if run_capture_rss_tmp out dur rss vf3_err_tmp ./baselines/vf3lib/bin/vf3 -u -r 0 "${FILES[0]}" "${FILES[1]}"; then
+        if run_capture_rss_tmp out dur rss vf3_err_tmp ./baselines/vf3lib/bin/vf3 -u -r 0 -e "${FILES[0]}" "${FILES[1]}"; then
           baseline_ok=1
           if [ -n "${vf3_err_tmp:-}" ] && [ -f "$vf3_err_tmp" ]; then
             rm -f "$vf3_err_tmp"
@@ -1223,7 +1223,7 @@ case "$ALGORITHM" in
           vf_target="${SUBGRAPH_VF_FILES[1]}"
           lad_pattern="${SUBGRAPH_LAD_FILES[0]}"
           lad_target="${SUBGRAPH_LAD_FILES[1]}"
-          if ! run_capture out dur ./baselines/vf3lib/bin/vf3 -u -r 0 "$vf_pattern" "$vf_target"; then
+          if ! run_capture out dur ./baselines/vf3lib/bin/vf3 -u -r 0 -e "$vf_pattern" "$vf_target"; then
             echo "[Warmup] Subgraph VF3 baseline failed." >> outputs/result.txt
             EXIT_CODE=1
             break
@@ -1273,7 +1273,7 @@ case "$ALGORITHM" in
         vf_target="${SUBGRAPH_VF_FILES[1]}"
         lad_pattern="${SUBGRAPH_LAD_FILES[0]}"
         lad_target="${SUBGRAPH_LAD_FILES[1]}"
-        if ! warmup_only "Subgraph VF3 baseline" ./baselines/vf3lib/bin/vf3 -u -r 0 "$vf_pattern" "$vf_target"; then
+        if ! warmup_only "Subgraph VF3 baseline" ./baselines/vf3lib/bin/vf3 -u -r 0 -e "$vf_pattern" "$vf_target"; then
           EXIT_CODE=1
         fi
         if ! warmup_only "Subgraph VF3 ChatGPT" ./src/chatvf3 --non-induced "$vf_pattern" "$vf_target"; then
@@ -1391,7 +1391,7 @@ case "$ALGORITHM" in
       if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ]; then
         baseline_ok=1
         progress_set_phase "Subgraph VF3 baseline"
-        if ! run_capture_rss out dur rss ./baselines/vf3lib/bin/vf3 -u -r 0 "$vf_pattern" "$vf_target"; then
+        if ! run_capture_rss out dur rss ./baselines/vf3lib/bin/vf3 -u -r 0 -e "$vf_pattern" "$vf_target"; then
         EXIT_CODE=1
         echo "[Subgraph VF3 baseline] run failed." >> outputs/result.txt
         record_solver_failure "Subgraph VF3 baseline" "$i"
