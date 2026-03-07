@@ -1922,8 +1922,11 @@ def fallback_iteration_files(iter_idx: int):
             return files[0], files[1], None
         return None
     if algo == "subgraph":
-        vf_pattern = Path("outputs/converted/pattern.vf")
-        vf_target = Path("outputs/converted/target.vf")
+        vf_pattern = Path("outputs/converted/canonical_pattern.vf")
+        vf_target = Path("outputs/converted/canonical_target.vf")
+        if not vf_pattern.exists() or not vf_target.exists():
+            vf_pattern = Path("outputs/converted/pattern.vf")
+            vf_target = Path("outputs/converted/target.vf")
         if vf_pattern.exists() and vf_target.exists():
             return vf_pattern, vf_target, None
         if len(files) >= 2 and files[0].exists() and files[1].exists():

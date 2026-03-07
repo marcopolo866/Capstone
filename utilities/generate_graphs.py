@@ -90,6 +90,42 @@ def build_undirected_adj(adj: list[list[int]]) -> list[list[int]]:
     return [sorted(list(s)) for s in undirected]
 
 
+def sanitize_undirected_simple_adj(adj: list[list[int]]) -> list[list[int]]:
+    n = len(adj)
+    cleaned = [set() for _ in range(n)]
+    for u, neighbors in enumerate(adj):
+        for raw_v in neighbors:
+            try:
+                v = int(raw_v)
+            except (TypeError, ValueError):
+                continue
+            if v < 0 or v >= n or v == u:
+                continue
+            cleaned[u].add(v)
+            cleaned[v].add(u)
+    return [sorted(list(s)) for s in cleaned]
+
+
+def assert_undirected_simple_adj(adj: list[list[int]], name: str) -> None:
+    n = len(adj)
+    for u, neighbors in enumerate(adj):
+        seen = set()
+        for v in neighbors:
+            if not isinstance(v, int):
+                raise ValueError(f"{name}: non-integer endpoint at node {u}")
+            if v < 0 or v >= n:
+                raise ValueError(f"{name}: out-of-range endpoint ({u}, {v})")
+            if v == u:
+                raise ValueError(f"{name}: self-loop at node {u}")
+            if v in seen:
+                raise ValueError(f"{name}: duplicate edge endpoint {u}->{v}")
+            seen.add(v)
+    for u, neighbors in enumerate(adj):
+        for v in neighbors:
+            if u not in adj[v]:
+                raise ValueError(f"{name}: asymmetric adjacency between {u} and {v}")
+
+
 def pick_connected_nodes(undirected_adj: list[list[int]], k: int, rng: random.Random) -> list[int]:
     n = len(undirected_adj)
     if k <= 0 or k > n:
@@ -226,7 +262,8 @@ def main() -> None:
     else:
         labels = None
         target_adj = generate_adjacency(n, rng, density)
-        undirected_adj = build_undirected_adj(target_adj)
+        undirected_adj = sanitize_undirected_simple_adj(build_undirected_adj(target_adj))
+        assert_undirected_simple_adj(undirected_adj, "target_adj")
         if algorithm in {"glasgow", "vf3", "subgraph"}:
             target_adj = undirected_adj
         nodes = pick_connected_nodes(undirected_adj, k, rng)
@@ -238,6 +275,8 @@ def main() -> None:
         for node in nodes:
             neighbors = [pattern_map[v] for v in target_adj[node] if v in node_set]
             pattern_adj.append(sorted(neighbors))
+        pattern_adj = sanitize_undirected_simple_adj(pattern_adj)
+        assert_undirected_simple_adj(pattern_adj, "pattern_adj")
 
         if algorithm in {"vf3", "subgraph"}:
             labels = [i % 4 for i in range(n)]

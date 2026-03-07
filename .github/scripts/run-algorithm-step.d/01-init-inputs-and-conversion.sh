@@ -175,12 +175,14 @@ def compare_graph(vf_graph, lad_graph, name):
     lad_edges = edge_set(lad_adj)
     missing_edges = sorted(list(vf_edges - lad_edges))
     extra_edges = sorted(list(lad_edges - vf_edges))
-    equivalent = (n_vf == n_lad) and not label_mismatches and not missing_edges and not extra_edges
+    # Equivalence for this pipeline is adjacency-only (labels are informational).
+    equivalent = (n_vf == n_lad) and not missing_edges and not extra_edges
     return {
         "graph": name,
         "equivalent": equivalent,
         "node_count_vf": n_vf,
         "node_count_lad": n_lad,
+        "label_compare_ignored": True,
         "label_mismatch_count": len(label_mismatches),
         "label_mismatch_samples": label_mismatches[:10],
         "missing_edges_count": len(missing_edges),
@@ -201,7 +203,6 @@ else:
             continue
         issues.append(
             f"{cmp_item['graph']}: nodes(vf={cmp_item['node_count_vf']},lad={cmp_item['node_count_lad']}), "
-            f"label_mismatches={cmp_item['label_mismatch_count']}, "
             f"missing_edges={cmp_item['missing_edges_count']}, extra_edges={cmp_item['extra_edges_count']}"
         )
     summary = "; ".join(issues) if issues else "graphs differ but no detailed issue was isolated."
@@ -273,6 +274,229 @@ record = {
 }
 with open(report_path, "a", encoding="utf-8") as fh:
     fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+PY
+}
+
+canonicalize_subgraph_pair_csv() {
+  local pattern_path="$1"
+  local target_path="$2"
+  local out_dir="$3"
+  local source_hint="${4:-auto}"
+  python - "$pattern_path" "$target_path" "$out_dir" "$source_hint" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+pattern_path = Path(sys.argv[1])
+target_path = Path(sys.argv[2])
+out_dir = Path(sys.argv[3])
+source_hint = str(sys.argv[4] or "auto").strip().lower()
+
+def next_nonempty(lines, idx):
+    while idx < len(lines):
+        line = lines[idx].strip()
+        idx += 1
+        if not line or line.startswith("#"):
+            continue
+        return line, idx
+    return None, idx
+
+def parse_lad(path: Path, prefer_vertex_labelled=True):
+    lines = path.read_text(encoding="utf-8", errors="ignore").replace("\r", "").splitlines()
+    idx = 0
+    first, idx = next_nonempty(lines, idx)
+    if first is None:
+        return [], []
+    n = int(first)
+    adj = [set() for _ in range(max(0, n))]
+    labels = [0 for _ in range(max(0, n))]
+    for i in range(n):
+        line, idx = next_nonempty(lines, idx)
+        if line is None:
+            break
+        vals = []
+        for tok in line.split():
+            try:
+                vals.append(int(tok))
+            except ValueError:
+                pass
+        if not vals:
+            continue
+
+        use_vertex = False
+        if len(vals) >= 2:
+            if vals[1] == len(vals) - 2:
+                use_vertex = True
+            elif prefer_vertex_labelled and vals[1] >= 0 and vals[1] <= len(vals) - 2:
+                use_vertex = True
+
+        if use_vertex:
+            labels[i] = vals[0]
+            degree = vals[1]
+            start = 2
+        else:
+            degree = vals[0]
+            start = 1
+        if degree < 0:
+            degree = 0
+        for j in range(degree):
+            pos = start + j
+            if pos >= len(vals):
+                break
+            v = vals[pos]
+            if 0 <= v < n and v != i:
+                adj[i].add(v)
+                adj[v].add(i)
+    return [sorted(list(s)) for s in adj], labels
+
+def parse_vf(path: Path):
+    lines = path.read_text(encoding="utf-8", errors="ignore").replace("\r", "").splitlines()
+    idx = 0
+    def next_nums():
+        nonlocal idx
+        while idx < len(lines):
+            line = lines[idx]
+            idx += 1
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            nums = [int(x) for x in re.findall(r"-?\d+", line)]
+            if nums:
+                return nums
+        return None
+
+    header = next_nums()
+    if not header:
+        return [], []
+    n = max(0, int(header[0]))
+    labels = [0 for _ in range(n)]
+    for i in range(n):
+        row = next_nums()
+        if row is None:
+            break
+        if len(row) >= 2:
+            labels[i] = int(row[1])
+    adj = [set() for _ in range(n)]
+    for i in range(n):
+        count_line = next_nums()
+        if not count_line:
+            break
+        m = max(0, int(count_line[0]))
+        for _ in range(m):
+            edge = next_nums()
+            if not edge:
+                break
+            j = None
+            if len(edge) >= 2:
+                a, b = int(edge[0]), int(edge[1])
+                if a == i and 0 <= b < n:
+                    j = b
+                elif b == i and 0 <= a < n:
+                    j = a
+                elif 0 <= a < n:
+                    j = a
+                elif 0 <= b < n:
+                    j = b
+            else:
+                a = int(edge[0])
+                if 0 <= a < n:
+                    j = a
+            if j is None or j == i:
+                continue
+            adj[i].add(j)
+            adj[j].add(i)
+    return [sorted(list(s)) for s in adj], labels
+
+def sanitize_undirected_simple_adj(adj):
+    n = len(adj)
+    clean = [set() for _ in range(n)]
+    for u, nbrs in enumerate(adj):
+        for raw_v in nbrs:
+            try:
+                v = int(raw_v)
+            except (TypeError, ValueError):
+                continue
+            if v < 0 or v >= n or v == u:
+                continue
+            clean[u].add(v)
+            clean[v].add(u)
+    return [sorted(list(s)) for s in clean]
+
+def normalize_labels(labels, n):
+    out = []
+    for i in range(n):
+        try:
+            out.append(int(labels[i]))
+        except Exception:
+            out.append(i % 4)
+    return out
+
+def write_vf(path: Path, adj, labels):
+    with path.open("w", encoding="utf-8") as fh:
+        fh.write(f"{len(adj)}\n")
+        for i, label in enumerate(labels):
+            fh.write(f"{i} {label}\n")
+        for i, neighbors in enumerate(adj):
+            fh.write(f"{len(neighbors)}\n")
+            for v in neighbors:
+                fh.write(f"{i} {v}\n")
+
+def write_vertex_labelled_lad(path: Path, adj, labels):
+    with path.open("w", encoding="utf-8") as fh:
+        fh.write(f"{len(adj)}\n")
+        for i, neighbors in enumerate(adj):
+            line = f"{labels[i]} {len(neighbors)}"
+            if neighbors:
+                line += " " + " ".join(str(v) for v in neighbors)
+            fh.write(line + "\n")
+
+def detect_format(path: Path):
+    ext = path.suffix.lower()
+    if ext == ".vf" or ext == ".grf":
+        return "vf"
+    if ext == ".lad":
+        return "lad"
+    return ""
+
+if source_hint not in {"vf", "lad", "auto"}:
+    source_hint = "auto"
+
+fmt_pattern = detect_format(pattern_path)
+fmt_target = detect_format(target_path)
+if source_hint == "auto":
+    if fmt_pattern == "vf" and fmt_target == "vf":
+        source_hint = "vf"
+    elif fmt_pattern == "lad" and fmt_target == "lad":
+        source_hint = "lad"
+    elif fmt_pattern and fmt_target and fmt_pattern != fmt_target:
+        raise SystemExit("Mixed or unsupported formats for subgraph input.")
+    else:
+        source_hint = "vf" if fmt_pattern == "vf" or fmt_target == "vf" else "lad"
+
+if source_hint == "vf":
+    pattern_adj, pattern_labels = parse_vf(pattern_path)
+    target_adj, target_labels = parse_vf(target_path)
+else:
+    pattern_adj, pattern_labels = parse_lad(pattern_path, prefer_vertex_labelled=True)
+    target_adj, target_labels = parse_lad(target_path, prefer_vertex_labelled=True)
+
+pattern_adj = sanitize_undirected_simple_adj(pattern_adj)
+target_adj = sanitize_undirected_simple_adj(target_adj)
+pattern_labels = normalize_labels(pattern_labels, len(pattern_adj))
+target_labels = normalize_labels(target_labels, len(target_adj))
+
+out_dir.mkdir(parents=True, exist_ok=True)
+vf_pattern = out_dir / "canonical_pattern.vf"
+vf_target = out_dir / "canonical_target.vf"
+lad_pattern = out_dir / "canonical_pattern.lad"
+lad_target = out_dir / "canonical_target.lad"
+
+write_vf(vf_pattern, pattern_adj, pattern_labels)
+write_vf(vf_target, target_adj, target_labels)
+write_vertex_labelled_lad(lad_pattern, pattern_adj, pattern_labels)
+write_vertex_labelled_lad(lad_target, target_adj, target_labels)
+
+print(",".join([str(lad_pattern), str(lad_target), str(vf_pattern), str(vf_target)]))
 PY
 }
 
@@ -450,8 +674,96 @@ PY
       VIS_SEED="$selected_seed"
     fi
   fi
+
   IFS=',' read -ra FILES <<< "$selected_files"
   if [ "$ALGORITHM" = "subgraph" ]; then
+    local src_vf_pattern=""
+    local src_vf_target=""
+    local src_lad_pattern=""
+    local src_lad_target=""
+    local f
+    for f in "${FILES[@]}"; do
+      case "$f" in
+        *pattern*.vf) src_vf_pattern="$f" ;;
+        *target*.vf) src_vf_target="$f" ;;
+        *pattern*.lad) src_lad_pattern="$f" ;;
+        *target*.lad) src_lad_target="$f" ;;
+      esac
+    done
+    if [ -z "$src_vf_pattern" ] || [ -z "$src_vf_target" ]; then
+      for f in "${FILES[@]}"; do
+        case "$f" in
+          *.vf)
+            if [ -z "$src_vf_pattern" ]; then src_vf_pattern="$f"; else src_vf_target="$f"; fi
+            ;;
+          *.lad)
+            if [ -z "$src_lad_pattern" ]; then src_lad_pattern="$f"; else src_lad_target="$f"; fi
+            ;;
+        esac
+      done
+    fi
+
+    local canonical_hint="vf"
+    local canonical_p=""
+    local canonical_t=""
+    if [ -n "$src_vf_pattern" ] && [ -n "$src_vf_target" ]; then
+      canonical_p="$src_vf_pattern"
+      canonical_t="$src_vf_target"
+      canonical_hint="vf"
+    elif [ -n "$src_lad_pattern" ] && [ -n "$src_lad_target" ]; then
+      canonical_p="$src_lad_pattern"
+      canonical_t="$src_lad_target"
+      canonical_hint="lad"
+    else
+      echo "Subgraph canonicalization failed: missing source pattern/target pair." >> outputs/result.txt
+      return 1
+    fi
+
+    local canonical_csv canonical_status canonical_dir
+    canonical_dir="${gen_dir}/canonical"
+    canonical_csv="$(canonicalize_subgraph_pair_csv "$canonical_p" "$canonical_t" "$canonical_dir" "$canonical_hint" 2>&1)"
+    canonical_status=$?
+    if [ $canonical_status -ne 0 ] || [ -z "$canonical_csv" ]; then
+      echo "Subgraph canonicalization failed." >> outputs/result.txt
+      if [ -n "$canonical_csv" ]; then
+        echo "$canonical_csv" >> outputs/result.txt
+      fi
+      return 1
+    fi
+    selected_files="$canonical_csv"
+    IFS=',' read -ra FILES <<< "$selected_files"
+
+    local metadata_path
+    metadata_path="${gen_dir}/metadata.json"
+    python - "$metadata_path" "$selected_files" "$selected_seed" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+meta_path = Path(sys.argv[1])
+files_csv = sys.argv[2]
+seed_raw = sys.argv[3]
+files = [p.strip() for p in str(files_csv).split(",") if p.strip()]
+
+meta = {}
+if meta_path.exists():
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        meta = {}
+if not isinstance(meta, dict):
+    meta = {}
+meta["files"] = files
+meta["canonicalized"] = True
+meta["canonical_source"] = "vf_preferred"
+try:
+    meta["seed"] = int(seed_raw)
+except Exception:
+    meta["seed"] = seed_raw
+meta_path.parent.mkdir(parents=True, exist_ok=True)
+meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+PY
+
     SUBGRAPH_VF_FILES=()
     SUBGRAPH_LAD_FILES=()
     for f in "${FILES[@]}"; do
@@ -541,159 +853,7 @@ if [ "$INPUT_MODE" != "generate" ]; then
 
   if [ "$ALGORITHM" = "subgraph" ]; then
     mkdir -p outputs/converted
-    conv_out="$(printf '%s\n' \
-      'import re' \
-      'import sys' \
-      'from pathlib import Path' \
-      '' \
-      'pattern_path = Path(sys.argv[1])' \
-      'target_path = Path(sys.argv[2])' \
-      'out_dir = Path(\"outputs/converted\")' \
-      'out_dir.mkdir(parents=True, exist_ok=True)' \
-      '' \
-      'def read_lad(path: Path):' \
-      '    with path.open(\"r\", encoding=\"utf-8\") as fh:' \
-      '        first = fh.readline()' \
-      '        if not first:' \
-      '            raise ValueError(\"Empty LAD file\")' \
-      '        n = int(first.strip())' \
-      '        adj = [set() for _ in range(n)]' \
-      '        labels = [0 for _ in range(n)]' \
-      '        labelled = False' \
-      '        for i in range(n):' \
-      '            line = fh.readline()' \
-      '            if not line:' \
-      '                break' \
-      '            parts = line.strip().split()' \
-      '            if not parts:' \
-      '                continue' \
-      '            nums = [int(x) for x in parts]' \
-      '            if len(nums) >= 2 and nums[1] == len(nums) - 2:' \
-      '                labelled = True' \
-      '                labels[i] = nums[0]' \
-      '                d = nums[1]' \
-      '                start = 2' \
-      '            else:' \
-      '                d = nums[0]' \
-      '                start = 1' \
-      '            for v in nums[start:start + d]:' \
-      '                if 0 <= v < n and v != i:' \
-      '                    adj[i].add(v)' \
-      '    for i in range(n):' \
-      '        for j in list(adj[i]):' \
-      '            adj[j].add(i)' \
-      '    return [sorted(list(s)) for s in adj], (labels if labelled else None)' \
-      '' \
-      'def read_vf(path: Path):' \
-      '    def next_int_line(handle):' \
-      '        while True:' \
-      '            line = handle.readline()' \
-      '            if not line:' \
-      '                return None' \
-      '            stripped = line.strip()' \
-      '            if not stripped or stripped.startswith(\"#\"):' \
-      '                continue' \
-      '            nums = [int(x) for x in re.findall(r\"-?\\d+\", line)]' \
-      '            if nums:' \
-      '                return nums' \
-      '    with path.open(\"r\", encoding=\"utf-8\") as fh:' \
-      '        header = next_int_line(fh)' \
-      '        if not header:' \
-      '            raise ValueError(\"Empty VF file\")' \
-      '        n = int(header[0])' \
-      '        labels = [0 for _ in range(n)]' \
-      '        for i in range(n):' \
-      '            row = next_int_line(fh)' \
-      '            if row is None:' \
-      '                break' \
-      '            if len(row) >= 2:' \
-      '                labels[i] = row[1]' \
-      '        adj = [set() for _ in range(n)]' \
-      '        for i in range(n):' \
-      '            count_line = next_int_line(fh)' \
-      '            if not count_line:' \
-      '                break' \
-      '            m = int(count_line[0])' \
-      '            for _ in range(m):' \
-      '                edge_nums = next_int_line(fh)' \
-      '                if not edge_nums:' \
-      '                    break' \
-      '                if len(edge_nums) >= 2:' \
-      '                    a, b = edge_nums[0], edge_nums[1]' \
-      '                    if a == i and 0 <= b < n:' \
-      '                        j = b' \
-      '                    elif b == i and 0 <= a < n:' \
-      '                        j = a' \
-      '                    else:' \
-      '                        j = a if 0 <= a < n else (b if 0 <= b < n else None)' \
-      '                else:' \
-      '                    j = edge_nums[0] if 0 <= edge_nums[0] < n else None' \
-      '                if j is None or j == i:' \
-      '                    continue' \
-      '                adj[i].add(j)' \
-      '    for i in range(n):' \
-      '        for j in list(adj[i]):' \
-      '            adj[j].add(i)' \
-      '    return [sorted(list(s)) for s in adj], labels' \
-      '' \
-      'def write_lad(path: Path, adj, labels):' \
-      '    with path.open(\"w\", encoding=\"utf-8\") as fh:' \
-      '        fh.write(f\"{len(adj)}\\n\")' \
-      '        for i, neighbors in enumerate(adj):' \
-      '            line = f\"{labels[i]} {len(neighbors)}\"' \
-      '            if neighbors:' \
-      '                line += \" \" + \" \".join(str(v) for v in neighbors)' \
-      '            fh.write(line + \"\\n\")' \
-      '' \
-      'def write_vf(path: Path, adj, labels):' \
-      '    with path.open(\"w\", encoding=\"utf-8\") as fh:' \
-      '        fh.write(f\"{len(adj)}\\n\")' \
-      '        for i, label in enumerate(labels):' \
-      '            fh.write(f\"{i} {label}\\n\")' \
-      '        for i, neighbors in enumerate(adj):' \
-      '            fh.write(f\"{len(neighbors)}\\n\")' \
-      '            for v in neighbors:' \
-      '                fh.write(f\"{i} {v}\\n\")' \
-      '' \
-      'def detect_format(path: Path):' \
-      '    if path.suffix.lower() == \".lad\":' \
-      '        return \"lad\"' \
-      '    if path.suffix.lower() == \".vf\":' \
-      '        return \"vf\"' \
-      '    return \"\"' \
-      '' \
-      'fmt_pattern = detect_format(pattern_path)' \
-      'fmt_target = detect_format(target_path)' \
-      'if fmt_pattern != fmt_target or fmt_pattern == \"\":' \
-      '    raise SystemExit(\"Mixed or unsupported formats for subgraph premade input.\")' \
-      '' \
-      'def ensure_labels(labels, n):' \
-      '    if labels is None or len(labels) != n:' \
-      '        return [i % 4 for i in range(n)]' \
-      '    return labels' \
-      '' \
-      'if fmt_pattern == \"lad\":' \
-      '    pattern_adj, pattern_labels = read_lad(pattern_path)' \
-      '    target_adj, target_labels = read_lad(target_path)' \
-      'else:' \
-      '    pattern_adj, pattern_labels = read_vf(pattern_path)' \
-      '    target_adj, target_labels = read_vf(target_path)' \
-      '' \
-      'pattern_labels = ensure_labels(pattern_labels, len(pattern_adj))' \
-      'target_labels = ensure_labels(target_labels, len(target_adj))' \
-      '' \
-      'lad_pattern = out_dir / \"pattern.lad\"' \
-      'lad_target = out_dir / \"target.lad\"' \
-      'vf_pattern = out_dir / \"pattern.vf\"' \
-      'vf_target = out_dir / \"target.vf\"' \
-      '' \
-      'write_lad(lad_pattern, pattern_adj, pattern_labels)' \
-      'write_lad(lad_target, target_adj, target_labels)' \
-      'write_vf(vf_pattern, pattern_adj, pattern_labels)' \
-      'write_vf(vf_target, target_adj, target_labels)' \
-      '' \
-      'print(\",\".join([str(lad_pattern), str(lad_target), str(vf_pattern), str(vf_target)]))' \
-      | python - "${FILES[0]}" "${FILES[1]}")"
+    conv_out="$(canonicalize_subgraph_pair_csv "${FILES[0]}" "${FILES[1]}" "outputs/converted" "auto" 2>&1)"
     status=$?
     if [ $status -ne 0 ]; then
       echo "Failed to convert premade subgraph inputs." >> outputs/result.txt

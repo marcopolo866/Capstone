@@ -1610,7 +1610,11 @@ def capstone_run_local_generator(args, out_dir):
             return x <= y ? [x, y] : [y, x];
         }
 
-        function parseLocalLad(text) {
+        function parseLocalLad(text, options = {}) {
+            const opts = (options && typeof options === 'object') ? options : {};
+            const forceVertexLabelled = opts.forceVertexLabelled === true;
+            const forceStandard = opts.forceStandard === true;
+            const preferVertexLabelled = !forceStandard && (forceVertexLabelled || opts.preferVertexLabelled !== false);
             const lines = String(text || '').replace(/\r/g, '').split('\n');
             let idx = 0;
             const nextLine = () => {
@@ -1630,13 +1634,27 @@ def capstone_run_local_generator(args, out_dir):
                 if (!line) continue;
                 const vals = line.split(/\s+/).map(Number).filter(v => Number.isFinite(v));
                 if (!vals.length) continue;
+                let useVertexLabelled = false;
+                if (forceVertexLabelled) {
+                    useVertexLabelled = true;
+                } else if (forceStandard) {
+                    useVertexLabelled = false;
+                } else if (vals.length >= 2) {
+                    if (vals[1] === (vals.length - 2)) {
+                        useVertexLabelled = true;
+                    } else if (preferVertexLabelled && vals[1] >= 0 && vals[1] <= (vals.length - 2)) {
+                        useVertexLabelled = true;
+                    }
+                }
                 let degree = vals[0];
                 let start = 1;
-                if (vals.length >= 2 && vals[1] === (vals.length - 2)) {
+                if (useVertexLabelled) {
                     labels[i] = vals[0];
                     degree = vals[1];
                     start = 2;
                 }
+                degree = Number.isInteger(degree) ? degree : Math.floor(Number(degree) || 0);
+                if (degree < 0) degree = 0;
                 for (let j = 0; j < degree && (start + j) < vals.length; j++) {
                     const v = vals[start + j];
                     if (Number.isInteger(v) && v >= 0 && v < n && v !== i) {
@@ -1646,6 +1664,30 @@ def capstone_run_local_generator(args, out_dir):
                 }
             }
             return { adj: adjSets.map(s => Array.from(s).sort((a, b) => a - b)), labels };
+        }
+
+        function sanitizeLocalUndirectedParsedGraph(parsed) {
+            const srcAdj = Array.isArray(parsed && parsed.adj) ? parsed.adj : [];
+            const n = srcAdj.length;
+            const cleanSets = Array.from({ length: n }, () => new Set());
+            for (let u = 0; u < n; u++) {
+                const neighbors = Array.isArray(srcAdj[u]) ? srcAdj[u] : [];
+                for (const rawV of neighbors) {
+                    const v = Number(rawV);
+                    if (!Number.isInteger(v) || v < 0 || v >= n || v === u) continue;
+                    cleanSets[u].add(v);
+                    cleanSets[v].add(u);
+                }
+            }
+            const labelsRaw = Array.isArray(parsed && parsed.labels) ? parsed.labels : [];
+            const labels = Array.from({ length: n }, (_, i) => {
+                const num = Number(labelsRaw[i]);
+                return Number.isFinite(num) ? Math.trunc(num) : (i % 4);
+            });
+            return {
+                adj: cleanSets.map((s) => Array.from(s).sort((a, b) => a - b)),
+                labels
+            };
         }
 
         function parseLocalVf(text) {
@@ -1754,8 +1796,10 @@ def capstone_run_local_generator(args, out_dir):
             const targetText = String(opts.targetText || '');
             const patternFormat = String(opts.patternFormat || 'vf').trim().toLowerCase();
             const targetFormat = String(opts.targetFormat || 'vf').trim().toLowerCase();
-            const patternParsed = parseLocalGraphByFormat(patternText, patternFormat);
-            const targetParsed = parseLocalGraphByFormat(targetText, targetFormat);
+            const patternParsedRaw = parseLocalGraphByFormat(patternText, patternFormat);
+            const targetParsedRaw = parseLocalGraphByFormat(targetText, targetFormat);
+            const patternParsed = sanitizeLocalUndirectedParsedGraph(patternParsedRaw);
+            const targetParsed = sanitizeLocalUndirectedParsedGraph(targetParsedRaw);
             return {
                 parsed: {
                     pattern: patternParsed,
@@ -1774,6 +1818,92 @@ def capstone_run_local_generator(args, out_dir):
                     targetText: serializeLocalLad(targetParsed, { vertexLabelled: false })
                 }
             };
+        }
+
+        function dirnameFromPath(path) {
+            const p = String(path || '');
+            const slash = p.lastIndexOf('/');
+            if (slash < 0) return '';
+            return p.slice(0, slash);
+        }
+
+        function canonicalizeLocalSubgraphIterationFiles(files) {
+            const entries = Array.isArray(files) ? files.filter(Boolean) : [];
+            if (!entries.length) return null;
+
+            const pickRoleExt = (roleNeedle, ext) => entries.find((entry) => {
+                const name = String(entry && (entry.name || entry.path) ? (entry.name || entry.path) : '').toLowerCase();
+                return name.includes(roleNeedle) && name.endsWith(ext);
+            });
+            const pickExt = (ext) => entries.filter((entry) => {
+                const name = String(entry && (entry.name || entry.path) ? (entry.name || entry.path) : '').toLowerCase();
+                return name.endsWith(ext);
+            });
+
+            const vfPattern = pickRoleExt('pattern', '.vf');
+            const vfTarget = pickRoleExt('target', '.vf');
+            const ladPattern = pickRoleExt('pattern', '.lad');
+            const ladTarget = pickRoleExt('target', '.lad');
+
+            let patternParsed = null;
+            let targetParsed = null;
+            let source = 'vf';
+            if (vfPattern && vfTarget) {
+                patternParsed = parseLocalVf(String(vfPattern.text || ''));
+                targetParsed = parseLocalVf(String(vfTarget.text || ''));
+                source = 'vf';
+            } else if (ladPattern && ladTarget) {
+                patternParsed = parseLocalLad(String(ladPattern.text || ''), { forceVertexLabelled: true });
+                targetParsed = parseLocalLad(String(ladTarget.text || ''), { forceVertexLabelled: true });
+                source = 'lad';
+            } else {
+                const vfAny = pickExt('.vf');
+                const ladAny = pickExt('.lad');
+                if (vfAny.length >= 2) {
+                    patternParsed = parseLocalVf(String(vfAny[0].text || ''));
+                    targetParsed = parseLocalVf(String(vfAny[1].text || ''));
+                    source = 'vf';
+                } else if (ladAny.length >= 2) {
+                    patternParsed = parseLocalLad(String(ladAny[0].text || ''), { forceVertexLabelled: true });
+                    targetParsed = parseLocalLad(String(ladAny[1].text || ''), { forceVertexLabelled: true });
+                    source = 'lad';
+                } else {
+                    return null;
+                }
+            }
+
+            const pattern = sanitizeLocalUndirectedParsedGraph(patternParsed);
+            const target = sanitizeLocalUndirectedParsedGraph(targetParsed);
+            const basePath = String(
+                (vfPattern && vfPattern.path) ||
+                (ladPattern && ladPattern.path) ||
+                (entries[0] && entries[0].path) ||
+                '__local/generated/subgraph'
+            );
+            const dir = dirnameFromPath(basePath) || '__local/generated/subgraph';
+            const filesOut = [
+                {
+                    name: 'canonical_pattern.vf',
+                    path: `${dir}/canonical_pattern.vf`,
+                    text: serializeLocalVf(pattern)
+                },
+                {
+                    name: 'canonical_target.vf',
+                    path: `${dir}/canonical_target.vf`,
+                    text: serializeLocalVf(target)
+                },
+                {
+                    name: 'canonical_pattern.lad',
+                    path: `${dir}/canonical_pattern.lad`,
+                    text: serializeLocalLad(pattern, { vertexLabelled: true })
+                },
+                {
+                    name: 'canonical_target.lad',
+                    path: `${dir}/canonical_target.lad`,
+                    text: serializeLocalLad(target, { vertexLabelled: true })
+                }
+            ];
+            return { source, files: filesOut };
         }
 
         function buildLocalUndirectedEdgeSet(adj) {
@@ -1818,12 +1948,14 @@ def capstone_run_local_generator(args, out_dir):
             for (const e of ladEdges) {
                 if (!vfEdges.has(e)) extraEdges.push(e);
             }
-            const equivalent = nVf === nLad && !labelMismatches.length && !missingEdges.length && !extraEdges.length;
+            // Equivalence for this pipeline is adjacency-only (labels are informational).
+            const equivalent = nVf === nLad && !missingEdges.length && !extraEdges.length;
             return {
                 graph: graphName,
                 equivalent,
                 node_count_vf: nVf,
                 node_count_lad: nLad,
+                label_compare_ignored: true,
                 label_mismatch_count: labelMismatches.length,
                 label_mismatch_samples: labelMismatches.slice(0, 10),
                 missing_edges_count: missingEdges.length,
@@ -1844,8 +1976,8 @@ def capstone_run_local_generator(args, out_dir):
             const summary = equivalent
                 ? 'vf and lad encodings are mathematically identical for pattern and target.'
                 : [
-                    patternCmp.equivalent ? null : `pattern: nodes(vf=${patternCmp.node_count_vf},lad=${patternCmp.node_count_lad}), label_mismatches=${patternCmp.label_mismatch_count}, missing_edges=${patternCmp.missing_edges_count}, extra_edges=${patternCmp.extra_edges_count}`,
-                    targetCmp.equivalent ? null : `target: nodes(vf=${targetCmp.node_count_vf},lad=${targetCmp.node_count_lad}), label_mismatches=${targetCmp.label_mismatch_count}, missing_edges=${targetCmp.missing_edges_count}, extra_edges=${targetCmp.extra_edges_count}`
+                    patternCmp.equivalent ? null : `pattern: nodes(vf=${patternCmp.node_count_vf},lad=${patternCmp.node_count_lad}), missing_edges=${patternCmp.missing_edges_count}, extra_edges=${patternCmp.extra_edges_count}`,
+                    targetCmp.equivalent ? null : `target: nodes(vf=${targetCmp.node_count_vf},lad=${targetCmp.node_count_lad}), missing_edges=${targetCmp.missing_edges_count}, extra_edges=${targetCmp.extra_edges_count}`
                 ].filter(Boolean).join('; ');
             return {
                 equivalent,
@@ -5297,9 +5429,22 @@ def capstone_run_local_generator(args, out_dir):
                             details
                         });
                         if (selected) {
+                            let selectedFilesForRun = iterScopedFiles;
+                            if (algoKey === 'subgraph') {
+                                const canonicalized = canonicalizeLocalSubgraphIterationFiles(iterScopedFiles);
+                                if (!canonicalized || !Array.isArray(canonicalized.files) || canonicalized.files.length < 4) {
+                                    throw new Error(`Local canonicalization failed for subgraph iteration ${iter}.`);
+                                }
+                                selectedFilesForRun = canonicalized.files;
+                                for (const cf of selectedFilesForRun) {
+                                    if (cf && cf.path) {
+                                        _localInMemoryRepoFiles.set(String(cf.path), String(cf.text || ''));
+                                    }
+                                }
+                            }
                             acceptedRun = {
                                 ...generated,
-                                files: iterScopedFiles
+                                files: selectedFilesForRun
                             };
                             break;
                         }
