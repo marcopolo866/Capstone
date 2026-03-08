@@ -26,14 +26,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Cache Glasgow build
-        uses: actions/cache@v4
-        with:
-          path: baselines/glasgow-subgraph-solver/build
-          key: ${{ runner.os }}-glasgow-${{ hashFiles('baselines/glasgow-subgraph-solver/**') }}
-          restore-keys: |
-            ${{ runner.os }}-glasgow-
-
       - name: Build binaries
         run: |
           set -euo pipefail
@@ -94,6 +86,60 @@ jobs:
           set -euo pipefail
           python3 scripts/check-glasgow-parity.py
 
+      - name: Write binary manifest
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as fh:
+                  while True:
+                      block = fh.read(65536)
+                      if not block:
+                          break
+                      h.update(block)
+              return h.hexdigest()
+
+          source_paths = [
+              "src/[CHATGPT] Glasgow.cpp",
+              "src/[GEMINI] Glasgow.cpp",
+          ]
+          binary_paths = [
+              "src/glasgow_chatgpt",
+              "src/glasgow_gemini",
+              "baselines/vf3lib/bin/vf3",
+              "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver",
+              "src/chatvf3",
+              "src/vf3",
+          ]
+
+          manifest = {
+              "commit_sha": os.environ.get("GITHUB_SHA", ""),
+              "sources": {},
+              "binaries": {},
+          }
+          for rel in source_paths:
+              path = Path(rel)
+              if not path.is_file():
+                  raise SystemExit(f"Missing source for manifest: {rel}")
+              manifest["sources"][rel] = sha256(path)
+          for rel in binary_paths:
+              path = Path(rel)
+              if not path.is_file():
+                  raise SystemExit(f"Missing binary for manifest: {rel}")
+              manifest["binaries"][rel] = sha256(path)
+
+          out = Path("outputs/binaries_manifest.json")
+          out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(f"Wrote {out}")
+          PY
+
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
@@ -108,5 +154,6 @@ jobs:
             src/glasgow_gemini
             baselines/vf3lib/bin/vf3
             baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver
+            outputs/binaries_manifest.json
           if-no-files-found: error
           retention-days: 90

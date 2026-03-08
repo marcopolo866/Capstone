@@ -104,6 +104,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
+          CURRENT_SHA: ${{ github.sha }}
         run: |
           set +e
           output="$(python - <<'PY'
@@ -115,6 +116,7 @@ jobs:
           repo = os.environ.get("REPO")
           branch = os.environ.get("BRANCH") or "main"
           token = os.environ.get("GITHUB_TOKEN")
+          current_sha = os.environ.get("CURRENT_SHA") or ""
           workflow_file = "build-binaries.yml"
           artifact_name = "algorithm-binaries-linux"
 
@@ -137,7 +139,7 @@ jobs:
               with urllib.request.urlopen(req) as resp:
                   return json.load(resp)
 
-          query = urllib.parse.urlencode({"branch": branch, "status": "success", "per_page": 1})
+          query = urllib.parse.urlencode({"branch": branch, "status": "success", "per_page": 50})
           runs = api_get(f"/actions/workflows/{workflow_file}/runs?{query}")
           workflow_runs = runs.get("workflow_runs") or []
           if not workflow_runs:
@@ -146,27 +148,37 @@ jobs:
                   "Run the 'Build Binaries' workflow first."
               )
 
-          run_id = workflow_runs[0].get("id")
-          if not run_id:
-              raise SystemExit("Could not read run_id from workflow_runs response.")
+          selected = None
+          for run in workflow_runs:
+              run_sha = (run.get("head_sha") or "").strip()
+              if current_sha and run_sha != current_sha:
+                  continue
+              run_id = run.get("id")
+              if not run_id:
+                  continue
+              artifacts = api_get(f"/actions/runs/{run_id}/artifacts")
+              items = artifacts.get("artifacts") or []
+              artifact = next(
+                  (a for a in items if a.get("name") == artifact_name and not a.get("expired")),
+                  None,
+              )
+              if not artifact:
+                  continue
+              artifact_id = artifact.get("id")
+              if not artifact_id:
+                  continue
+              selected = (run_id, artifact_id, run_sha)
+              break
 
-          artifacts = api_get(f"/actions/runs/{run_id}/artifacts")
-          items = artifacts.get("artifacts") or []
-          artifact = next(
-              (a for a in items if a.get("name") == artifact_name and not a.get("expired")), None
-          )
-          if not artifact:
-              available = ", ".join(sorted({a.get("name", "") for a in items if a.get("name")}))
+          if not selected:
               raise SystemExit(
-                  f"Artifact '{artifact_name}' not found on run {run_id}. "
-                  f"Available artifacts: {available or '(none)'}"
+                  "No successful 'build-binaries.yml' run with a non-expired "
+                  f"'{artifact_name}' artifact was found for commit '{current_sha}' on branch '{branch}'. "
+                  "Run 'Build Binaries' on this exact commit, then rerun 'Run Algorithm'."
               )
 
-          artifact_id = artifact.get("id")
-          if not artifact_id:
-              raise SystemExit("Could not read artifact id.")
-
-          print(f"{run_id} {artifact_id}")
+          run_id, artifact_id, run_sha = selected
+          print(f"{run_id} {artifact_id} {run_sha}")
           PY
           )"
           status=$?
@@ -174,30 +186,16 @@ jobs:
           if [ $status -eq 0 ]; then
             run_id="$(echo "$output" | awk '{print $1}')"
             artifact_id="$(echo "$output" | awk '{print $2}')"
+            run_sha="$(echo "$output" | awk '{print $3}')"
             echo "RUN_ID=$run_id" >> "$GITHUB_OUTPUT"
             echo "ARTIFACT_ID=$artifact_id" >> "$GITHUB_OUTPUT"
+            echo "HEAD_SHA=$run_sha" >> "$GITHUB_OUTPUT"
           else
             echo "$output"
             echo "RUN_ID=" >> "$GITHUB_OUTPUT"
             echo "ARTIFACT_ID=" >> "$GITHUB_OUTPUT"
+            echo "HEAD_SHA=" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Cache binaries
-        id: binaries_cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: |
-            baselines/dijkstra
-            src/dijkstra_llm
-            src/dijkstra_gemini
-            src/vf3
-            src/chatvf3
-            src/glasgow_chatgpt
-            src/glasgow_gemini
-            baselines/vf3lib/bin/vf3
-            baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver
-          key: ${{ runner.os }}-algorithm-binaries-${{ steps.binaries_meta.outputs.RUN_ID || 'unknown' }}
 
       - name: Download prebuilt binaries
         id: binaries
@@ -205,108 +203,43 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
-          CACHE_HIT: ${{ steps.binaries_cache.outputs.cache-hit }}
+          CURRENT_SHA: ${{ github.sha }}
           BINARIES_RUN_ID: ${{ steps.binaries_meta.outputs.RUN_ID }}
           BINARIES_ARTIFACT_ID: ${{ steps.binaries_meta.outputs.ARTIFACT_ID }}
+          BINARIES_HEAD_SHA: ${{ steps.binaries_meta.outputs.HEAD_SHA }}
         run: |
           mkdir -p outputs
           : > outputs/binaries_download_error.txt
-          expected=(
-            "baselines/dijkstra"
-            "src/dijkstra_llm"
-            "src/dijkstra_gemini"
-            "src/vf3"
-            "src/chatvf3"
-            "src/glasgow_chatgpt"
-            "src/glasgow_gemini"
-            "baselines/vf3lib/bin/vf3"
-            "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver"
-          )
-          if [ "${CACHE_HIT:-}" = "true" ]; then
-            missing=0
-            for rel in "${expected[@]}"; do
-              if [ ! -f "$rel" ]; then
-                missing=1
-                break
-              fi
-            done
-            if [ "$missing" -eq 0 ]; then
-              chmod +x "${expected[@]}"
-              echo "READY=1" >> "$GITHUB_OUTPUT"
-              echo "Using cached binaries (run_id=${BINARIES_RUN_ID:-unknown})."
-              exit 0
-            fi
-          fi
           set +e
           output="$(python - <<'PY'
+          import hashlib
           import json
           import os
           import stat
           import subprocess
-          import urllib.parse
-          import urllib.request
           import zipfile
           from pathlib import Path
 
           repo = os.environ.get("REPO")
-          branch = os.environ.get("BRANCH") or "main"
           token = os.environ.get("GITHUB_TOKEN")
           artifact_id = os.environ.get("BINARIES_ARTIFACT_ID")
           run_id = os.environ.get("BINARIES_RUN_ID")
-          workflow_file = "build-binaries.yml"
-          artifact_name = "algorithm-binaries-linux"
+          run_sha = os.environ.get("BINARIES_HEAD_SHA") or ""
+          current_sha = os.environ.get("CURRENT_SHA") or ""
 
           if not repo:
               raise SystemExit("REPO env var is missing")
           if not token:
               raise SystemExit("GITHUB_TOKEN env var is missing")
+          if not run_id or not artifact_id:
+              raise SystemExit("Missing artifact metadata (run_id/artifact_id).")
+          if current_sha and run_sha and current_sha != run_sha:
+              raise SystemExit(
+                  "Resolved binaries artifact was built from a different commit. "
+                  f"current_sha={current_sha} artifact_head_sha={run_sha}"
+              )
 
           api_base = f"https://api.github.com/repos/{repo}"
-          headers = {
-              "Accept": "application/vnd.github+json",
-              "Authorization": f"Bearer {token}",
-              "X-GitHub-Api-Version": "2022-11-28",
-              "User-Agent": "capstone-download-binaries",
-          }
-
-
-          def api_get(path: str):
-              url = api_base + path
-              req = urllib.request.Request(url, headers=headers)
-              with urllib.request.urlopen(req) as resp:
-                  return json.load(resp)
-
-          if not run_id or not artifact_id:
-              query = urllib.parse.urlencode({"branch": branch, "status": "success", "per_page": 1})
-              runs = api_get(f"/actions/workflows/{workflow_file}/runs?{query}")
-              workflow_runs = runs.get("workflow_runs") or []
-              if not workflow_runs:
-                  raise SystemExit(
-                      f"No successful '{workflow_file}' runs found for branch '{branch}'. "
-                      "Run the 'Build Binaries' workflow first."
-                  )
-
-              run_id = workflow_runs[0].get("id")
-              if not run_id:
-                  raise SystemExit("Could not read run_id from workflow_runs response.")
-
-              artifacts = api_get(f"/actions/runs/{run_id}/artifacts")
-              items = artifacts.get("artifacts") or []
-              artifact = next(
-                  (a for a in items if a.get("name") == artifact_name and not a.get("expired")), None
-              )
-              if not artifact:
-                  available = ", ".join(sorted({a.get("name", "") for a in items if a.get("name")}))
-                  raise SystemExit(
-                      f"Artifact '{artifact_name}' not found on run {run_id}. "
-                      f"Available artifacts: {available or '(none)'}"
-                  )
-
-              artifact_id = artifact.get("id")
-              if not artifact_id:
-                  raise SystemExit("Could not read artifact id.")
-
-
           zip_path = Path("binaries.zip")
           download_url = f"{api_base}/actions/artifacts/{artifact_id}/zip"
           subprocess.run(
@@ -339,6 +272,16 @@ jobs:
               "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver",
           ]
 
+          def sha256(path: Path) -> str:
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  while True:
+                      block = handle.read(65536)
+                      if not block:
+                          break
+                      digest.update(block)
+              return digest.hexdigest()
+
           missing = []
           for rel in expected:
               p = Path(rel)
@@ -353,7 +296,43 @@ jobs:
                   f"Missing expected binaries after extraction: {', '.join(missing)}"
               )
 
-          print(f"Downloaded artifacts from run {run_id} (artifact_id={artifact_id}).")
+          manifest_path = Path("outputs/binaries_manifest.json")
+          if not manifest_path.is_file():
+              raise SystemExit("Missing outputs/binaries_manifest.json in binaries artifact.")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          manifest_commit = str(manifest.get("commit_sha") or "").strip()
+          if current_sha and manifest_commit and current_sha != manifest_commit:
+              raise SystemExit(
+                  "Binary manifest commit does not match current workflow commit. "
+                  f"current_sha={current_sha} manifest_commit={manifest_commit}"
+              )
+
+          source_checks = manifest.get("sources") or {}
+          for rel in ("src/[CHATGPT] Glasgow.cpp", "src/[GEMINI] Glasgow.cpp"):
+              expected_sha = str(source_checks.get(rel) or "").strip()
+              if not expected_sha:
+                  raise SystemExit(f"Manifest missing source hash for: {rel}")
+              actual_sha = sha256(Path(rel))
+              if actual_sha != expected_sha:
+                  raise SystemExit(
+                      f"Source hash mismatch for {rel}: expected={expected_sha} actual={actual_sha}"
+                  )
+
+          binary_checks = manifest.get("binaries") or {}
+          for rel, expected_sha in binary_checks.items():
+              p = Path(rel)
+              if not p.is_file():
+                  raise SystemExit(f"Manifest references missing binary: {rel}")
+              actual_sha = sha256(p)
+              if actual_sha != str(expected_sha):
+                  raise SystemExit(
+                      f"Binary hash mismatch for {rel}: expected={expected_sha} actual={actual_sha}"
+                  )
+
+          print(
+              "Downloaded binaries artifact from "
+              f"run {run_id} (artifact_id={artifact_id}, head_sha={run_sha}, manifest_commit={manifest_commit})."
+          )
           PY
           )"
           status=$?
