@@ -317,7 +317,7 @@ PY
 extract_count_time_ms() {
   local _pattern_path="${1:-}"
   local _target_path="${2:-}"
-  python - <<'PY'
+  python -c '
 import re
 import sys
 
@@ -327,50 +327,51 @@ mapping_count = 0
 saw_any = False
 
 for raw in sys.stdin:
-  line = raw.strip()
-  if not line:
-    continue
-  saw_any = True
-  pairs = re.findall(r"(\d+)\s*->\s*(\d+)", line)
-  if pairs:
-    mapping_count += 1
-    continue
-  if "Mapping:" in line:
-    mapping_count += 1
-    continue
-  if re.search(r"\btime\b", line, re.IGNORECASE):
-    nums = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", line)
-    if nums:
-      try:
-        time_ms = float(nums[-1])
-      except ValueError:
-        pass
-    continue
-  if re.fullmatch(r"-?\d+", line):
-    try:
-      count = int(line)
-    except ValueError:
-      pass
-    continue
-  m = re.search(r"\b(?:count|solution_count|solutions?)\b[^0-9-]*(-?\d+)\b", line, re.IGNORECASE)
-  if m:
-    try:
-      count = int(m.group(1))
-    except ValueError:
-      pass
+    line = raw.strip()
+    if not line:
+        continue
+    saw_any = True
+    pairs = re.findall(r"(\d+)\s*->\s*(\d+)", line)
+    if pairs:
+        mapping_count += 1
+        continue
+    if "Mapping:" in line:
+        mapping_count += 1
+        continue
+    if re.search(r"\btime\b", line, re.IGNORECASE):
+        nums = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", line)
+        if nums:
+            try:
+                time_ms = float(nums[-1])
+            except ValueError:
+                pass
+        continue
+    if re.fullmatch(r"-?\d+", line):
+        try:
+            count = int(line)
+        except ValueError:
+            pass
+        continue
+    m = re.search(r"\b(?:count|solution_count|solutions?)\b[^0-9-]*(-?\d+)\b", line, re.IGNORECASE)
+    if m:
+        try:
+            count = int(m.group(1))
+        except ValueError:
+            pass
 
 if not saw_any:
-  # Glasgow ChatGPT prints nothing when no solution is found.
-  print("0 0 0")
-  raise SystemExit(0)
+    # Glasgow ChatGPT prints nothing when no solution is found.
+    print("0 0 0")
+    raise SystemExit(0)
 
 if count is None:
-  count = mapping_count
+    count = mapping_count
 if time_ms is None:
-  # Timing for Glasgow LLMs is already captured externally; keep parser usable for count parsing.
-  time_ms = 0.0
+    # Timing for Glasgow LLMs is already captured externally; keep parser usable for count parsing.
+    time_ms = 0.0
 print(f"{count} {time_ms} {time_ms}")
-PY
+'
+  : "${_pattern_path}" "${_target_path}"
 }
 
 normalize_dijkstra_answer() {

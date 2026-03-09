@@ -461,6 +461,7 @@ jobs:
         env:
           BINARIES_READY: ${{ steps.binaries.outputs.READY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GENERATOR_SEED_INPUT: ${{ steps.run_subgraph_vf3.outputs.SEED_USED || env.GENERATOR_SEED_INPUT }}
           SUBGRAPH_PHASE_INPUT: glasgow
         run: *run_algorithm_script
 

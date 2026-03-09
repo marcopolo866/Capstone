@@ -170,15 +170,27 @@ static bool read_graph(const std::string &path, Graph &g) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) return 1;
+    bool print_mappings = false;
+    std::vector<std::string> positional;
+    positional.reserve(static_cast<size_t>(argc));
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i] ? std::string(argv[i]) : std::string();
+        if (arg == "--print-mappings") {
+            print_mappings = true;
+            continue;
+        }
+        positional.push_back(arg);
+    }
+    if (positional.size() < 2) return 1;
     const auto started = std::chrono::high_resolution_clock::now();
 
     Graph pattern, target;
-    if (!read_graph(argv[1], pattern) || !read_graph(argv[2], target)) return 1;
+    if (!read_graph(positional[0], pattern) || !read_graph(positional[1], target)) return 1;
 
     if (pattern.n > target.n) {
         const auto done = std::chrono::high_resolution_clock::now();
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(done - started).count();
+        std::cout << "solution_count=0" << '\n';
         std::cout << 0 << '\n';
         std::cout << "Time: " << ms << '\n';
         return 0;
@@ -198,12 +210,14 @@ int main(int argc, char **argv) {
     std::function<void(int)> dfs = [&](int depth) {
         if (depth == pattern.n) {
             ++total_instances;
-            std::cout << "Mapping: ";
-            for (int p = 0; p < pattern.n; ++p) {
-                if (p) std::cout << ' ';
-                std::cout << '(' << p << " -> " << map_p_to_t[p] << ')';
+            if (print_mappings) {
+                std::cout << "Mapping: ";
+                for (int p = 0; p < pattern.n; ++p) {
+                    if (p) std::cout << ' ';
+                    std::cout << '(' << p << " -> " << map_p_to_t[p] << ')';
+                }
+                std::cout << '\n';
             }
-            std::cout << '\n';
             return;
         }
 
@@ -236,6 +250,7 @@ int main(int argc, char **argv) {
 
     const auto done = std::chrono::high_resolution_clock::now();
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(done - started).count();
+    std::cout << "solution_count=" << total_instances << '\n';
     std::cout << total_instances << '\n';
     std::cout << "Time: " << ms << '\n';
     return 0;
