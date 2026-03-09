@@ -325,6 +325,81 @@
             URL.revokeObjectURL(url);
         }
 
+        function extractSeedUsed(result) {
+            if (!result || typeof result !== 'object') return null;
+            const candidates = [
+                result.inputs && Object.prototype.hasOwnProperty.call(result.inputs, 'seed')
+                    ? result.inputs.seed
+                    : undefined,
+                result.seed,
+                result.visualization && Object.prototype.hasOwnProperty.call(result.visualization, 'seed')
+                    ? result.visualization.seed
+                    : undefined
+            ];
+            for (const candidate of candidates) {
+                if (candidate === null || candidate === undefined || candidate === '') continue;
+                return candidate;
+            }
+            return null;
+        }
+
+        function extractIterationSeeds(result) {
+            const seeds = result && result.inputs && Array.isArray(result.inputs.iteration_seeds)
+                ? result.inputs.iteration_seeds
+                : null;
+            return seeds ? seeds.slice() : null;
+        }
+
+        function extractSolutionCountsPerIteration(result) {
+            if (result && result.solution_counts_per_iteration && typeof result.solution_counts_per_iteration === 'object') {
+                return result.solution_counts_per_iteration;
+            }
+            const output = result && typeof result.output === 'string' ? result.output : '';
+            if (!output.trim()) return null;
+
+            const bySection = {};
+            const lines = output.split(/\r?\n/);
+            let currentSection = '';
+
+            const parseCountTokens = (raw) => {
+                const cleaned = String(raw || '').trim();
+                if (!cleaned) return [];
+                return cleaned
+                    .split(',')
+                    .map((token) => token.trim())
+                    .filter((token) => token.length > 0)
+                    .map((token) => {
+                        if (/^na$/i.test(token)) return null;
+                        const value = Number(token);
+                        return Number.isFinite(value) ? value : null;
+                    });
+            };
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = String(lines[i] || '');
+                const sectionMatch = line.match(/^\[([^\]]+)\]/);
+                if (sectionMatch) {
+                    currentSection = sectionMatch[1].trim();
+                }
+                if (!currentSection) continue;
+
+                const startMatch = line.match(/^Solution counts:\s*\[(.*)$/i);
+                if (!startMatch) continue;
+
+                let collected = startMatch[1] || '';
+                while (!collected.includes(']') && i + 1 < lines.length) {
+                    i += 1;
+                    collected += ` ${String(lines[i] || '').trim()}`;
+                }
+                const endIdx = collected.indexOf(']');
+                const inside = endIdx >= 0 ? collected.slice(0, endIdx) : collected;
+                const parsed = parseCountTokens(inside);
+                bySection[currentSection] = parsed;
+            }
+
+            return Object.keys(bySection).length ? bySection : null;
+        }
+
         function renderExportButtons(result) {
             const exportRow = document.getElementById('export-row');
             if (!exportRow || !result) return;
@@ -338,15 +413,36 @@
             jsonBtn.textContent = 'Download JSON';
             jsonBtn.type = 'button';
             jsonBtn.addEventListener('click', () => {
+                const pickDefined = (value) => (value === undefined ? null : value);
+                const seedUsed = extractSeedUsed(result);
+                const iterationSeeds = extractIterationSeeds(result);
+                const solutionCounts = extractSolutionCountsPerIteration(result);
+                const inputs = (result && result.inputs && typeof result.inputs === 'object') ? result.inputs : {};
+                const matchCounts = (result && result.match_counts && typeof result.match_counts === 'object')
+                    ? result.match_counts
+                    : null;
                 const payload = {
                     algorithm: result.algorithm || null,
+                    status: result.status || null,
+                    error: result.error || null,
+                    timestamp: result.timestamp || null,
+                    request_id: result.request_id || null,
+                    output: result.output || null,
                     timings_ms: result.timings_ms || {},
                     timings_ms_stdev: result.timings_ms_stdev || {},
                     memory_kb: result.memory_kb || {},
                     memory_kb_stdev: result.memory_kb_stdev || {},
                     memory_metric_unit: result.memory_metric_unit || 'kB',
                     memory_metric_label: result.memory_metric_label || 'Memory',
+                    inputs,
                     iterations: result.iterations || null,
+                    warmup: pickDefined(result.warmup),
+                    run_duration_ms: pickDefined(result.run_duration_ms),
+                    subgraph_phase: result.subgraph_phase || null,
+                    match_counts: matchCounts,
+                    seed_used: seedUsed,
+                    iteration_seeds: iterationSeeds,
+                    solution_counts_per_iteration: solutionCounts,
                     exported_at: new Date().toISOString()
                 };
                 triggerDownload(`${baseName}.json`, JSON.stringify(payload, null, 2), 'application/json');
@@ -357,20 +453,85 @@
             csvBtn.textContent = 'Download CSV';
             csvBtn.type = 'button';
             csvBtn.addEventListener('click', () => {
+                const escapeCsv = (value) => {
+                    const text = value === null || value === undefined ? '' : String(value);
+                    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+                };
+                const addCsvRow = (metric, variant, value, stdev = '', unit = '') => {
+                    rows.push(
+                        `${escapeCsv(metric)},${escapeCsv(variant)},${escapeCsv(value)},${escapeCsv(stdev)},${escapeCsv(unit)}`
+                    );
+                };
+                const flattenObjectRows = (metric, rootLabel, obj) => {
+                    const walk = (path, value) => {
+                        if (value && typeof value === 'object' && !Array.isArray(value)) {
+                            for (const key of Object.keys(value)) {
+                                walk(path ? `${path}.${key}` : String(key), value[key]);
+                            }
+                            return;
+                        }
+                        const serialized = Array.isArray(value) ? JSON.stringify(value) : value;
+                        const unit = Number.isFinite(Number(serialized)) ? 'count' : '';
+                        addCsvRow(metric, path || rootLabel, serialized, '', unit);
+                    };
+                    if (obj && typeof obj === 'object') walk(rootLabel, obj);
+                };
+                const seedUsed = extractSeedUsed(result);
+                const iterationSeeds = extractIterationSeeds(result);
+                const solutionCounts = extractSolutionCountsPerIteration(result);
+                const inputs = (result && result.inputs && typeof result.inputs === 'object') ? result.inputs : {};
                 const rows = ['metric,variant,value,stdev,unit'];
                 const timings = result.timings_ms || {};
                 const timingsStdev = result.timings_ms_stdev || {};
                 const memory = result.memory_kb || {};
                 const memoryStdev = result.memory_kb_stdev || {};
+
+                addCsvRow('meta', 'status', result.status || null);
+                addCsvRow('meta', 'error', result.error || null);
+                addCsvRow('meta', 'timestamp', result.timestamp || null);
+                addCsvRow('meta', 'request_id', result.request_id || null);
+                addCsvRow('meta', 'output', result.output || null);
+                addCsvRow('meta', 'subgraph_phase', result.subgraph_phase || null);
+                addCsvRow('meta', 'exported_at', new Date().toISOString());
+                addCsvRow('meta', 'seed_used', seedUsed);
+                addCsvRow('run_context', 'iterations', result.iterations || null, '', 'count');
+                addCsvRow('run_context', 'warmup', result.warmup === undefined ? null : result.warmup, '', 'count');
+                addCsvRow(
+                    'run_context',
+                    'run_duration_ms',
+                    result.run_duration_ms === undefined ? null : result.run_duration_ms,
+                    '',
+                    'ms'
+                );
+                for (const key of Object.keys(inputs)) {
+                    if (key === 'iteration_seeds') continue;
+                    const value = inputs[key];
+                    const serialized = Array.isArray(value) ? JSON.stringify(value) : value;
+                    addCsvRow('input_context', key, serialized);
+                }
+                if (Array.isArray(iterationSeeds)) {
+                    for (let i = 0; i < iterationSeeds.length; i++) {
+                        addCsvRow('iteration_seed', `iter_${i + 1}`, iterationSeeds[i]);
+                    }
+                }
+                if (solutionCounts && typeof solutionCounts === 'object') {
+                    for (const section of Object.keys(solutionCounts)) {
+                        const counts = Array.isArray(solutionCounts[section]) ? solutionCounts[section] : [];
+                        for (let i = 0; i < counts.length; i++) {
+                            addCsvRow('solution_count', `${section} [iter ${i + 1}]`, counts[i], '', 'count');
+                        }
+                    }
+                }
+                flattenObjectRows('correctness', 'match_counts', result.match_counts);
                 for (const key of Object.keys(timings)) {
                     const val = timings[key];
                     const sd = timingsStdev[key] !== undefined ? timingsStdev[key] : '';
-                    rows.push(`runtime_ms,${key},${val},${sd},ms`);
+                    addCsvRow('runtime_ms', key, val, sd, 'ms');
                 }
                 for (const key of Object.keys(memory)) {
                     const val = memory[key];
                     const sd = memoryStdev[key] !== undefined ? memoryStdev[key] : '';
-                    rows.push(`memory,${key},${val},${sd},${result.memory_metric_unit || 'kB'}`);
+                    addCsvRow('memory', key, val, sd, result.memory_metric_unit || 'kB');
                 }
                 triggerDownload(`${baseName}.csv`, rows.join('\n'), 'text/csv');
             });
