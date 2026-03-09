@@ -13,9 +13,11 @@
             for (let i = 0; i < lines.length; i++) {
                 const trimmed = String(lines[i] || '').trim();
                 if (!trimmed) continue;
-                const sectionMatch = trimmed.match(/^\[(.+)\]$/);
+                const sectionMatch = trimmed.match(/^\[([^\]]+)\](?:\s*(.*))?$/);
                 if (sectionMatch) {
-                    currentSection = String(sectionMatch[1] || '').trim();
+                    const sectionName = String(sectionMatch[1] || '').trim();
+                    const sectionSuffix = String(sectionMatch[2] || '').trim();
+                    currentSection = sectionSuffix ? `${sectionName} ${sectionSuffix}` : sectionName;
                     continue;
                 }
                 if (!/^Solution counts:/i.test(trimmed)) continue;
@@ -50,17 +52,49 @@
             return sections;
         }
 
-        function buildParsedCountNote(iterationIndex) {
-            if (!Array.isArray(visParsedCountSections) || !visParsedCountSections.length) return '';
-            const parts = [];
-            for (const entry of visParsedCountSections) {
-                if (!entry || !Array.isArray(entry.counts) || !entry.counts.length) continue;
-                if (iterationIndex < 0 || iterationIndex >= entry.counts.length) continue;
-                const value = entry.counts[iterationIndex];
-                parts.push(`${entry.section}: ${value}`);
+        function pickParsedCountForIteration(iterationIndex, algorithmName) {
+            if (!Array.isArray(visParsedCountSections) || !visParsedCountSections.length) return null;
+            const algo = String(algorithmName || '').trim().toLowerCase();
+            const normalized = visParsedCountSections
+                .map((entry) => ({
+                    section: entry && typeof entry.section === 'string' ? entry.section : '',
+                    sectionKey: String(entry && entry.section ? entry.section : '').trim().toLowerCase(),
+                    counts: Array.isArray(entry && entry.counts) ? entry.counts : []
+                }))
+                .filter((entry) => entry.counts.length > iterationIndex);
+            if (!normalized.length) return null;
+
+            const preferred = (() => {
+                if (algo === 'vf3') {
+                    return ['vf3 baseline', 'subgraph vf3 baseline', 'vf3 chatgpt', 'vf3 gemini', 'subgraph vf3 chatgpt', 'subgraph vf3 gemini'];
+                }
+                if (algo === 'glasgow') {
+                    return ['glasgow subgraph solver', 'subgraph glasgow baseline', 'glasgow chatgpt', 'glasgow gemini', 'subgraph glasgow chatgpt', 'subgraph glasgow gemini'];
+                }
+                if (algo === 'subgraph') {
+                    return ['subgraph vf3 baseline', 'subgraph glasgow baseline', 'subgraph vf3 chatgpt', 'subgraph vf3 gemini', 'subgraph glasgow chatgpt', 'subgraph glasgow gemini'];
+                }
+                return ['baseline'];
+            })();
+
+            for (const key of preferred) {
+                const found = normalized.find((entry) => entry.sectionKey.includes(key));
+                if (found) return found.counts[iterationIndex];
             }
-            if (!parts.length) return '';
-            return `Parsed counts (iteration ${iterationIndex + 1}): ${parts.join(' | ')}`;
+            return normalized[0].counts[iterationIndex];
+        }
+
+        function updateSolutionCountDisplay(iterationIndex, vis) {
+            const countLabel = document.getElementById('solution-count-display');
+            if (!countLabel) return;
+            const value = pickParsedCountForIteration(iterationIndex, vis && vis.algorithm ? vis.algorithm : '');
+            if (value === null || value === undefined || String(value).trim() === '') {
+                countLabel.hidden = true;
+                countLabel.textContent = 'Solution Count: --';
+                return;
+            }
+            countLabel.hidden = false;
+            countLabel.textContent = `Solution Count: ${String(value).trim()}`;
         }
 
         function clearVisualization() {
@@ -73,6 +107,7 @@
             const graphCenterBtn = document.getElementById('graph-center-btn');
             const patternCenterBtn = document.getElementById('pattern-center-btn');
             const solutionControls = document.getElementById('solution-controls');
+            const solutionCountDisplay = document.getElementById('solution-count-display');
             const solutionCapNote = document.getElementById('solution-cap-note');
             const solutionWarning = document.getElementById('solution-warning');
             const iterationControls = document.getElementById('iteration-controls');
@@ -103,6 +138,10 @@
             if (graphCenterBtn) graphCenterBtn.disabled = true;
             if (patternCenterBtn) patternCenterBtn.disabled = true;
             if (solutionControls) solutionControls.hidden = true;
+            if (solutionCountDisplay) {
+                solutionCountDisplay.hidden = true;
+                solutionCountDisplay.textContent = 'Solution Count: --';
+            }
             if (solutionCapNote) solutionCapNote.hidden = true;
             if (solutionWarning) solutionWarning.hidden = true;
             if (iterationControls) iterationControls.hidden = true;
@@ -296,10 +335,6 @@
                 if (vis.truncated) {
                     noteParts.push('Showing up to 4000 nodes and 4000 edges.');
                 }
-                const parsedNote = buildParsedCountNote(currentIterationIndex);
-                if (parsedNote) {
-                    noteParts.push(parsedNote);
-                }
                 note.textContent = noteParts.join(' ');
             };
 
@@ -328,6 +363,7 @@
                 updateIterationControls();
                 updateSolutionControls();
                 updateGraphNote();
+                updateSolutionCountDisplay(currentIterationIndex, vis);
                 return;
             }
 
@@ -454,6 +490,7 @@
             }
 
             updateGraphNote();
+            updateSolutionCountDisplay(currentIterationIndex, vis);
 
             if (patternPanel && patternCanvas) {
                 const patternCount = Number.isFinite(Number(vis.pattern_node_count))

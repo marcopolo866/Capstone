@@ -382,6 +382,13 @@ body {
     margin: 0 auto;
 }
 
+.solution-count-display {
+    font-size: 12px;
+    font-weight: 600;
+    color: #24292e;
+    line-height: 1.2;
+}
+
 .solution-controls {
     display: flex;
     align-items: center;
