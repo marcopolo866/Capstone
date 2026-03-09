@@ -3725,14 +3725,21 @@ def capstone_run_local_generator(args, out_dir):
                 let gemMatchCount = 0;
                 let gemTotalCount = 0;
                 let gemMismatchCount = 0;
+                const baselineCountByIter = [];
+                const chatCountByIter = [];
+                const gemCountByIter = [];
 
                 for (let iter = 0; iter < safeIterations; iter++) {
                     const baselineCount = extractVf3Count(baseAllVisualizationByIter[iter] || '');
                     if (!Number.isInteger(baselineCount)) {
                         vf3Fail++;
+                        baselineCountByIter.push('NA');
+                        chatCountByIter.push('NA');
+                        gemCountByIter.push('NA');
                         continue;
                     }
                     vf3Success++;
+                    baselineCountByIter.push(String(baselineCount));
 
                     chatTotalCount++;
                     const chatCount = extractVf3Count(chatAllVisualizationByIter[iter] || '');
@@ -3741,6 +3748,7 @@ def capstone_run_local_generator(args, out_dir):
                     } else {
                         chatMismatchCount++;
                     }
+                    chatCountByIter.push(Number.isInteger(chatCount) ? String(chatCount) : 'NA');
 
                     gemTotalCount++;
                     const gemCount = extractVf3Count(gemAllVisualizationByIter[iter] || '');
@@ -3749,13 +3757,39 @@ def capstone_run_local_generator(args, out_dir):
                     } else {
                         gemMismatchCount++;
                     }
+                    gemCountByIter.push(Number.isInteger(gemCount) ? String(gemCount) : 'NA');
                 }
 
                 const lines = [];
-                const addSection = (title, _result, firstStats, allStats, firstMemStats, allMemStats, matchInfo = null) => {
+                const formatSolutionCountBlock = (label, rawCounts) => {
+                    const counts = Array.isArray(rawCounts)
+                        ? rawCounts.map((value) => {
+                            const text = String(value == null ? '' : value).trim();
+                            return text || 'NA';
+                        })
+                        : [];
+                    if (!counts.length) return [`${label}: []`];
+
+                    const wrap = 10;
+                    const width = counts.reduce((max, value) => Math.max(max, value.length), 1);
+                    const prefix = `${label}: [`;
+                    const indent = ' '.repeat(prefix.length);
+                    const out = [];
+                    for (let i = 0; i < counts.length; i += wrap) {
+                        const chunk = counts.slice(i, i + wrap).map((value) => value.padStart(width)).join(', ');
+                        const isLast = (i + wrap) >= counts.length;
+                        if (i === 0) out.push(`${prefix}${chunk}${isLast ? ']' : ','}`);
+                        else out.push(`${indent}${chunk}${isLast ? ']' : ','}`);
+                    }
+                    return out;
+                };
+                const addSection = (title, _result, firstStats, allStats, firstMemStats, allMemStats, matchInfo = null, countList = null) => {
                     lines.push(`[${title}]`);
                     if (matchInfo && Number.isInteger(matchInfo.matches) && Number.isInteger(matchInfo.total)) {
                         lines.push(`Matches: ${matchInfo.matches}/${matchInfo.total} (mismatches: ${matchInfo.mismatches})`);
+                    }
+                    if (Array.isArray(countList) && countList.length) {
+                        lines.push(...formatSolutionCountBlock('Solution counts', countList));
                     }
                     if (firstStats && allStats) {
                         lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
@@ -3766,11 +3800,11 @@ def capstone_run_local_generator(args, out_dir):
                     lines.push('');
                 };
 
-                addSection('VF3 baseline', baseResult, sBaseFirst, sBaseAll, mBaseFirst, mBaseAll);
+                addSection('VF3 baseline', baseResult, sBaseFirst, sBaseAll, mBaseFirst, mBaseAll, null, baselineCountByIter);
                 addSection('VF3 Gemini', gemResult, sGemFirst, sGemAll, mGemFirst, mGemAll,
-                    { matches: gemMatchCount, total: gemTotalCount, mismatches: gemMismatchCount });
+                    { matches: gemMatchCount, total: gemTotalCount, mismatches: gemMismatchCount }, gemCountByIter);
                 addSection('VF3 ChatGPT', chatResult, sChatFirst, sChatAll, mChatFirst, mChatAll,
-                    { matches: chatMatchCount, total: chatTotalCount, mismatches: chatMismatchCount });
+                    { matches: chatMatchCount, total: chatTotalCount, mismatches: chatMismatchCount }, chatCountByIter);
 
                 let visualization = null;
                 try {

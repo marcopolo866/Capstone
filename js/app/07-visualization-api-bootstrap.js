@@ -1,9 +1,67 @@
         let visSolutionCapReached = false;
         const VISUALIZER_SOLUTION_CAP = 1000;
+        let visParsedCountSections = [];
         // Tracks the graph structure that graphInstance was built for.
         // If the next iteration has an identical structure we skip the expensive
         // destroy-and-rebuild and only swap solution highlights instead.
         let lastRenderedVisKey = null;
+
+        function parseSolutionCountSections(outputText) {
+            const lines = String(outputText || '').replace(/\r/g, '').split('\n');
+            const sections = [];
+            let currentSection = '';
+            for (let i = 0; i < lines.length; i++) {
+                const trimmed = String(lines[i] || '').trim();
+                if (!trimmed) continue;
+                const sectionMatch = trimmed.match(/^\[(.+)\]$/);
+                if (sectionMatch) {
+                    currentSection = String(sectionMatch[1] || '').trim();
+                    continue;
+                }
+                if (!/^Solution counts:/i.test(trimmed)) continue;
+
+                let block = trimmed.replace(/^Solution counts:\s*/i, '').trim();
+                while (!block.includes(']') && (i + 1) < lines.length) {
+                    const nextTrimmed = String(lines[i + 1] || '').trim();
+                    if (!nextTrimmed) {
+                        i++;
+                        continue;
+                    }
+                    if (/^\[.+\]$/.test(nextTrimmed)) break;
+                    i++;
+                    block += ` ${nextTrimmed}`;
+                    if (nextTrimmed.includes(']')) break;
+                }
+
+                const openIdx = block.indexOf('[');
+                const closeIdx = block.lastIndexOf(']');
+                if (openIdx < 0 || closeIdx <= openIdx) continue;
+                const inner = block.slice(openIdx + 1, closeIdx);
+                const counts = inner
+                    .split(',')
+                    .map((item) => String(item || '').trim())
+                    .filter(Boolean);
+                if (!counts.length) continue;
+                sections.push({
+                    section: currentSection || 'Unknown',
+                    counts
+                });
+            }
+            return sections;
+        }
+
+        function buildParsedCountNote(iterationIndex) {
+            if (!Array.isArray(visParsedCountSections) || !visParsedCountSections.length) return '';
+            const parts = [];
+            for (const entry of visParsedCountSections) {
+                if (!entry || !Array.isArray(entry.counts) || !entry.counts.length) continue;
+                if (iterationIndex < 0 || iterationIndex >= entry.counts.length) continue;
+                const value = entry.counts[iterationIndex];
+                parts.push(`${entry.section}: ${value}`);
+            }
+            if (!parts.length) return '';
+            return `Parsed counts (iteration ${iterationIndex + 1}): ${parts.join(' | ')}`;
+        }
 
         function clearVisualization() {
             const panel = document.getElementById('graph-panel');
@@ -37,6 +95,7 @@
             currentSolutionIndex = 0;
             visIterations = [];
             currentIterationIndex = 0;
+            visParsedCountSections = [];
             if (canvas) canvas.innerHTML = '';
             if (patternCanvas) patternCanvas.innerHTML = '';
             if (note) note.textContent = '';
@@ -203,6 +262,7 @@
             const iterations = baseVis && Array.isArray(baseVis.visualization_iterations)
                 ? baseVis.visualization_iterations
                 : (baseVis ? [baseVis] : []);
+            visParsedCountSections = parseSolutionCountSections(result && result.output ? result.output : '');
             if (!iterations.length) {
                 clearVisualization();
                 return;
@@ -227,6 +287,21 @@
                 clearVisualization();
                 return;
             }
+            const updateGraphNote = () => {
+                if (!note) return;
+                const noteParts = [];
+                if (Number.isFinite(Number(vis.node_count)) && Number.isFinite(Number(vis.edge_count))) {
+                    noteParts.push(`Nodes: ${vis.node_count}, Edges: ${vis.edge_count}`);
+                }
+                if (vis.truncated) {
+                    noteParts.push('Showing up to 4000 nodes and 4000 edges.');
+                }
+                const parsedNote = buildParsedCountNote(currentIterationIndex);
+                if (parsedNote) {
+                    noteParts.push(parsedNote);
+                }
+                note.textContent = noteParts.join(' ');
+            };
 
             // Build a lightweight key representing the graph structure.
             // If it matches the last rendered key, we skip the expensive destroy-and-rebuild
@@ -252,6 +327,7 @@
                 }
                 updateIterationControls();
                 updateSolutionControls();
+                updateGraphNote();
                 return;
             }
 
@@ -377,14 +453,7 @@
                 solutionWarning.hidden = !vis.no_solutions;
             }
 
-            const noteParts = [];
-            if (Number.isFinite(Number(vis.node_count)) && Number.isFinite(Number(vis.edge_count))) {
-                noteParts.push(`Nodes: ${vis.node_count}, Edges: ${vis.edge_count}`);
-            }
-            if (vis.truncated) {
-                noteParts.push('Showing up to 4000 nodes and 4000 edges.');
-            }
-            note.textContent = noteParts.join(' ');
+            updateGraphNote();
 
             if (patternPanel && patternCanvas) {
                 const patternCount = Number.isFinite(Number(vis.pattern_node_count))

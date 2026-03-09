@@ -22,6 +22,63 @@ format_solution_count_list() {
   printf "[%s]" "$joined"
 }
 
+print_solution_count_block() {
+  local label="$1"
+  shift || true
+  local wrap=10
+  local -a values=("$@")
+  if [ "${#values[@]}" -eq 0 ]; then
+    echo "${label}: []"
+    return
+  fi
+
+  local max_width=1
+  local v=""
+  for v in "${values[@]}"; do
+    if [ "${#v}" -gt "$max_width" ]; then
+      max_width="${#v}"
+    fi
+  done
+
+  local prefix="${label}: ["
+  local indent=""
+  printf -v indent '%*s' "${#prefix}" ''
+
+  local idx=0
+  local rows=0
+  local total="${#values[@]}"
+  while [ "$idx" -lt "$total" ]; do
+    local line=""
+    local col=0
+    while [ "$col" -lt "$wrap" ] && [ "$idx" -lt "$total" ]; do
+      local padded=""
+      printf -v padded "%${max_width}s" "${values[$idx]}"
+      if [ "$col" -gt 0 ]; then
+        line+=", $padded"
+      else
+        line+="$padded"
+      fi
+      idx=$((idx + 1))
+      col=$((col + 1))
+    done
+
+    if [ "$rows" -eq 0 ]; then
+      if [ "$idx" -lt "$total" ]; then
+        echo "${prefix}${line},"
+      else
+        echo "${prefix}${line}]"
+      fi
+    else
+      if [ "$idx" -lt "$total" ]; then
+        echo "${indent}${line},"
+      else
+        echo "${indent}${line}]"
+      fi
+    fi
+    rows=$((rows + 1))
+  done
+}
+
 case "$ALGORITHM" in
   dijkstra)
     dijkstra_baseline_out=""
@@ -728,7 +785,7 @@ case "$ALGORITHM" in
       {
         echo "[Glasgow ChatGPT]"
         echo "Matches: ${glasgow_chatgpt_match}/${glasgow_chatgpt_total} (mismatches: ${glasgow_chatgpt_mismatch})"
-        echo "Solution counts: $(format_solution_count_list "${glasgow_chatgpt_solution_counts[@]}")"
+        print_solution_count_block "Solution counts" "${glasgow_chatgpt_solution_counts[@]}"
         echo "Warmup: $WARMUP_REQUESTED"
         echo "Iterations: $ITERATIONS"
         if [ -n "${glasgow_chatgpt_first_ms_median:-}" ] && [ -n "${glasgow_chatgpt_all_ms_median:-}" ]; then
@@ -775,7 +832,7 @@ case "$ALGORITHM" in
       {
         echo "[Glasgow Gemini]"
         echo "Matches: ${glasgow_gemini_match}/${glasgow_gemini_total} (mismatches: ${glasgow_gemini_mismatch})"
-        echo "Solution counts: $(format_solution_count_list "${glasgow_gemini_solution_counts[@]}")"
+        print_solution_count_block "Solution counts" "${glasgow_gemini_solution_counts[@]}"
         echo "Warmup: $WARMUP_REQUESTED"
         echo "Iterations: $ITERATIONS"
         if [ -n "${glasgow_gemini_first_ms_median:-}" ] && [ -n "${glasgow_gemini_all_ms_median:-}" ]; then
@@ -891,6 +948,7 @@ case "$ALGORITHM" in
     vf3_gemini_match=0
     vf3_gemini_total=0
     vf3_gemini_mismatch=0
+    vf3_baseline_solution_counts=()
     vf3_chatgpt_solution_counts=()
     vf3_gemini_solution_counts=()
 
@@ -911,6 +969,7 @@ case "$ALGORITHM" in
     rss=""
 
     for ((i=1; i<=ITERATIONS; i++)); do
+      baseline_count="NA"
       if [ "$INPUT_MODE" = "generate" ]; then
         if ! generate_graphs_for_run "vf3_iter" "$i"; then
           EXIT_CODE=1
@@ -978,6 +1037,11 @@ case "$ALGORITHM" in
           progress_tick
         fi
       fi
+      baseline_count_value="${baseline_count:-NA}"
+      if [ -z "$baseline_count_value" ]; then
+        baseline_count_value="NA"
+      fi
+      vf3_baseline_solution_counts+=("$baseline_count_value")
 
       if [ "$baseline_ok" -ne 1 ]; then
         record_solver_failure "VF3 baseline" "$i"
@@ -1095,6 +1159,7 @@ case "$ALGORITHM" in
       {
         echo "[VF3 baseline]"
         echo "${vf3_success} iterations ran successfully${vf3_failure_suffix}"
+        print_solution_count_block "Solution counts" "${vf3_baseline_solution_counts[@]}"
         echo "Warmup: $WARMUP_REQUESTED"
         echo "Iterations: $ITERATIONS"
         if [ -n "${vf3_base_first_ms_median:-}" ] && [ -n "${vf3_base_all_ms_median:-}" ]; then
@@ -1131,7 +1196,7 @@ case "$ALGORITHM" in
       {
         echo "[VF3 ChatGPT]"
         echo "Matches: ${vf3_chatgpt_match}/${vf3_chatgpt_total} (mismatches: ${vf3_chatgpt_mismatch})"
-        echo "Solution counts: $(format_solution_count_list "${vf3_chatgpt_solution_counts[@]}")"
+        print_solution_count_block "Solution counts" "${vf3_chatgpt_solution_counts[@]}"
         echo "Warmup: $WARMUP_REQUESTED"
         echo "Iterations: $ITERATIONS"
         if [ -n "${chatvf3_first_ms_median:-}" ] && [ -n "${chatvf3_all_ms_median:-}" ]; then
@@ -1178,7 +1243,7 @@ case "$ALGORITHM" in
       {
         echo "[VF3 Gemini]"
         echo "Matches: ${vf3_gemini_match}/${vf3_gemini_total} (mismatches: ${vf3_gemini_mismatch})"
-        echo "Solution counts: $(format_solution_count_list "${vf3_gemini_solution_counts[@]}")"
+        print_solution_count_block "Solution counts" "${vf3_gemini_solution_counts[@]}"
         echo "Warmup: $WARMUP_REQUESTED"
         echo "Iterations: $ITERATIONS"
         if [ -n "${vf3_first_ms_median:-}" ] && [ -n "${vf3_all_ms_median:-}" ]; then
@@ -1378,6 +1443,7 @@ case "$ALGORITHM" in
     glasgow_baseline_match=0
     glasgow_baseline_total=0
     glasgow_baseline_mismatch=0
+    subgraph_vf3_baseline_solution_counts=()
     subgraph_vf3_chatgpt_solution_counts=()
     subgraph_vf3_gemini_solution_counts=()
     subgraph_glasgow_baseline_solution_counts=()
@@ -1416,6 +1482,7 @@ case "$ALGORITHM" in
 
     for ((i=1; i<=ITERATIONS; i++)); do
       baseline_count=""
+      subgraph_vf3_baseline_count_value="NA"
       if [ "$INPUT_MODE" = "generate" ]; then
         if [ "${SUBGRAPH_PHASE:-}" != "glasgow" ]; then
           if ! generate_graphs_for_run "subgraph_iter" "$i"; then
@@ -1460,6 +1527,12 @@ case "$ALGORITHM" in
             progress_tick
           fi
         fi
+
+        subgraph_vf3_baseline_count_value="${baseline_count:-NA}"
+        if [ -z "$subgraph_vf3_baseline_count_value" ]; then
+          subgraph_vf3_baseline_count_value="NA"
+        fi
+        subgraph_vf3_baseline_solution_counts+=("$subgraph_vf3_baseline_count_value")
 
         if [ "$baseline_ok" -ne 1 ]; then
           record_solver_failure "Subgraph VF3 baseline" "$i"
@@ -1721,6 +1794,7 @@ case "$ALGORITHM" in
       {
         echo "[Subgraph VF3 baseline]"
         echo "${vf3_success} iterations ran successfully${vf3_failure_suffix}"
+        print_solution_count_block "Solution counts" "${subgraph_vf3_baseline_solution_counts[@]}"
         echo "Warmup: $WARMUP_REQUESTED"
         echo "Iterations: $ITERATIONS"
         if [ -n "${vf3_base_first_ms_median:-}" ] && [ -n "${vf3_base_all_ms_median:-}" ]; then
@@ -1757,7 +1831,7 @@ case "$ALGORITHM" in
       {
         echo "[Subgraph VF3 ChatGPT]"
         echo "Matches: ${vf3_chatgpt_match}/${vf3_chatgpt_total} (mismatches: ${vf3_chatgpt_mismatch})"
-        echo "Solution counts: $(format_solution_count_list "${subgraph_vf3_chatgpt_solution_counts[@]}")"
+        print_solution_count_block "Solution counts" "${subgraph_vf3_chatgpt_solution_counts[@]}"
         echo "Warmup: $WARMUP_REQUESTED"
         echo "Iterations: $ITERATIONS"
         if [ -n "${chatvf3_first_ms_median:-}" ] && [ -n "${chatvf3_all_ms_median:-}" ]; then
@@ -1794,7 +1868,7 @@ case "$ALGORITHM" in
       {
         echo "[Subgraph VF3 Gemini]"
         echo "Matches: ${vf3_gemini_match}/${vf3_gemini_total} (mismatches: ${vf3_gemini_mismatch})"
-        echo "Solution counts: $(format_solution_count_list "${subgraph_vf3_gemini_solution_counts[@]}")"
+        print_solution_count_block "Solution counts" "${subgraph_vf3_gemini_solution_counts[@]}"
         echo "Warmup: $WARMUP_REQUESTED"
         echo "Iterations: $ITERATIONS"
         if [ -n "${vf3_first_ms_median:-}" ] && [ -n "${vf3_all_ms_median:-}" ]; then
@@ -1836,7 +1910,7 @@ case "$ALGORITHM" in
         echo "[Subgraph Glasgow baseline]"
         echo "${glasgow_success} iterations ran successfully${glasgow_failure_suffix}"
         echo "Matches: ${glasgow_baseline_match}/${glasgow_baseline_total} (mismatches: ${glasgow_baseline_mismatch})"
-        echo "Solution counts: $(format_solution_count_list "${subgraph_glasgow_baseline_solution_counts[@]}")"
+        print_solution_count_block "Solution counts" "${subgraph_glasgow_baseline_solution_counts[@]}"
         echo "Warmup: $WARMUP_REQUESTED"
         echo "Iterations: $ITERATIONS"
         if [ -n "${glasgow_first_ms_median:-}" ] && [ -n "${glasgow_all_ms_median:-}" ]; then
@@ -1873,7 +1947,7 @@ case "$ALGORITHM" in
       {
         echo "[Subgraph Glasgow ChatGPT]"
         echo "Matches: ${glasgow_chatgpt_match}/${glasgow_chatgpt_total} (mismatches: ${glasgow_chatgpt_mismatch})"
-        echo "Solution counts: $(format_solution_count_list "${subgraph_glasgow_chatgpt_solution_counts[@]}")"
+        print_solution_count_block "Solution counts" "${subgraph_glasgow_chatgpt_solution_counts[@]}"
         echo "Warmup: $WARMUP_REQUESTED"
         echo "Iterations: $ITERATIONS"
         if [ -n "${glasgow_chatgpt_first_ms_median:-}" ] && [ -n "${glasgow_chatgpt_all_ms_median:-}" ]; then
@@ -1910,7 +1984,7 @@ case "$ALGORITHM" in
       {
         echo "[Subgraph Glasgow Gemini]"
         echo "Matches: ${glasgow_gemini_match}/${glasgow_gemini_total} (mismatches: ${glasgow_gemini_mismatch})"
-        echo "Solution counts: $(format_solution_count_list "${subgraph_glasgow_gemini_solution_counts[@]}")"
+        print_solution_count_block "Solution counts" "${subgraph_glasgow_gemini_solution_counts[@]}"
         echo "Warmup: $WARMUP_REQUESTED"
         echo "Iterations: $ITERATIONS"
         if [ -n "${glasgow_gemini_first_ms_median:-}" ] && [ -n "${glasgow_gemini_all_ms_median:-}" ]; then
