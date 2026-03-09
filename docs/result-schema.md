@@ -34,3 +34,35 @@ Runner steps now emit a structured metrics snapshot:
 `create-result-json-step.py` consumes this file first, then falls back to environment variables for backward compatibility.
 
 This preserves current functionality while reducing env-key coupling in workflow steps.
+
+## Desktop Runner Session Schema
+
+The downloadable desktop benchmark runner writes:
+
+- `benchmark_output_YYYYMMDD_HHMMSS/benchmark-session.json`
+- `benchmark_output_YYYYMMDD_HHMMSS/benchmark-session.csv`
+
+Primary JSON fields:
+
+- `schema_version`: currently `desktop-benchmark-v1`
+- `created_at_utc`, `run_started_utc`, `run_ended_utc`
+- `run_duration_ms`
+- `aborted`, `timed_out`
+- `completed_trials`, `planned_trials`
+- `run_config`:
+  - `tab_id` (`subgraph` or `shortest_path`)
+  - `selected_variants`
+  - `iterations_per_datapoint`
+  - `seed`
+  - `stop_mode` (`threshold` or `timed`)
+  - `time_limit_minutes` (timed mode)
+  - `primary_variable`, `secondary_variable`
+  - `var_ranges`, `fixed_values`
+  - `plot3d_style`, `plot3d_variant`
+- `datapoints` (list):
+  - `variant_id`, `variant_label`
+  - `x_value`, `y_value`
+  - `runtime_median_ms`, `runtime_stdev_ms`, `runtime_samples_n`
+  - `memory_median_kb`, `memory_stdev_kb`, `memory_samples_n`
+  - `completed_iterations`, `requested_iterations`
+  - `seeds` (iteration seeds used for that datapoint/variant)

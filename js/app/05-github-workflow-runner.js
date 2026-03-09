@@ -296,6 +296,7 @@
 
         let workflowDispatchEndpointCache = null;
         let runAlgorithmWorkflowIdCache = null;
+        let benchmarkRunnerWorkflowIdCache = null;
         async function getWorkflowDispatchEndpoint() {
             if (workflowDispatchEndpointCache) return workflowDispatchEndpointCache;
             // Prefer workflow ID to avoid path mismatches; fall back to path if needed.
@@ -336,6 +337,24 @@
             return '';
         }
 
+        async function getBenchmarkRunnerWorkflowId() {
+            if (benchmarkRunnerWorkflowIdCache) return benchmarkRunnerWorkflowIdCache;
+            try {
+                const data = await apiRequest('/actions/workflows');
+                if (data && Array.isArray(data.workflows)) {
+                    const match = data.workflows.find(wf =>
+                        wf.path === '.github/workflows/build-benchmark-runner-windows.yml' ||
+                        (wf.name && wf.name.toLowerCase().includes('benchmark runner'))
+                    );
+                    if (match && match.id) {
+                        benchmarkRunnerWorkflowIdCache = String(match.id);
+                        return benchmarkRunnerWorkflowIdCache;
+                    }
+                }
+            } catch (_) {}
+            return '';
+        }
+
         async function dispatchWorkflow(workflowData) {
             const dispatchEndpoint = await getWorkflowDispatchEndpoint();
             try {
@@ -366,7 +385,7 @@
             }
         }
 
-        async function listWorkflowRuns(workflowId, branchRef, perPage = 30) {
+        async function listWorkflowRuns(workflowId, branchRef, perPage = 30, options = {}) {
             const id = String(workflowId || '').trim();
             if (!id) return [];
 
@@ -374,6 +393,8 @@
             const params = [`per_page=${pageSize}`];
             const branch = String(branchRef || '').trim();
             if (branch) params.push(`branch=${encodeURIComponent(branch)}`);
+            const status = String(options && options.status ? options.status : '').trim().toLowerCase();
+            if (status) params.push(`status=${encodeURIComponent(status)}`);
 
             const endpoint = `/actions/workflows/${id}/runs?${params.join('&')}`;
             const data = await apiRequest(endpoint);
@@ -516,6 +537,106 @@
 
             // Allow starting a new run immediately; the polling loop will exit via abortController.
             if (runBtn) runBtn.disabled = false;
+        }
+
+        function syncRepoConfigFromInputs() {
+            const ownerEl = document.getElementById('owner');
+            const repoEl = document.getElementById('repo');
+            const tokenEl = document.getElementById('token');
+            const owner = ownerEl ? String(ownerEl.value || '').trim() : '';
+            const repo = repoEl ? String(repoEl.value || '').trim() : '';
+            const token = tokenEl ? String(tokenEl.value || '').trim() : '';
+            if (owner) config.owner = owner;
+            if (repo) config.repo = repo;
+            if (token) config.token = token;
+        }
+
+        function triggerBinaryDownload(filename, blob) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        }
+
+        async function downloadDesktopRunner() {
+            const btn = document.getElementById('download-runner-btn');
+            const prevText = btn ? btn.textContent : '';
+            try {
+                syncRepoConfigFromInputs();
+                if (!config.owner || !config.repo) {
+                    throw new Error('Enter repository owner and name first.');
+                }
+                if (!config.token) {
+                    throw new Error('A GitHub token is required to download workflow artifacts.');
+                }
+                if (!window.JSZip) {
+                    throw new Error('JSZip is required to extract the executable from the artifact zip.');
+                }
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = 'Downloading...';
+                }
+
+                const workflowId = await getBenchmarkRunnerWorkflowId();
+                if (!workflowId) {
+                    throw new Error('Could not find the benchmark-runner build workflow in this repository.');
+                }
+
+                const runs = await listWorkflowRuns(workflowId, '', 30, { status: 'success' });
+                const latestSuccess = runs.find(run =>
+                    run &&
+                    String(run.status || '').toLowerCase() === 'completed' &&
+                    String(run.conclusion || '').toLowerCase() === 'success' &&
+                    run.id
+                );
+                if (!latestSuccess || !latestSuccess.id) {
+                    throw new Error('No successful benchmark-runner workflow run was found.');
+                }
+
+                const artifactData = await apiRequest(`/actions/runs/${latestSuccess.id}/artifacts`);
+                const artifactsRaw = (artifactData && Array.isArray(artifactData.artifacts)) ? artifactData.artifacts : [];
+                const artifacts = artifactsRaw.filter(item => item && !item.expired);
+                if (!artifacts.length) {
+                    throw new Error('No non-expired artifacts were found for the latest successful runner build.');
+                }
+
+                const artifact = artifacts.find(item => item && item.name === 'benchmark-runner-windows-exe') ||
+                    artifacts.find(item => item && typeof item.name === 'string' && item.name.toLowerCase().includes('benchmark-runner')) ||
+                    artifacts[0];
+                if (!artifact) {
+                    throw new Error('Could not determine which runner artifact to download.');
+                }
+
+                const buffer = await downloadArtifactZip(artifact);
+                const zip = await window.JSZip.loadAsync(buffer);
+                let exeFile = zip.file('capstone-benchmark-runner.exe') || null;
+                if (!exeFile) {
+                    const matches = zip.file(/\.exe$/i);
+                    if (matches && matches.length) exeFile = matches[0];
+                }
+                if (!exeFile) {
+                    throw new Error('The runner artifact zip did not include a Windows .exe file.');
+                }
+                const blob = await exeFile.async('blob');
+                const downloadName = exeFile.name ? String(exeFile.name).split('/').pop() : 'capstone-benchmark-runner.exe';
+                triggerBinaryDownload(downloadName || 'capstone-benchmark-runner.exe', blob);
+                showStatus('Benchmark runner download started.', 'success');
+            } catch (error) {
+                const msg = (error && error.message) ? error.message : String(error);
+                showStatus(`Runner download failed: ${msg}`, 'error');
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = prevText || 'Download Benchmark Runner (.exe)';
+                }
+            }
+        }
+        if (typeof window !== 'undefined') {
+            window.downloadDesktopRunner = downloadDesktopRunner;
         }
 
         function delay(ms, signal) {

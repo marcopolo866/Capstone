@@ -13,6 +13,7 @@ The project provides:
 - Native build scripts for baseline + LLM binaries
 - Workflow-driven benchmark execution and artifact generation
 - Visualization and result export (`outputs/result.json`, `outputs/visualization.json`)
+- Downloadable Windows desktop benchmark runner artifact (`capstone-benchmark-runner.exe`)
 
 ## Quick Start
 
@@ -25,6 +26,8 @@ The project provides:
 5. Run:
    - `Standard Run (GitHub Actions)` for remote benchmark artifacts.
    - `Run Locally (WebAssembly)` for browser-local execution.
+6. (Optional) Download the Windows desktop benchmark runner from the UI button:
+   - `Download Benchmark Runner (.exe)` (latest successful workflow artifact)
 
 For detailed setup/run instructions, see [docs/quickstart.md](docs/quickstart.md).
 
@@ -35,6 +38,7 @@ For detailed setup/run instructions, see [docs/quickstart.md](docs/quickstart.md
 - `.github/scripts/`: workflow runtime scripts
 - `utilities/generate_graphs.py`: deterministic graph generation
 - `scripts/`: local build and parity tooling
+- `desktop_runner/`: downloadable desktop benchmark runner source + packager
 - `tests/`: automated regression tests + legacy benchmark scripts
 - `wasm/`: prebuilt wasm modules + manifest for local mode
 

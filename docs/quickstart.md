@@ -94,3 +94,18 @@ bash --noprofile --norc -n .github/scripts/run-algorithm-step.sh
 bash --noprofile --norc -n .github/scripts/create-result-json-step.sh
 python -m py_compile .github/scripts/create-result-json-step.py
 ```
+
+## 7. Desktop Benchmark Runner (.exe)
+
+Windows users can download a single-file desktop benchmark executable from the web UI:
+
+1. Open `index.html` in the browser.
+2. Enter `owner`, `repo`, and a token with Actions read access.
+3. Click `Download Benchmark Runner (.exe)` near `Connect to Repository`.
+
+The button pulls the latest successful artifact from:
+
+- workflow: `.github/workflows/build-benchmark-runner-windows.yml`
+- artifact name: `benchmark-runner-windows-exe`
+
+The downloaded executable bundles the benchmark solver binaries and launches a local GUI runner.
