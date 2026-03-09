@@ -4,48 +4,54 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
-function Require-File {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "Missing required file: $Path"
+function Resolve-BinaryPath {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Candidates
+    )
+    foreach ($candidate in $Candidates) {
+        $raw = $candidate.Replace('/', '\')
+        if (Test-Path -LiteralPath $raw -PathType Leaf) {
+            return (Resolve-Path $raw).Path
+        }
+        $exe = "$raw.exe"
+        if (Test-Path -LiteralPath $exe -PathType Leaf) {
+            return (Resolve-Path $exe).Path
+        }
     }
+    return $null
 }
 
-$binaryFiles = @(
-    "baselines/dijkstra.exe",
-    "src/dijkstra_llm.exe",
-    "src/dijkstra_gemini.exe",
-    "baselines/vf3lib/bin/vf3.exe",
-    "src/chatvf3.exe",
-    "src/vf3.exe",
-    "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver.exe",
-    "src/glasgow_chatgpt.exe",
-    "src/glasgow_gemini.exe"
+$binarySpec = @(
+    @{ Out = "dijkstra.exe"; Candidates = @("baselines/dijkstra") },
+    @{ Out = "dijkstra_llm.exe"; Candidates = @("src/dijkstra_llm") },
+    @{ Out = "dijkstra_gemini.exe"; Candidates = @("src/dijkstra_gemini") },
+    @{ Out = "vf3.exe"; Candidates = @("baselines/vf3lib/bin/vf3") },
+    @{ Out = "chatvf3.exe"; Candidates = @("src/chatvf3") },
+    @{ Out = "vf3_gemini.exe"; Candidates = @("src/vf3") },
+    @{ Out = "glasgow_subgraph_solver.exe"; Candidates = @(
+        "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver",
+        "baselines/glasgow-subgraph-solver/build/Release/glasgow_subgraph_solver",
+        "baselines/glasgow-subgraph-solver/build/src/glasgow_subgraph_solver",
+        "baselines/glasgow-subgraph-solver/build/src/Release/glasgow_subgraph_solver"
+    ) },
+    @{ Out = "glasgow_chatgpt.exe"; Candidates = @("src/glasgow_chatgpt") },
+    @{ Out = "glasgow_gemini.exe"; Candidates = @("src/glasgow_gemini") }
 )
 
-foreach ($path in $binaryFiles) { Require-File -Path $path }
+$stagingRoot = Join-Path $repoRoot "desktop_runner/.staging"
+$stagingBin = Join-Path $stagingRoot "binaries"
+if (Test-Path -LiteralPath $stagingRoot) {
+    Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $stagingBin | Out-Null
 
-$pyArgs = @(
-    "-m", "PyInstaller",
-    "--noconfirm",
-    "--clean",
-    "--onefile",
-    "--windowed",
-    "--name", "capstone-benchmark-runner",
-    "--collect-data", "matplotlib",
-    "--hidden-import", "matplotlib.backends.backend_tkagg",
-    "--hidden-import", "matplotlib.backends.backend_agg",
-    "--add-binary", "baselines/dijkstra.exe;binaries",
-    "--add-binary", "src/dijkstra_llm.exe;binaries",
-    "--add-binary", "src/dijkstra_gemini.exe;binaries",
-    "--add-binary", "baselines/vf3lib/bin/vf3.exe;binaries",
-    "--add-binary", "src/chatvf3.exe;binaries",
-    "--add-binary", "src/vf3.exe;binaries",
-    "--add-binary", "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver.exe;binaries",
-    "--add-binary", "src/glasgow_chatgpt.exe;binaries",
-    "--add-binary", "src/glasgow_gemini.exe;binaries",
-    "desktop_runner/app.py"
-)
+foreach ($spec in $binarySpec) {
+    $resolved = Resolve-BinaryPath -Candidates $spec.Candidates
+    if (-not $resolved) {
+        throw "Missing required binary. Tried: $($spec.Candidates -join ', ')"
+    }
+    Copy-Item -LiteralPath $resolved -Destination (Join-Path $stagingBin $spec.Out) -Force
+}
 
 $mingwRoot = $env:MINGW_ROOT
 if (-not $mingwRoot -or -not (Test-Path -LiteralPath $mingwRoot)) {
@@ -62,12 +68,32 @@ $dllCandidates = @(
 foreach ($dll in $dllCandidates) {
     $dllPath = Join-Path $mingwRoot "bin/$dll"
     if (Test-Path -LiteralPath $dllPath -PathType Leaf) {
-        $pyArgs += @("--add-binary", "$dllPath;binaries")
+        Copy-Item -LiteralPath $dllPath -Destination (Join-Path $stagingBin $dll) -Force
     }
+}
+
+$pyArgs = @(
+    "-m", "PyInstaller",
+    "--noconfirm",
+    "--clean",
+    "--onefile",
+    "--windowed",
+    "--name", "capstone-benchmark-runner",
+    "--collect-data", "matplotlib",
+    "--hidden-import", "matplotlib.backends.backend_tkagg",
+    "--hidden-import", "matplotlib.backends.backend_agg",
+    "desktop_runner/app.py"
+)
+
+$stagedFiles = Get-ChildItem -LiteralPath $stagingBin -File
+foreach ($file in $stagedFiles) {
+    $pyArgs += @("--add-binary", "$($file.FullName);binaries")
 }
 
 python @pyArgs
 
 $exePath = Join-Path $repoRoot "dist/capstone-benchmark-runner.exe"
-Require-File -Path $exePath
+if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
+    throw "Expected executable missing: $exePath"
+}
 Write-Host "Built: $exePath"

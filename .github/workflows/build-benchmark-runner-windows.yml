@@ -9,6 +9,7 @@ on:
       - '.github/workflows/build-benchmark-runner-windows.yml'
       - 'desktop_runner/**'
       - 'scripts/build-local.ps1'
+      - 'scripts/build-local.sh'
       - 'src/**'
       - 'baselines/**'
       - 'utilities/generate_graphs.py'
@@ -55,10 +56,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r desktop_runner/requirements.txt
 
-      - name: Build native benchmark binaries
-        shell: pwsh
+      - name: Build native benchmark binaries (MSYS2)
+        shell: msys2 {0}
         run: |
-          ./scripts/build-local.ps1 -CMakeGenerator "MinGW Makefiles"
+          export CMAKE_GENERATOR="MinGW Makefiles"
+          bash scripts/build-local.sh
 
       - name: Package one-file desktop benchmark runner
         shell: pwsh
