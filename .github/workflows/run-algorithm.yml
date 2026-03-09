@@ -366,6 +366,7 @@ jobs:
         if: ${{ always() && env.ALGORITHM_INPUT == 'subgraph' }}
         env:
           EXIT_CODE: ${{ steps.run_subgraph_vf3.outputs.EXIT_CODE }}
+          METRICS_JSON_PATH: ${{ steps.run_subgraph_vf3.outputs.RUN_METRICS_JSON || 'outputs/run_metrics.json' }}
           ITERATIONS: ${{ steps.run_subgraph_vf3.outputs.ITERATIONS }}
           WARMUP: ${{ steps.run_subgraph_vf3.outputs.WARMUP }}
           RUN_DURATION_MS: ${{ steps.run_subgraph_vf3.outputs.RUN_DURATION_MS }}
@@ -469,6 +470,7 @@ jobs:
         if: ${{ always() && env.ALGORITHM_INPUT == 'subgraph' }}
         env:
           EXIT_CODE: ${{ steps.run_subgraph_glasgow.outputs.EXIT_CODE }}
+          METRICS_JSON_PATH: ${{ steps.run_subgraph_glasgow.outputs.RUN_METRICS_JSON || 'outputs/run_metrics.json' }}
           ITERATIONS: ${{ steps.run_subgraph_glasgow.outputs.ITERATIONS }}
           WARMUP: ${{ steps.run_subgraph_glasgow.outputs.WARMUP }}
           RUN_DURATION_MS: ${{ steps.run_subgraph_glasgow.outputs.RUN_DURATION_MS }}
@@ -563,6 +565,7 @@ jobs:
         if: ${{ always() && env.ALGORITHM_INPUT != 'subgraph' }}
         env:
           EXIT_CODE: ${{ steps.run.outputs.EXIT_CODE }}
+          METRICS_JSON_PATH: ${{ steps.run.outputs.RUN_METRICS_JSON || 'outputs/run_metrics.json' }}
           ITERATIONS: ${{ steps.run.outputs.ITERATIONS }}
           WARMUP: ${{ steps.run.outputs.WARMUP }}
           RUN_DURATION_MS: ${{ steps.run.outputs.RUN_DURATION_MS }}

@@ -13,6 +13,9 @@ These paths are referenced by workflow anchors and should remain stable unless t
 
 - `run-algorithm-step.sh` is a wrapper that sources ordered chunks from `run-algorithm-step.d/`
 - `create-result-json-step.sh` is a wrapper that invokes `create-result-json-step.py`
+- `run-algorithm-step.d/04-main-dispatch-and-output.sh` now also writes `outputs/run_metrics.json`
+  from emitted step outputs. `create-result-json-step.py` prefers this structured file and
+  falls back to environment variables for compatibility.
 
 ## Why Wrappers
 

@@ -11,6 +11,8 @@ on:
       - 'baselines/vf3lib/**'
       - 'baselines/glasgow-subgraph-solver/**'
       - 'src/**'
+      - 'scripts/build-local.sh'
+      - 'scripts/build-local.ps1'
       - 'scripts/check-glasgow-parity.py'
       - '.github/workflows/build-binaries.yml'
       - '.gitmodules'
@@ -29,62 +31,12 @@ jobs:
       - name: Build binaries
         run: |
           set -euo pipefail
+          bash scripts/build-local.sh
 
-          echo "Building baseline Dijkstra..."
-          g++ -std=c++17 -O3 \
-            -I "baselines/nyaan-library" \
-            "baselines/dijkstra_main.cpp" \
-            -o "baselines/dijkstra"
-
-          echo "Building Dijkstra ChatGPT..."
-          g++ -std=c++17 -O3 \
-            "src/[CHATGPT] Shortest Path.cpp" \
-            -o "src/dijkstra_llm"
-
-          echo "Building Dijkstra Gemini..."
-          g++ -std=c++17 -O3 \
-            "src/[GEMINI] Shortest Path.cpp" \
-            -o "src/dijkstra_gemini"
-
-          echo "Building VF3 baseline..."
-          VF3_CFLAGS="-std=c++11 -O3 -DNDEBUG -flto -fomit-frame-pointer -pipe -mtune=generic -Wno-deprecated"
-          make -C baselines/vf3lib vf3 CFLAGS="$VF3_CFLAGS"
-
-          echo "Building VF3 Gemini (src)..."
-          g++ -std=c++17 -O3 "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3"
-
-          echo "Building VF3 ChatGPT (src)..."
-          g++ -std=c++17 -O3 "src/[CHATGPT] Subgraph Isomorphism.cpp" -o "src/chatvf3"
-
-          echo "Building Glasgow ChatGPT (src)..."
-          g++ -std=c++17 -O3 "src/[CHATGPT] Glasgow.cpp" -o "src/glasgow_chatgpt"
-
-          echo "Building Glasgow Gemini (src)..."
-          g++ -std=c++17 -O3 "src/[GEMINI] Glasgow.cpp" -o "src/glasgow_gemini"
-
-          echo "Building Glasgow..."
-          cd baselines/glasgow-subgraph-solver
-          mkdir -p build
-          cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3"
-          make -j$(nproc)
-          cd ../../..
-
-          chmod +x \
-            baselines/dijkstra \
-            src/dijkstra_llm \
-            src/dijkstra_gemini \
-            src/vf3 \
-            src/chatvf3 \
-            src/glasgow_chatgpt \
-            src/glasgow_gemini \
-            baselines/vf3lib/bin/vf3 \
-            baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver
-
-      - name: Check Glasgow parity
+      - name: Run automated regression tests
         run: |
           set -euo pipefail
-          python3 scripts/check-glasgow-parity.py
+          python3 -m unittest discover -s tests -p "test_*.py" -v
 
       - name: Write binary manifest
         run: |

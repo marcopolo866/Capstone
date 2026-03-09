@@ -8,8 +8,8 @@ import os
 # --- Configuration ---
 # All entities are now treated as native binaries
 CONFIG = {
-    "Gemini": {"path": "./../src/DJ_GEM", "use_stdin": True, "color": "skyblue"},
-    "GPT": {"path": "./../src/DJ_GPT", "use_stdin": False, "color": "lightgreen"},
+    "Gemini": {"path": "./../src/dijkstra_gemini", "use_stdin": False, "color": "skyblue"},
+    "GPT": {"path": "./../src/dijkstra_llm", "use_stdin": False, "color": "lightgreen"},
     "Nyaan (Baseline)": {"path": "./../baselines/dijkstra", "use_stdin": False, "color": "yellow"}
 }
 DATA_FILE = "./../data/dijkstra_weighted_graph_2.csv"

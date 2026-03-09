@@ -3,16 +3,44 @@ import json
 import os
 from pathlib import Path
 
-algorithm = os.environ.get("ALGORITHM_INPUT", "")
-exit_code = os.environ.get("EXIT_CODE", "")
-request_id = os.environ.get("REQUEST_ID_INPUT", "")
+def load_merged_env():
+    merged = {str(k): str(v) for k, v in os.environ.items()}
+    candidates = [
+        merged.get("RUN_METRICS_JSON", ""),
+        merged.get("METRICS_JSON_PATH", ""),
+        "outputs/run_metrics.json",
+    ]
+    for raw_path in candidates:
+        path = Path(str(raw_path or "").strip())
+        if not path:
+            continue
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for key, value in payload.items():
+            merged[str(key)] = "" if value is None else str(value)
+        merged["RUN_METRICS_JSON"] = str(path)
+        break
+    return merged
+
+
+env = load_merged_env()
+
+algorithm = env.get("ALGORITHM_INPUT", "")
+exit_code = env.get("EXIT_CODE", "")
+request_id = env.get("REQUEST_ID_INPUT", "")
 timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-input_mode = os.environ.get("INPUT_MODE_INPUT", "")
-input_files = os.environ.get("INPUT_FILES_INPUT", "")
-gen_n = os.environ.get("GENERATOR_N_INPUT", "")
-gen_k = os.environ.get("GENERATOR_K_INPUT", "")
-gen_density = os.environ.get("GENERATOR_DENSITY_INPUT", "")
-seed_used = os.environ.get("SEED_USED", "")
+input_mode = env.get("INPUT_MODE_INPUT", "")
+input_files = env.get("INPUT_FILES_INPUT", "")
+gen_n = env.get("GENERATOR_N_INPUT", "")
+gen_k = env.get("GENERATOR_K_INPUT", "")
+gen_density = env.get("GENERATOR_DENSITY_INPUT", "")
+seed_used = env.get("SEED_USED", "")
 
 result_txt = Path("outputs/result.txt")
 text = ""
@@ -106,19 +134,19 @@ if seed_used:
         inputs["seed"] = seed_used
 if inputs:
     data["inputs"] = inputs
-iterations = os.environ.get("ITERATIONS", "").strip()
+iterations = env.get("ITERATIONS", "").strip()
 if iterations:
     try:
         data["iterations"] = int(iterations)
     except ValueError:
         pass
-warmup = os.environ.get("WARMUP", "").strip()
+warmup = env.get("WARMUP", "").strip()
 if warmup:
     try:
         data["warmup"] = int(warmup)
     except ValueError:
         pass
-duration_ms = os.environ.get("RUN_DURATION_MS", "").strip()
+duration_ms = env.get("RUN_DURATION_MS", "").strip()
 if duration_ms:
     try:
         data["run_duration_ms"] = float(duration_ms)
@@ -126,9 +154,9 @@ if duration_ms:
         pass
 timings_ms = {}
 if algorithm == "dijkstra":
-    baseline = os.environ.get("DIJKSTRA_BASELINE_MS", "")
-    llm = os.environ.get("DIJKSTRA_LLM_MS", "")
-    gemini = os.environ.get("DIJKSTRA_GEMINI_MS", "")
+    baseline = env.get("DIJKSTRA_BASELINE_MS", "")
+    llm = env.get("DIJKSTRA_LLM_MS", "")
+    gemini = env.get("DIJKSTRA_GEMINI_MS", "")
     if baseline:
         timings_ms["baseline"] = float(baseline)
     if llm:
@@ -137,16 +165,16 @@ if algorithm == "dijkstra":
     if gemini:
         timings_ms["gemini"] = float(gemini)
 elif algorithm == "glasgow":
-    first = os.environ.get("GLASGOW_FIRST_MS", "")
-    all_ms = os.environ.get("GLASGOW_ALL_MS", "")
+    first = env.get("GLASGOW_FIRST_MS", "")
+    all_ms = env.get("GLASGOW_ALL_MS", "")
     if first:
         timings_ms["first"] = float(first)
     if all_ms:
         timings_ms["all"] = float(all_ms)
-    gemini_first = os.environ.get("GLASGOW_GEMINI_FIRST_MS", "")
-    gemini_all = os.environ.get("GLASGOW_GEMINI_ALL_MS", "")
-    chatgpt_first = os.environ.get("GLASGOW_CHATGPT_FIRST_MS", "")
-    chatgpt_all = os.environ.get("GLASGOW_CHATGPT_ALL_MS", "")
+    gemini_first = env.get("GLASGOW_GEMINI_FIRST_MS", "")
+    gemini_all = env.get("GLASGOW_GEMINI_ALL_MS", "")
+    chatgpt_first = env.get("GLASGOW_CHATGPT_FIRST_MS", "")
+    chatgpt_all = env.get("GLASGOW_CHATGPT_ALL_MS", "")
     if gemini_first:
         timings_ms["gemini_first"] = float(gemini_first)
     if gemini_all:
@@ -157,7 +185,7 @@ elif algorithm == "glasgow":
         timings_ms["chatgpt_all"] = float(chatgpt_all)
 elif algorithm == "vf3":
     def maybe_add(name: str, key: str) -> None:
-        value = os.environ.get(key, "")
+        value = env.get(key, "")
         if value:
             timings_ms[name] = float(value)
 
@@ -169,7 +197,7 @@ elif algorithm == "vf3":
     maybe_add("chatgpt_all", "VF3_CHATGPT_ALL_MS")
 elif algorithm == "subgraph":
     def maybe_add(name: str, key: str) -> None:
-        value = os.environ.get(key, "")
+        value = env.get(key, "")
         if value:
             timings_ms[name] = float(value)
 
@@ -186,16 +214,16 @@ elif algorithm == "subgraph":
     maybe_add("glasgow_chatgpt_first", "GLASGOW_CHATGPT_FIRST_MS")
     maybe_add("glasgow_chatgpt_all", "GLASGOW_CHATGPT_ALL_MS")
 if algorithm == "subgraph":
-    phase = os.environ.get("SUBGRAPH_PHASE", "").strip().lower()
+    phase = env.get("SUBGRAPH_PHASE", "").strip().lower()
     data["subgraph_phase"] = phase or "full"
 if timings_ms:
     data["timings_ms"] = timings_ms
 
 timings_ms_stdev = {}
 if algorithm == "dijkstra":
-    baseline = os.environ.get("DIJKSTRA_BASELINE_MS_STDEV", "")
-    llm = os.environ.get("DIJKSTRA_LLM_MS_STDEV", "")
-    gemini = os.environ.get("DIJKSTRA_GEMINI_MS_STDEV", "")
+    baseline = env.get("DIJKSTRA_BASELINE_MS_STDEV", "")
+    llm = env.get("DIJKSTRA_LLM_MS_STDEV", "")
+    gemini = env.get("DIJKSTRA_GEMINI_MS_STDEV", "")
     if baseline:
         timings_ms_stdev["baseline"] = float(baseline)
     if llm:
@@ -204,16 +232,16 @@ if algorithm == "dijkstra":
     if gemini:
         timings_ms_stdev["gemini"] = float(gemini)
 elif algorithm == "glasgow":
-    first = os.environ.get("GLASGOW_FIRST_MS_STDEV", "")
-    all_ms = os.environ.get("GLASGOW_ALL_MS_STDEV", "")
+    first = env.get("GLASGOW_FIRST_MS_STDEV", "")
+    all_ms = env.get("GLASGOW_ALL_MS_STDEV", "")
     if first:
         timings_ms_stdev["first"] = float(first)
     if all_ms:
         timings_ms_stdev["all"] = float(all_ms)
-    gemini_first = os.environ.get("GLASGOW_GEMINI_FIRST_MS_STDEV", "")
-    gemini_all = os.environ.get("GLASGOW_GEMINI_ALL_MS_STDEV", "")
-    chatgpt_first = os.environ.get("GLASGOW_CHATGPT_FIRST_MS_STDEV", "")
-    chatgpt_all = os.environ.get("GLASGOW_CHATGPT_ALL_MS_STDEV", "")
+    gemini_first = env.get("GLASGOW_GEMINI_FIRST_MS_STDEV", "")
+    gemini_all = env.get("GLASGOW_GEMINI_ALL_MS_STDEV", "")
+    chatgpt_first = env.get("GLASGOW_CHATGPT_FIRST_MS_STDEV", "")
+    chatgpt_all = env.get("GLASGOW_CHATGPT_ALL_MS_STDEV", "")
     if gemini_first:
         timings_ms_stdev["gemini_first"] = float(gemini_first)
     if gemini_all:
@@ -224,7 +252,7 @@ elif algorithm == "glasgow":
         timings_ms_stdev["chatgpt_all"] = float(chatgpt_all)
 elif algorithm == "vf3":
     def maybe_add_stdev(name: str, key: str) -> None:
-        value = os.environ.get(key, "")
+        value = env.get(key, "")
         if value:
             timings_ms_stdev[name] = float(value)
 
@@ -236,7 +264,7 @@ elif algorithm == "vf3":
     maybe_add_stdev("chatgpt_all", "VF3_CHATGPT_ALL_MS_STDEV")
 elif algorithm == "subgraph":
     def maybe_add_stdev(name: str, key: str) -> None:
-        value = os.environ.get(key, "")
+        value = env.get(key, "")
         if value:
             timings_ms_stdev[name] = float(value)
 
@@ -257,9 +285,9 @@ if timings_ms_stdev:
 
 memory_kb = {}
 if algorithm == "dijkstra":
-    baseline = os.environ.get("DIJKSTRA_BASELINE_RSS_KB", "")
-    llm = os.environ.get("DIJKSTRA_LLM_RSS_KB", "")
-    gemini = os.environ.get("DIJKSTRA_GEMINI_RSS_KB", "")
+    baseline = env.get("DIJKSTRA_BASELINE_RSS_KB", "")
+    llm = env.get("DIJKSTRA_LLM_RSS_KB", "")
+    gemini = env.get("DIJKSTRA_GEMINI_RSS_KB", "")
     if baseline:
         try:
             memory_kb["baseline"] = int(baseline)
@@ -277,8 +305,8 @@ if algorithm == "dijkstra":
         except ValueError:
             pass
 elif algorithm == "glasgow":
-    first = os.environ.get("GLASGOW_FIRST_RSS_KB", "")
-    all_kb = os.environ.get("GLASGOW_ALL_RSS_KB", "")
+    first = env.get("GLASGOW_FIRST_RSS_KB", "")
+    all_kb = env.get("GLASGOW_ALL_RSS_KB", "")
     if first:
         try:
             memory_kb["first"] = int(first)
@@ -289,10 +317,10 @@ elif algorithm == "glasgow":
             memory_kb["all"] = int(all_kb)
         except ValueError:
             pass
-    gemini_first = os.environ.get("GLASGOW_GEMINI_FIRST_RSS_KB", "")
-    gemini_all = os.environ.get("GLASGOW_GEMINI_ALL_RSS_KB", "")
-    chatgpt_first = os.environ.get("GLASGOW_CHATGPT_FIRST_RSS_KB", "")
-    chatgpt_all = os.environ.get("GLASGOW_CHATGPT_ALL_RSS_KB", "")
+    gemini_first = env.get("GLASGOW_GEMINI_FIRST_RSS_KB", "")
+    gemini_all = env.get("GLASGOW_GEMINI_ALL_RSS_KB", "")
+    chatgpt_first = env.get("GLASGOW_CHATGPT_FIRST_RSS_KB", "")
+    chatgpt_all = env.get("GLASGOW_CHATGPT_ALL_RSS_KB", "")
     for key, value in (
         ("gemini_first", gemini_first),
         ("gemini_all", gemini_all),
@@ -306,7 +334,7 @@ elif algorithm == "glasgow":
                 pass
 elif algorithm == "vf3":
     def maybe_add_int(name: str, key: str) -> None:
-        value = os.environ.get(key, "")
+        value = env.get(key, "")
         if not value:
             return
         try:
@@ -322,7 +350,7 @@ elif algorithm == "vf3":
     maybe_add_int("chatgpt_all", "VF3_CHATGPT_ALL_RSS_KB")
 elif algorithm == "subgraph":
     def maybe_add_int(name: str, key: str) -> None:
-        value = os.environ.get(key, "")
+        value = env.get(key, "")
         if not value:
             return
         try:
@@ -348,9 +376,9 @@ if memory_kb:
 
 memory_kb_stdev = {}
 if algorithm == "dijkstra":
-    baseline = os.environ.get("DIJKSTRA_BASELINE_RSS_KB_STDEV", "")
-    llm = os.environ.get("DIJKSTRA_LLM_RSS_KB_STDEV", "")
-    gemini = os.environ.get("DIJKSTRA_GEMINI_RSS_KB_STDEV", "")
+    baseline = env.get("DIJKSTRA_BASELINE_RSS_KB_STDEV", "")
+    llm = env.get("DIJKSTRA_LLM_RSS_KB_STDEV", "")
+    gemini = env.get("DIJKSTRA_GEMINI_RSS_KB_STDEV", "")
     if baseline:
         try:
             memory_kb_stdev["baseline"] = int(baseline)
@@ -368,8 +396,8 @@ if algorithm == "dijkstra":
         except ValueError:
             pass
 elif algorithm == "glasgow":
-    first = os.environ.get("GLASGOW_FIRST_RSS_KB_STDEV", "")
-    all_kb = os.environ.get("GLASGOW_ALL_RSS_KB_STDEV", "")
+    first = env.get("GLASGOW_FIRST_RSS_KB_STDEV", "")
+    all_kb = env.get("GLASGOW_ALL_RSS_KB_STDEV", "")
     if first:
         try:
             memory_kb_stdev["first"] = int(first)
@@ -380,10 +408,10 @@ elif algorithm == "glasgow":
             memory_kb_stdev["all"] = int(all_kb)
         except ValueError:
             pass
-    gemini_first = os.environ.get("GLASGOW_GEMINI_FIRST_RSS_KB_STDEV", "")
-    gemini_all = os.environ.get("GLASGOW_GEMINI_ALL_RSS_KB_STDEV", "")
-    chatgpt_first = os.environ.get("GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV", "")
-    chatgpt_all = os.environ.get("GLASGOW_CHATGPT_ALL_RSS_KB_STDEV", "")
+    gemini_first = env.get("GLASGOW_GEMINI_FIRST_RSS_KB_STDEV", "")
+    gemini_all = env.get("GLASGOW_GEMINI_ALL_RSS_KB_STDEV", "")
+    chatgpt_first = env.get("GLASGOW_CHATGPT_FIRST_RSS_KB_STDEV", "")
+    chatgpt_all = env.get("GLASGOW_CHATGPT_ALL_RSS_KB_STDEV", "")
     for key, value in (
         ("gemini_first", gemini_first),
         ("gemini_all", gemini_all),
@@ -397,7 +425,7 @@ elif algorithm == "glasgow":
                 pass
 elif algorithm == "vf3":
     def maybe_add_int_stdev(name: str, key: str) -> None:
-        value = os.environ.get(key, "")
+        value = env.get(key, "")
         if not value:
             return
         try:
@@ -413,7 +441,7 @@ elif algorithm == "vf3":
     maybe_add_int_stdev("chatgpt_all", "VF3_CHATGPT_ALL_RSS_KB_STDEV")
 elif algorithm == "subgraph":
     def maybe_add_int_stdev(name: str, key: str) -> None:
-        value = os.environ.get(key, "")
+        value = env.get(key, "")
         if not value:
             return
         try:
@@ -438,7 +466,7 @@ if memory_kb_stdev:
     data["memory_kb_stdev"] = memory_kb_stdev
 
 def maybe_int_env(key: str):
-    value = os.environ.get(key, "").strip()
+    value = env.get(key, "").strip()
     if not value:
         return None
     try:
@@ -625,7 +653,7 @@ if algorithm == "subgraph":
                 "mismatches": glasgow_gem_mismatch,
             },
         }
-if algorithm == "subgraph" and os.environ.get("SUBGRAPH_PHASE", "").strip().lower() == "glasgow":
+if algorithm == "subgraph" and env.get("SUBGRAPH_PHASE", "").strip().lower() == "glasgow":
     for key in ("timings_ms", "timings_ms_stdev", "memory_kb", "memory_kb_stdev"):
         if key in data and isinstance(data[key], dict):
             data[key] = {k: v for k, v in data[key].items() if not k.startswith("vf3_")}

@@ -6,8 +6,8 @@ from scipy import stats
 import os
 
 # --- Configuration ---
-ENTITY_A_BIN = "./../src/VF3_GEM" 
-ENTITY_B_BIN = "./../src/VF3_GPT" 
+ENTITY_A_BIN = "./../src/vf3"
+ENTITY_B_BIN = "./../src/chatvf3"
 ENTITY_C_BIN = "./../baselines/vf3lib/bin/vf3"
 
 PATTERN = "./../data/VF3_SUB_400.grf"

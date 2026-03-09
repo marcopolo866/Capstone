@@ -1,3 +1,55 @@
-# Large-Language Model Generated C++ Code 
+﻿# Capstone Algorithm Benchmark Runner
 
-Large-Language Models (LLMs) have become increasingly competent, prevalent, and affordable. If LLMs can be shown as effective in a workflow, they can be used to increase efficiency for programmers on more tedious or obscure tasks. We will be rigorously testing LLM-generated code for weighted-graph problems against standardized benchmarks with minimal human refactoring. Metrics of interest will include runtime, memory use, scalability curves, etc. Based on the program’s performance, we can begin to estimate the effectiveness of LLM-generated code. If LLM-generated code performs well, we may recommend integration into programming workflows. If it performs poorly, we may advise against using LLMs in programming work. 
+This repository benchmarks baseline vs LLM-generated C++ implementations for:
+
+- Dijkstra shortest path
+- VF3 subgraph isomorphism
+- Glasgow subgraph solver variants
+- Combined subgraph flow (VF3 + Glasgow + LLM comparisons on equivalent inputs)
+
+The project provides:
+
+- A browser UI (`index.html`) for local WASM runs and GitHub Actions runs
+- Native build scripts for baseline + LLM binaries
+- Workflow-driven benchmark execution and artifact generation
+- Visualization and result export (`outputs/result.json`, `outputs/visualization.json`)
+
+## Quick Start
+
+1. Build native binaries:
+   - Windows: `./scripts/build-local.ps1`
+   - Linux/macOS: `bash scripts/build-local.sh`
+2. Open `index.html` from a local static server.
+3. Connect to a repository/branch in the UI.
+4. Select algorithm + input mode (`premade` or `generate`).
+5. Run:
+   - `Standard Run (GitHub Actions)` for remote benchmark artifacts.
+   - `Run Locally (WebAssembly)` for browser-local execution.
+
+For detailed setup/run instructions, see [docs/quickstart.md](docs/quickstart.md).
+
+## Repository Map
+
+- `js/app/`: frontend runtime chunks
+- `.github/workflows/`: CI/build/run workflows
+- `.github/scripts/`: workflow runtime scripts
+- `utilities/generate_graphs.py`: deterministic graph generation
+- `scripts/`: local build and parity tooling
+- `tests/`: automated regression tests + legacy benchmark scripts
+- `wasm/`: prebuilt wasm modules + manifest for local mode
+
+## Regression Tests
+
+Run:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+## Documentation
+
+- [docs/quickstart.md](docs/quickstart.md)
+- [docs/datasets.md](docs/datasets.md)
+- [docs/result-schema.md](docs/result-schema.md)
+- [docs/prompting_protocol.md](docs/prompting_protocol.md)
+- [docs/pipeline-description.md](docs/pipeline-description.md)

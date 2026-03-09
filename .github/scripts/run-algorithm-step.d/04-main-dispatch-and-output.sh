@@ -2663,5 +2663,27 @@ echo "VF3_GEMINI_TOTAL=${vf3_gemini_total:-}" >> "$GITHUB_OUTPUT"
 echo "VF3_GEMINI_MISMATCH=${vf3_gemini_mismatch:-}" >> "$GITHUB_OUTPUT"
 echo "SUBGRAPH_PHASE=${SUBGRAPH_PHASE:-}" >> "$GITHUB_OUTPUT"
 echo "SEED_USED=${SEED_USED:-}" >> "$GITHUB_OUTPUT"
+
+RUN_METRICS_JSON_PATH="outputs/run_metrics.json"
+python - "$GITHUB_OUTPUT" "$RUN_METRICS_JSON_PATH" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+output_path = Path(sys.argv[1])
+metrics_path = Path(sys.argv[2])
+metrics = {}
+if output_path.exists():
+    for raw in output_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        metrics[key.strip()] = value.strip()
+
+metrics_path.parent.mkdir(parents=True, exist_ok=True)
+metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+echo "RUN_METRICS_JSON=${RUN_METRICS_JSON_PATH}" >> "$GITHUB_OUTPUT"
 # Always exit 0 so later steps run and results are committed
 exit 0

@@ -1,36 +1,41 @@
-# DOCUMENTS
-This directory contains all project documentation, including the Design Doc, Prompting Protocol, and Remediation Ledger.
+﻿# Documentation Index
 
-Excel Link for Remediation Ledger: 
-https://docs.google.com/spreadsheets/d/1hdHh30pgJRnWd4VIoceJsj7AAvxvCbOJsMZ1v115Ids/edit?usp=sharing
+This folder contains project documentation for setup, workflow behavior, and research protocol.
 
+## Core Documents
 
--fix_id (Fix ID): A unique, sequential number for every single change you make. This makes it easy to refer to specific fixes 
-(e.g., "As seen in Fix #17...").
+- [quickstart.md](quickstart.md)
+  - Build/run instructions for local and GitHub Actions paths.
+- [datasets.md](datasets.md)
+  - Dataset inventory and file format notes.
+- [result-schema.md](result-schema.md)
+  - `outputs/result.json` structure and metrics source notes.
+- [prompting_protocol.md](prompting_protocol.md)
+  - LLM prompting process used in this capstone.
+- [refactor-split-structure.md](refactor-split-structure.md)
+  - Frontend/workflow split history and invariants.
 
--timestamp (Timestamp): The date and time you implemented the fix. This helps create a timeline of your work and can reveal how long it took to get a piece of code from "broken" to "working."
+## Related Root Docs
 
--problem_area (Problem Area): The high-level section of the project this fix applies to. This helps you categorize your efforts.
-Shortest Path, Subgraph Isomorphism, Build System
+- [pipeline-description.md](pipeline-description.md)
+- [../local-compilation-command.md](../local-compilation-command.md)
+- [../README.md](../README.md)
 
--file_path (File Path): The specific file you modified.
+## Remediation Ledger
 
--lines_changed (Lines Changed): A quantitative measure of the size of the change. This helps you objectively measure how much of the LLM's code you had to alter. Use git diff or your editor to find this.
-*Example: +5, -2 (meaning you added 5 lines and removed 2)*
+Spreadsheet link used by the team:
 
--time_spent_min (Time Spent in Minutes): This is one of your most critical metrics. It's the total time, in minutes, it took you to diagnose the problem, figure out the solution, and implement the fix. This directly measures the "human engineering effort."
+- https://docs.google.com/spreadsheets/d/1hdHh30pgJRnWd4VIoceJsj7AAvxvCbOJsMZ1v115Ids/edit?usp=sharing
 
--category (Category): Classifies the type of problem you solved. This is crucial for your final analysis to identify what kinds of mistakes the LLM makes most often.
- *Example:
-  *Compile-time Error: The code did not compile.
-  *Runtime Bug: The code compiled but crashed or gave the wrong answer.
-  *Algorithmic Flaw: The code ran but used a fundamentally incorrect algorithm (e.g., wrong complexity, wouldn't terminate).
-  *Performance Optimization: The code was correct but slow, and you made a change to improve its speed or memory usage.
- *
+Suggested columns:
 
--rationale (Rationale): This is the most important column for your final report. In one or two sentences, explain why the fix was necessary. What mistake did the LLM make?
-
--impact_on_correctness (Impact on Correctness): Describe the effect of your change on the program's ability to produce the right answer.
-
--impact_on_performance (Impact on Performance): Describe the measured effect of your change on the program's speed or memory usage.
- *Example: "N/A" (for correctness fixes), or "Reduces runtime by 1.2 seconds on the roadNet-CA dataset." or "Reduces peak memory usage by 50MB."*
+- `fix_id`
+- `timestamp`
+- `problem_area`
+- `file_path`
+- `lines_changed`
+- `time_spent_min`
+- `category`
+- `rationale`
+- `impact_on_correctness`
+- `impact_on_performance`
