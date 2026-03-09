@@ -107,7 +107,7 @@ jobs:
           CURRENT_SHA: ${{ github.sha }}
         run: |
           set +e
-          output="$(python - <<'PY'
+          output="$(python3 - <<'PY' 2>&1
           import json
           import os
           import urllib.parse
@@ -211,7 +211,7 @@ jobs:
           mkdir -p outputs
           : > outputs/binaries_download_error.txt
           set +e
-          output="$(python - <<'PY'
+          output="$(python3 - <<'PY' 2>&1
           import hashlib
           import json
           import os
