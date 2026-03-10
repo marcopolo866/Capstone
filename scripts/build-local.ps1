@@ -111,6 +111,28 @@ Invoke-Step "Building Glasgow ChatGPT" {
 Invoke-Step "Building Glasgow Gemini" {
     g++ -std=c++17 -O3 "src/[GEMINI] Glasgow.cpp" -o "src/glasgow_gemini"
 }
+Invoke-Step "Patching Glasgow submodule for MinGW loooong/size_t ambiguity" {
+    @'
+from pathlib import Path
+
+path = Path("baselines/glasgow-subgraph-solver/gss/sip_decomposer.cc")
+text = path.read_text(encoding="utf-8")
+updated = text
+updated = updated.replace(
+    "n_choose_k<loooong>(unmapped_target_vertices, isolated_pattern_vertices.size());",
+    "n_choose_k<loooong>(unmapped_target_vertices, static_cast<unsigned long>(isolated_pattern_vertices.size()));",
+)
+updated = updated.replace(
+    "factorial<loooong>(isolated_pattern_vertices.size());",
+    "factorial<loooong>(static_cast<unsigned long>(isolated_pattern_vertices.size()));",
+)
+if updated != text:
+    path.write_text(updated, encoding="utf-8")
+    print(f"Patched {path}")
+else:
+    print(f"No patch changes needed for {path}")
+'@ | & $PythonExe -
+}
 
 $cmakeArgs = @(
     "-S", "baselines/glasgow-subgraph-solver",

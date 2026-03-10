@@ -56,18 +56,25 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r desktop_runner/requirements.txt
 
+      - name: Prepare diagnostics directory
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+
       - name: Build native benchmark binaries (MSYS2)
         shell: msys2 {0}
         run: |
+          set -o pipefail
           export CMAKE_GENERATOR="MinGW Makefiles"
-          bash scripts/build-local.sh
+          bash scripts/build-local.sh 2>&1 | tee logs/build-local-msys2.log
 
       - name: Package one-file desktop benchmark runner
         shell: pwsh
         env:
           MINGW_ROOT: C:\msys64\mingw64
         run: |
-          ./desktop_runner/build_windows_exe.ps1
+          ./desktop_runner/build_windows_exe.ps1 *>&1 | Tee-Object -FilePath logs/build-runner-packaging.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload runner artifact
         uses: actions/upload-artifact@v4
@@ -75,4 +82,16 @@ jobs:
           name: benchmark-runner-windows-exe
           path: dist/capstone-benchmark-runner.exe
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-runner-build-logs
+          path: |
+            logs/**
+            baselines/glasgow-subgraph-solver/build/CMakeFiles/CMakeOutput.log
+            baselines/glasgow-subgraph-solver/build/CMakeFiles/CMakeError.log
+          if-no-files-found: warn
           retention-days: 30
