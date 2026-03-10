@@ -79,7 +79,8 @@ $pyArgs = @(
     "--onefile",
     "--windowed",
     "--name", "capstone-benchmark-runner",
-    "--collect-data", "matplotlib",
+    "--collect-all", "numpy",
+    "--collect-all", "matplotlib",
     "--hidden-import", "matplotlib.backends.backend_tkagg",
     "--hidden-import", "matplotlib.backends.backend_agg",
     "desktop_runner/app.py"
@@ -90,9 +91,16 @@ foreach ($file in $stagedFiles) {
     $pyArgs += @("--add-binary", "$($file.FullName);binaries")
 }
 
-python @pyArgs
-
 $exePath = Join-Path $repoRoot "dist/capstone-benchmark-runner.exe"
+if (Test-Path -LiteralPath $exePath -PathType Leaf) {
+    Remove-Item -LiteralPath $exePath -Force
+}
+
+python @pyArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller failed with exit code $LASTEXITCODE"
+}
+
 if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
     throw "Expected executable missing: $exePath"
 }
