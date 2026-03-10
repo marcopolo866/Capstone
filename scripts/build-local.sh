@@ -92,8 +92,13 @@ run_step "Building Dijkstra ChatGPT" \
 run_step "Building Dijkstra Gemini" \
   g++ -std=c++17 -O3 -Wall -Wextra "src/[GEMINI] Shortest Path.cpp" -o "src/dijkstra_gemini"
 
+vf3_cflags="-std=c++11 -O3 -DNDEBUG -Wno-deprecated"
+if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* || "${OSTYPE:-}" == win32* ]]; then
+  # vf3lib uses WIN32 guards in main.cpp, while MinGW typically defines _WIN32.
+  vf3_cflags="${vf3_cflags} -DWIN32"
+fi
 run_step "Building VF3 baseline (vf3lib)" \
-  make -C baselines/vf3lib vf3 CFLAGS="-std=c++11 -O3 -DNDEBUG -Wno-deprecated"
+  make -C baselines/vf3lib vf3 CFLAGS="${vf3_cflags}"
 run_step "Building VF3 Gemini" \
   g++ -std=c++17 -O3 -Wall -Wextra "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3"
 run_step "Building VF3 ChatGPT" \

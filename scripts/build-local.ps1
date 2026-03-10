@@ -90,8 +90,13 @@ Invoke-Step "Building Dijkstra Gemini" {
     g++ -std=c++17 -O3 "src/[GEMINI] Shortest Path.cpp" -o "src/dijkstra_gemini"
 }
 
+$vf3CFlags = "-std=c++11 -O3 -DNDEBUG -Wno-deprecated"
+if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+    # vf3lib uses WIN32 guards in main.cpp, while MinGW typically defines _WIN32.
+    $vf3CFlags += " -DWIN32"
+}
 Invoke-Step "Building VF3 baseline (vf3lib)" {
-    make -C baselines/vf3lib vf3 'CFLAGS=-std=c++11 -O3 -DNDEBUG -Wno-deprecated'
+    make -C baselines/vf3lib vf3 "CFLAGS=$vf3CFlags"
 }
 Invoke-Step "Building VF3 Gemini" {
     g++ -std=c++17 -O3 "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3"
