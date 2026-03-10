@@ -94,8 +94,8 @@ run_step "Building Dijkstra Gemini" \
 
 vf3_cflags="-std=c++11 -O3 -DNDEBUG -Wno-deprecated"
 if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* || "${OSTYPE:-}" == win32* ]]; then
-  # vf3lib uses WIN32 guards in main.cpp, while MinGW typically defines _WIN32.
-  vf3_cflags="${vf3_cflags} -DWIN32"
+  # vf3lib uses WIN32 guards for signal/time headers; MinGW also needs getopt declarations explicitly.
+  vf3_cflags="${vf3_cflags} -DWIN32 -include getopt.h"
 fi
 run_step "Building VF3 baseline (vf3lib)" \
   make -C baselines/vf3lib vf3 CFLAGS="${vf3_cflags}"
