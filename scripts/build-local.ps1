@@ -203,10 +203,11 @@ Invoke-Step "VF3 baseline smoke test (small generated subgraph case)" {
         if (-not $?) {
             throw "Generator failed for VF3 smoke test."
         }
-        if (-not $genOut -or $genOut.Count -lt 1) {
+        $genLines = @($genOut)
+        if ($genLines.Count -lt 1) {
             throw "Generator produced no output for VF3 smoke test."
         }
-        $lastLine = ($genOut | Select-Object -Last 1).ToString().Trim()
+        $lastLine = ($genLines | Select-Object -Last 1).ToString().Trim()
         $parts = $lastLine.Split(",")
         if ($parts.Count -lt 4) {
             throw "Failed to parse generated VF paths from output: $lastLine"
