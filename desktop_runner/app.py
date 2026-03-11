@@ -1620,6 +1620,18 @@ class BenchmarkRunnerApp(tk.Tk):
         runtime_ms, peak_kb, return_code, stdout_text, stderr_text = self._run_process_with_peak_memory(command, cwd=binary.parent)
         if return_code != 0:
             detail = stderr_text.strip() or stdout_text.strip()
+            stderr_clean = (stderr_text or "").strip()
+            stdout_clean = (stdout_text or "").strip()
+            if stderr_clean:
+                stderr_preview = stderr_clean[:4000]
+                if len(stderr_clean) > 4000:
+                    stderr_preview += "\n...[stderr truncated]..."
+                self._append_log_threadsafe(f"{variant_id} stderr:\n{stderr_preview}", level="error")
+            elif stdout_clean:
+                stdout_preview = stdout_clean[:4000]
+                if len(stdout_clean) > 4000:
+                    stdout_preview += "\n...[stdout truncated]..."
+                self._append_log_threadsafe(f"{variant_id} stdout:\n{stdout_preview}", level="notice")
             code_u32 = int(return_code) & 0xFFFFFFFF
             code_hex = f"0x{code_u32:08X}"
             cmdline = subprocess.list2cmdline(command)

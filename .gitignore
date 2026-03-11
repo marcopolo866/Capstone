@@ -35,3 +35,6 @@ CLAUDE.md
 
 # Log files
 *.log
+
+# Local packaging artifacts
+capstone-benchmark-runner.spec
