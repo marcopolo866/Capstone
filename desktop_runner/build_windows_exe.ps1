@@ -8,11 +8,11 @@ function Resolve-BinaryPath {
     param(
         [Parameter(Mandatory = $true)][string[]]$Candidates
     )
-    $isWindows = ($env:OS -eq "Windows_NT")
+    $isWindowsPlatform = ($env:OS -eq "Windows_NT")
     foreach ($candidate in $Candidates) {
         $raw = $candidate.Replace('/', '\')
         $exe = "$raw.exe"
-        if ($isWindows -and (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        if ($isWindowsPlatform -and (Test-Path -LiteralPath $exe -PathType Leaf)) {
             return (Resolve-Path $exe).Path
         }
         if (Test-Path -LiteralPath $raw -PathType Leaf) {
