@@ -156,13 +156,59 @@ Invoke-Step "Building Dijkstra Gemini" {
     g++ -std=c++17 -O3 "src/[GEMINI] Shortest Path.cpp" -o "src/dijkstra_gemini"
 }
 
-$vf3CFlags = "-std=c++11 -O3 -DNDEBUG -Wno-deprecated"
+# Keep VF3 baseline on safer optimization flags; -O3 has produced unstable binaries
+# on some toolchains (observed as access violations on small generated cases).
+$vf3CFlags = "-std=c++11 -O2 -DNDEBUG -Wno-deprecated -fno-strict-aliasing -fwrapv"
 if ($script:IsWindowsHost) {
     # vf3lib uses WIN32 guards for signal/time headers; MinGW also needs getopt declarations explicitly.
     $vf3CFlags += " -DWIN32 -include getopt.h"
 }
 Invoke-Step "Building VF3 baseline (vf3lib)" {
     make -C baselines/vf3lib vf3 "CFLAGS=$vf3CFlags"
+}
+Invoke-Step "VF3 baseline smoke test (small generated subgraph case)" {
+    $vf3Binary = "baselines/vf3lib/bin/vf3"
+    if (-not (Test-Path -LiteralPath $vf3Binary -PathType Leaf)) {
+        if (Test-Path -LiteralPath ($vf3Binary + ".exe") -PathType Leaf) {
+            $vf3Binary = $vf3Binary + ".exe"
+        }
+    }
+    if (-not (Test-Path -LiteralPath $vf3Binary -PathType Leaf)) {
+        throw "Missing VF3 baseline binary for smoke test: $vf3Binary"
+    }
+
+    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vf3_smoke_" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tmpDir | Out-Null
+    try {
+        $genOut = & $PythonExe "utilities/generate_graphs.py" --algorithm subgraph --n 5 --k 2 --density 0.01 --seed 424242 --out-dir $tmpDir
+        if (-not $?) {
+            throw "Generator failed for VF3 smoke test."
+        }
+        if (-not $genOut -or $genOut.Count -lt 1) {
+            throw "Generator produced no output for VF3 smoke test."
+        }
+        $lastLine = ($genOut | Select-Object -Last 1).ToString().Trim()
+        $parts = $lastLine.Split(",")
+        if ($parts.Count -lt 4) {
+            throw "Failed to parse generated VF paths from output: $lastLine"
+        }
+        $vfPattern = $parts[2].Trim()
+        $vfTarget = $parts[3].Trim()
+        if (-not (Test-Path -LiteralPath $vfPattern -PathType Leaf)) {
+            throw "Generated VF pattern missing: $vfPattern"
+        }
+        if (-not (Test-Path -LiteralPath $vfTarget -PathType Leaf)) {
+            throw "Generated VF target missing: $vfTarget"
+        }
+        & $vf3Binary -u -r 0 -e $vfPattern $vfTarget | Out-Null
+        if (-not $?) {
+            throw "VF3 baseline smoke test command failed."
+        }
+    } finally {
+        if (Test-Path -LiteralPath $tmpDir) {
+            Remove-Item -LiteralPath $tmpDir -Recurse -Force
+        }
+    }
 }
 Invoke-Step "Building VF3 Gemini" {
     g++ -std=c++17 -O3 "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3"

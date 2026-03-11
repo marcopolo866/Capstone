@@ -92,13 +92,33 @@ run_step "Building Dijkstra ChatGPT" \
 run_step "Building Dijkstra Gemini" \
   g++ -std=c++17 -O3 -Wall -Wextra "src/[GEMINI] Shortest Path.cpp" -o "src/dijkstra_gemini"
 
-vf3_cflags="-std=c++11 -O3 -DNDEBUG -Wno-deprecated"
+# Keep VF3 baseline on safer optimization flags; -O3 has produced unstable binaries
+# on some toolchains (observed as access violations on small generated cases).
+vf3_cflags="-std=c++11 -O2 -DNDEBUG -Wno-deprecated -fno-strict-aliasing -fwrapv"
 if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* || "${OSTYPE:-}" == win32* ]]; then
   # vf3lib uses WIN32 guards for signal/time headers; MinGW also needs getopt declarations explicitly.
   vf3_cflags="${vf3_cflags} -DWIN32 -include getopt.h"
 fi
 run_step "Building VF3 baseline (vf3lib)" \
   make -C baselines/vf3lib vf3 CFLAGS="${vf3_cflags}"
+run_step "VF3 baseline smoke test (small generated subgraph case)" \
+  bash -lc '
+    set -euo pipefail
+    vf3_bin="baselines/vf3lib/bin/vf3"
+    if [[ ! -f "$vf3_bin" && -f "${vf3_bin}.exe" ]]; then
+      vf3_bin="${vf3_bin}.exe"
+    fi
+    tmpdir="$(mktemp -d)"
+    trap "rm -rf \"$tmpdir\"" EXIT
+    gen_out="$("'"$PYTHON_BIN"'" utilities/generate_graphs.py --algorithm subgraph --n 5 --k 2 --density 0.01 --seed 424242 --out-dir "$tmpdir")"
+    last_line="$(printf "%s\n" "$gen_out" | tail -n1)"
+    IFS="," read -r _lad_pattern _lad_target vf_pattern vf_target <<< "$last_line"
+    if [[ -z "${vf_pattern:-}" || -z "${vf_target:-}" ]]; then
+      echo "Failed to parse generated VF paths from: $last_line" >&2
+      exit 1
+    fi
+    "$vf3_bin" -u -r 0 -e "$vf_pattern" "$vf_target" >/dev/null 2>&1
+  '
 run_step "Building VF3 Gemini" \
   g++ -std=c++17 -O3 -Wall -Wextra "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3"
 run_step "Building VF3 ChatGPT" \
