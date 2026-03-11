@@ -4,12 +4,75 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:IsWindowsHost = ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
 
 function Require-Command {
     param([Parameter(Mandatory = $true)][string]$Name)
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "Missing required command: $Name"
     }
+}
+
+function Ensure-Msys2ToolchainPath {
+    if (-not $script:IsWindowsHost) {
+        return
+    }
+    $msysMingwBin = "C:\msys64\mingw64\bin"
+    $msysUsrBin = "C:\msys64\usr\bin"
+    if (-not (Test-Path -LiteralPath (Join-Path $msysMingwBin "g++.exe") -PathType Leaf)) {
+        return
+    }
+    $currentGppCmd = Get-Command g++ -ErrorAction SilentlyContinue
+    $currentGpp = if ($currentGppCmd) { $currentGppCmd.Source } else { "" }
+    if ($currentGpp -and $currentGpp.StartsWith($msysMingwBin, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return
+    }
+    Write-Host "Preferring MSYS2 MinGW toolchain from $msysMingwBin"
+    $env:PATH = "$msysMingwBin;$msysUsrBin;$env:PATH"
+}
+
+function Assert-GmpAvailable {
+    if (-not $script:IsWindowsHost) {
+        return
+    }
+    $msysBash = "C:\msys64\usr\bin\bash.exe"
+    $msysGpp = "C:\msys64\mingw64\bin\g++.exe"
+    $gpp = Get-Command g++ -ErrorAction SilentlyContinue
+    if (-not $gpp) {
+        throw "Missing required command: g++"
+    }
+    $binDir = Split-Path -Parent $gpp.Source
+    $toolRoot = Split-Path -Parent $binDir
+    $libDir = Join-Path $toolRoot "lib"
+
+    $hasGmp = (Test-Path -LiteralPath (Join-Path $libDir "libgmp.dll.a") -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $libDir "libgmp.a") -PathType Leaf)
+    $hasGmpxx = (Test-Path -LiteralPath (Join-Path $libDir "libgmpxx.dll.a") -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $libDir "libgmpxx.a") -PathType Leaf)
+
+    if ($hasGmp -and $hasGmpxx) {
+        return
+    }
+
+    $extraHint = @"
+If using MSYS2, install with:
+  C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-make mingw-w64-x86_64-gmp"
+"@
+    if ((Test-Path -LiteralPath $msysBash -PathType Leaf) -and -not (Test-Path -LiteralPath $msysGpp -PathType Leaf)) {
+        $extraHint = @"
+MSYS2 is present but the MinGW64 toolchain is missing.
+Install it with:
+  C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-make mingw-w64-x86_64-gmp"
+"@
+    }
+
+    throw @"
+Missing GMP/GMPXX development libraries for the active compiler:
+  g++: $($gpp.Source)
+  expected under: $libDir
+
+$extraHint
+"@
 }
 
 function Invoke-Step {
@@ -34,7 +97,7 @@ function Test-ExpectedOutput {
     if (Test-Path $Path -PathType Leaf) {
         return $true
     }
-    if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+    if ($script:IsWindowsHost) {
         if (Test-Path ($Path + '.exe') -PathType Leaf) {
             return $true
         }
@@ -65,10 +128,13 @@ function Reset-CMakeBuildDirIfNeeded {
     }
 }
 
+Ensure-Msys2ToolchainPath
+
 Require-Command git
 Require-Command g++
 Require-Command make
 Require-Command cmake
+Assert-GmpAvailable
 $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
 if (-not $PythonCommand) {
     $PythonCommand = Get-Command py -ErrorAction SilentlyContinue
@@ -91,7 +157,7 @@ Invoke-Step "Building Dijkstra Gemini" {
 }
 
 $vf3CFlags = "-std=c++11 -O3 -DNDEBUG -Wno-deprecated"
-if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+if ($script:IsWindowsHost) {
     # vf3lib uses WIN32 guards for signal/time headers; MinGW also needs getopt declarations explicitly.
     $vf3CFlags += " -DWIN32 -include getopt.h"
 }

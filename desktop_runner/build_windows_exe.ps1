@@ -8,17 +8,33 @@ function Resolve-BinaryPath {
     param(
         [Parameter(Mandatory = $true)][string[]]$Candidates
     )
+    $isWindows = ($env:OS -eq "Windows_NT")
     foreach ($candidate in $Candidates) {
         $raw = $candidate.Replace('/', '\')
+        $exe = "$raw.exe"
+        if ($isWindows -and (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            return (Resolve-Path $exe).Path
+        }
         if (Test-Path -LiteralPath $raw -PathType Leaf) {
             return (Resolve-Path $raw).Path
         }
-        $exe = "$raw.exe"
         if (Test-Path -LiteralPath $exe -PathType Leaf) {
             return (Resolve-Path $exe).Path
         }
     }
     return $null
+}
+
+function Test-IsPortableExecutable {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        return ($bytes.Length -ge 2 -and $bytes[0] -eq 0x4D -and $bytes[1] -eq 0x5A) # "MZ"
+    } catch {
+        return $false
+    }
 }
 
 $binarySpec = @(
@@ -49,6 +65,9 @@ foreach ($spec in $binarySpec) {
     $resolved = Resolve-BinaryPath -Candidates $spec.Candidates
     if (-not $resolved) {
         throw "Missing required binary. Tried: $($spec.Candidates -join ', ')"
+    }
+    if (($env:OS -eq "Windows_NT") -and -not (Test-IsPortableExecutable -Path $resolved)) {
+        throw "Resolved binary is not a Windows PE executable: $resolved"
     }
     Copy-Item -LiteralPath $resolved -Destination (Join-Path $stagingBin $spec.Out) -Force
 }
