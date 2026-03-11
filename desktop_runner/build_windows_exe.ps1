@@ -102,8 +102,15 @@ try:
 except subprocess.TimeoutExpired:
     print("timed out after 20 seconds", file=sys.stderr)
     sys.exit(124)
+except OSError as exc:
+    print(f"launch failed: {exc}", file=sys.stderr)
+    sys.exit(126)
 
 if proc.returncode != 0:
+    print(
+        f"vf3 returned code {proc.returncode} (0x{(proc.returncode & 0xFFFFFFFF):08X})",
+        file=sys.stderr,
+    )
     details = (proc.stderr or proc.stdout or "").strip()
     if details:
         print(details[:4000], file=sys.stderr)
@@ -159,7 +166,6 @@ foreach ($spec in $binarySpec) {
     }
     Copy-Item -LiteralPath $resolved -Destination (Join-Path $stagingBin $spec.Out) -Force
 }
-Invoke-StagedVf3SmokeTest -RepoRoot $repoRoot -StagingBin $stagingBin
 
 $mingwRoot = $env:MINGW_ROOT
 if (-not $mingwRoot -or -not (Test-Path -LiteralPath $mingwRoot)) {
@@ -179,6 +185,7 @@ foreach ($dll in $dllCandidates) {
         Copy-Item -LiteralPath $dllPath -Destination (Join-Path $stagingBin $dll) -Force
     }
 }
+Invoke-StagedVf3SmokeTest -RepoRoot $repoRoot -StagingBin $stagingBin
 
 $pyArgs = @(
     "-m", "PyInstaller",

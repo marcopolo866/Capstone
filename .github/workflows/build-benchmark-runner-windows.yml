@@ -17,6 +17,8 @@ on:
 jobs:
   build-windows-runner:
     runs-on: windows-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     permissions:
       contents: read
     steps:
