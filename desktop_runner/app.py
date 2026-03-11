@@ -154,6 +154,16 @@ def format_point_value(var_id: str, value: float) -> str:
     return f"{value:.4f}"
 
 
+def format_step_value(var_id: str, value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if var_id == "n":
+        return str(int(round(value)))
+    if var_id == "k":
+        return f"{value:.2f}%"
+    return f"{value:.4f}"
+
+
 def parse_solution_count(output_text: str) -> int | None:
     text = (output_text or "").strip()
     if text == "":
@@ -974,6 +984,28 @@ class BenchmarkRunnerApp(tk.Tk):
             if variant.tab_id == tab_id and self.variant_checks[variant.variant_id].get()
         ]
 
+    def _format_run_input_segment(self, config: dict, var_id: str) -> str:
+        specs = config.get("input_specs", {})
+        spec = specs.get(var_id)
+        label = axis_label(var_id)
+        if spec is None:
+            return f"{label}=n/a"
+        selected = bool(spec.get("selected"))
+        start = spec.get("start")
+        end = spec.get("end")
+        step = spec.get("step")
+        if selected:
+            if config.get("run_mode") == "timed":
+                return (
+                    f"{label} start={format_point_value(var_id, float(start))} "
+                    f"step={format_step_value(var_id, None if step is None else float(step))} (timed)"
+                )
+            return (
+                f"{label} {format_point_value(var_id, float(start))}->{format_point_value(var_id, float(end))} "
+                f"step={format_step_value(var_id, None if step is None else float(step))}"
+            )
+        return f"{label} fixed={format_point_value(var_id, float(start))}"
+
     def _validate_and_build_config(self):
         tab_id = self.tab_id_var.get()
         selected_variants = self._selected_variants_for_current_tab()
@@ -1011,6 +1043,7 @@ class BenchmarkRunnerApp(tk.Tk):
         fixed_values = {}
         timed_start = {}
         timed_step = {}
+        input_specs = {}
         for var_id in allowed_vars:
             if self.var_selected[var_id].get():
                 integer_mode = var_id == "n"
@@ -1039,6 +1072,12 @@ class BenchmarkRunnerApp(tk.Tk):
                     timed_start[var_id] = start
                     timed_step[var_id] = step
                     var_ranges[var_id] = []
+                    input_specs[var_id] = {
+                        "selected": True,
+                        "start": float(start),
+                        "end": None,
+                        "step": float(step),
+                    }
                 else:
                     values = build_range(start, end, step, integer_mode=integer_mode)
                     if var_id == "density":
@@ -1050,6 +1089,12 @@ class BenchmarkRunnerApp(tk.Tk):
                             if v <= 0 or v > 100:
                                 raise ValueError("k % of N values must be in (0, 100].")
                     var_ranges[var_id] = values
+                    input_specs[var_id] = {
+                        "selected": True,
+                        "start": float(start),
+                        "end": float(end),
+                        "step": float(step),
+                    }
             else:
                 start_raw = self.var_start[var_id].get().strip()
                 if start_raw == "":
@@ -1060,6 +1105,12 @@ class BenchmarkRunnerApp(tk.Tk):
                     fixed_values[var_id] = parse_float(start_raw, f"{axis_label(var_id)} start", minimum=0.000001, maximum=1.0)
                 else:
                     fixed_values[var_id] = parse_float(start_raw, f"{axis_label(var_id)} start", minimum=0.000001, maximum=100.0)
+                input_specs[var_id] = {
+                    "selected": False,
+                    "start": float(fixed_values[var_id]),
+                    "end": None,
+                    "step": None,
+                }
 
         if tab_id in {"subgraph", "shortest_path"}:
             if "n" not in var_ranges:
@@ -1072,6 +1123,8 @@ class BenchmarkRunnerApp(tk.Tk):
                 if tab_id == "subgraph":
                     raise ValueError("N must be at least 2 for subgraph benchmarking.")
                 raise ValueError("N must be at least 2 for shortest path benchmarking.")
+            if tab_id == "subgraph" and n_ref is not None and int(round(n_ref)) < 3:
+                raise ValueError("N must be at least 3 for subgraph benchmarking.")
 
         primary_var = selected_vars[0]
         secondary_var = selected_vars[1] if len(selected_vars) == 2 else None
@@ -1082,8 +1135,8 @@ class BenchmarkRunnerApp(tk.Tk):
                 timed_probe[var_id] = timed_start[var_id]
             if tab_id == "subgraph":
                 n_nodes = int(round(timed_probe["n"]))
-                if n_nodes < 2:
-                    raise ValueError("N must be at least 2 for subgraph benchmarking.")
+                if n_nodes < 3:
+                    raise ValueError("N must be at least 3 for subgraph benchmarking.")
                 k_percent = float(timed_probe["k"])
                 if k_percent <= 0 or k_percent > 100:
                     raise ValueError("k % of N must be in (0, 100].")
@@ -1107,14 +1160,14 @@ class BenchmarkRunnerApp(tk.Tk):
             if tab_id == "subgraph":
                 for point in datapoints:
                     n_nodes = int(round(point["n"]))
-                    if n_nodes < 2:
-                        raise ValueError("N must be at least 2 for subgraph benchmarking.")
+                    if n_nodes < 3:
+                        raise ValueError("N must be at least 3 for subgraph benchmarking.")
                     k_percent = float(point["k"])
                     if k_percent <= 0 or k_percent > 100:
                         raise ValueError("k % of N must be in (0, 100].")
                     # k is defined as a percentage of N; round and clamp to a valid pattern size.
                     k_nodes = int(round((k_percent / 100.0) * n_nodes))
-                    k_nodes = max(1, min(n_nodes - 1, k_nodes))
+                    k_nodes = max(2, min(n_nodes - 1, k_nodes))
                     point["k_nodes"] = k_nodes
 
         style = self.plot3d_style_var.get().strip().lower()
@@ -1141,6 +1194,7 @@ class BenchmarkRunnerApp(tk.Tk):
             "datapoints": datapoints,
             "timed_start": timed_start,
             "timed_step": timed_step,
+            "input_specs": input_specs,
             "plot3d_style": style,
             "plot3d_variant": variant_for_3d,
             "show_stddev_bars": bool(self.show_stddev_var.get()),
@@ -1166,9 +1220,11 @@ class BenchmarkRunnerApp(tk.Tk):
         config["deadline_monotonic"] = deadline
         self._append_log(f"Output directory: {self.session_output_dir}")
         datapoints_label = str(len(config["datapoints"])) if config["run_mode"] != "timed" else "unbounded (timed)"
+        vars_for_log = ["n", "density"] if config["tab_id"] == "shortest_path" else ["n", "k", "density"]
+        variable_segments = " | ".join(self._format_run_input_segment(config, var_id) for var_id in vars_for_log)
         self._append_log(
             f"Starting run | tab={config['tab_id']} | variants={len(config['selected_variants'])} | "
-            f"datapoints={datapoints_label} | iterations={config['iterations']}"
+            f"datapoints={datapoints_label} | iterations={config['iterations']} | {variable_segments}"
         )
 
         self.run_btn.configure(state=tk.DISABLED)
@@ -1227,15 +1283,15 @@ class BenchmarkRunnerApp(tk.Tk):
             point[var_id] = self._timed_value_for_index(config, var_id, idx)
         if config["tab_id"] == "subgraph":
             n_nodes = int(round(float(point["n"])))
-            if n_nodes < 2:
-                raise ValueError("N must be at least 2 for subgraph benchmarking.")
+            if n_nodes < 3:
+                raise ValueError("N must be at least 3 for subgraph benchmarking.")
             density_value = max(0.000001, min(1.0, float(point["density"])))
             k_percent = max(0.000001, min(100.0, float(point["k"])))
             point["n"] = float(n_nodes)
             point["density"] = density_value
             point["k"] = k_percent
             k_nodes = int(round((k_percent / 100.0) * n_nodes))
-            k_nodes = max(1, min(n_nodes - 1, k_nodes))
+            k_nodes = max(2, min(n_nodes - 1, k_nodes))
             point["k_nodes"] = k_nodes
         return point
 
@@ -1391,7 +1447,18 @@ class BenchmarkRunnerApp(tk.Tk):
                                     level="warn",
                                 )
                                 timeout_notice_emitted = True
-                        runtime_ms, peak_kb, solution_count = self._run_solver_variant(variant_id, generated)
+                        try:
+                            runtime_ms, peak_kb, solution_count = self._run_solver_variant(variant_id, generated)
+                        except Exception as exc:
+                            context_bits = [
+                                f"seed={iter_seed}",
+                                f"N={int(round(point.get('n', 0)))}",
+                                f"Density={float(point.get('density', 0.0)):.6f}",
+                            ]
+                            if config["tab_id"] == "subgraph":
+                                context_bits.append(f"k%={float(point.get('k', 0.0)):.4f}")
+                                context_bits.append(f"k_nodes={int(round(point.get('k_nodes', 0)))}")
+                            raise RuntimeError(f"{exc} | context: {', '.join(context_bits)}") from exc
                         samples_runtime[variant_id].append(runtime_ms)
                         samples_memory[variant_id].append(peak_kb)
                         point_seed_records[variant_id].append(iter_seed)
@@ -1539,7 +1606,7 @@ class BenchmarkRunnerApp(tk.Tk):
         elif variant_id.startswith("vf3_"):
             if variant_id == "vf3_baseline":
                 # Match the web runner's stable baseline invocation on generated VF inputs.
-                command = [str(binary), "-u", "-r", "0", str(generated["vf_pattern"]), str(generated["vf_target"])]
+                command = [str(binary), "-u", "-r", "0", "-e", str(generated["vf_pattern"]), str(generated["vf_target"])]
             else:
                 command = [str(binary), "--non-induced", str(generated["vf_pattern"]), str(generated["vf_target"])]
         elif variant_id.startswith("glasgow_"):
@@ -1662,6 +1729,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 "secondary_variable": config["secondary_var"],
                 "var_ranges": config["var_ranges"],
                 "fixed_values": config["fixed_values"],
+                "input_specs": config.get("input_specs", {}),
                 "timed_start": config.get("timed_start", {}),
                 "timed_step": config.get("timed_step", {}),
                 "plot3d_style": config["plot3d_style"],
