@@ -37,6 +37,43 @@ function Test-IsPortableExecutable {
     }
 }
 
+function Resolve-MingwRoot {
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    if ($env:MINGW_ROOT) {
+        $candidates.Add($env:MINGW_ROOT)
+    }
+
+    $gpp = Get-Command g++ -ErrorAction SilentlyContinue
+    if ($gpp -and $gpp.Source) {
+        $binDir = Split-Path -Parent $gpp.Source
+        $toolRoot = Split-Path -Parent $binDir
+        if ($toolRoot) {
+            $candidates.Add($toolRoot)
+        }
+    }
+
+    $candidates.Add("C:\\msys64\\mingw64")
+    $candidates.Add("C:\\mingw64")
+
+    $seen = @{}
+    foreach ($root in $candidates) {
+        if (-not $root) {
+            continue
+        }
+        if ($seen.ContainsKey($root)) {
+            continue
+        }
+        $seen[$root] = $true
+        $stdcpp = Join-Path $root "bin/libstdc++-6.dll"
+        if (Test-Path -LiteralPath $stdcpp -PathType Leaf) {
+            return $root
+        }
+    }
+
+    throw "Unable to locate MinGW runtime root (missing libstdc++-6.dll). Checked: $($candidates -join ', ')"
+}
+
 function Invoke-StagedVf3SmokeTest {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -164,13 +201,12 @@ foreach ($spec in $binarySpec) {
     if (($env:OS -eq "Windows_NT") -and -not (Test-IsPortableExecutable -Path $resolved)) {
         throw "Resolved binary is not a Windows PE executable: $resolved"
     }
+    Write-Host ("Using binary {0}: {1}" -f $spec.Out, $resolved)
     Copy-Item -LiteralPath $resolved -Destination (Join-Path $stagingBin $spec.Out) -Force
 }
 
-$mingwRoot = $env:MINGW_ROOT
-if (-not $mingwRoot -or -not (Test-Path -LiteralPath $mingwRoot)) {
-    $mingwRoot = "C:\\msys64\\mingw64"
-}
+$mingwRoot = Resolve-MingwRoot
+Write-Host "Using MinGW runtime root: $mingwRoot"
 $dllCandidates = @(
     "libstdc++-6.dll",
     "libgcc_s_seh-1.dll",

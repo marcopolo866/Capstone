@@ -68,12 +68,13 @@ jobs:
         run: |
           set -o pipefail
           export CMAKE_GENERATOR="MinGW Makefiles"
+          mingw_root_win="$(cygpath -w "$(dirname "$(dirname "$(which g++)")")")"
+          echo "Resolved MinGW root: ${mingw_root_win}"
+          echo "MINGW_ROOT=${mingw_root_win}" >> "$GITHUB_ENV"
           bash scripts/build-local.sh 2>&1 | tee logs/build-local-msys2.log
 
       - name: Package one-file desktop benchmark runner
         shell: pwsh
-        env:
-          MINGW_ROOT: C:\msys64\mingw64
         run: |
           ./desktop_runner/build_windows_exe.ps1 *>&1 | Tee-Object -FilePath logs/build-runner-packaging.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
