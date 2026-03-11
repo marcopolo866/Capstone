@@ -99,14 +99,21 @@ if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* || "${OSTYPE:-}" == win
   # vf3lib uses WIN32 guards for signal/time headers; MinGW also needs getopt declarations explicitly.
   vf3_cflags="${vf3_cflags} -DWIN32 -include getopt.h"
 fi
+run_step "Cleaning VF3 baseline outputs (fresh rebuild)" \
+  rm -f baselines/vf3lib/bin/vf3 baselines/vf3lib/bin/vf3.exe
 run_step "Building VF3 baseline (vf3lib)" \
   make -C baselines/vf3lib vf3 CFLAGS="${vf3_cflags}"
 run_step "VF3 baseline smoke test (small generated subgraph case)" \
   bash -lc '
     set -euo pipefail
-    vf3_bin="baselines/vf3lib/bin/vf3"
-    if [[ ! -f "$vf3_bin" && -f "${vf3_bin}.exe" ]]; then
-      vf3_bin="${vf3_bin}.exe"
+    # Resolve like desktop_runner/build_windows_exe.ps1: prefer .exe on Windows.
+    vf3_bin="baselines/vf3lib/bin/vf3.exe"
+    if [[ ! -f "$vf3_bin" ]]; then
+      vf3_bin="baselines/vf3lib/bin/vf3"
+    fi
+    if [[ ! -f "$vf3_bin" ]]; then
+      echo "Missing VF3 baseline binary for smoke test" >&2
+      exit 1
     fi
     tmpdir="$(mktemp -d)"
     trap "rm -rf \"$tmpdir\"" EXIT

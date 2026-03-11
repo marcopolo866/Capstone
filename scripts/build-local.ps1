@@ -105,6 +105,22 @@ function Test-ExpectedOutput {
     return $false
 }
 
+function Resolve-BinaryPathForWindowsPackaging {
+    param([Parameter(Mandatory = $true)][string]$BasePath)
+    $raw = $BasePath.Replace('/', '\')
+    $exe = "$raw.exe"
+    if ($script:IsWindowsHost -and (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        return (Resolve-Path -LiteralPath $exe).Path
+    }
+    if (Test-Path -LiteralPath $raw -PathType Leaf) {
+        return (Resolve-Path -LiteralPath $raw).Path
+    }
+    if (Test-Path -LiteralPath $exe -PathType Leaf) {
+        return (Resolve-Path -LiteralPath $exe).Path
+    }
+    return $null
+}
+
 function Reset-CMakeBuildDirIfNeeded {
     param(
         [Parameter(Mandatory = $true)][string]$BuildDir,
@@ -163,19 +179,22 @@ if ($script:IsWindowsHost) {
     # vf3lib uses WIN32 guards for signal/time headers; MinGW also needs getopt declarations explicitly.
     $vf3CFlags += " -DWIN32 -include getopt.h"
 }
+Invoke-Step "Cleaning VF3 baseline outputs (fresh rebuild)" {
+    foreach ($candidate in @("baselines/vf3lib/bin/vf3", "baselines/vf3lib/bin/vf3.exe")) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            Remove-Item -LiteralPath $candidate -Force
+        }
+    }
+}
 Invoke-Step "Building VF3 baseline (vf3lib)" {
     make -C baselines/vf3lib vf3 "CFLAGS=$vf3CFlags"
 }
 Invoke-Step "VF3 baseline smoke test (small generated subgraph case)" {
-    $vf3Binary = "baselines/vf3lib/bin/vf3"
-    if (-not (Test-Path -LiteralPath $vf3Binary -PathType Leaf)) {
-        if (Test-Path -LiteralPath ($vf3Binary + ".exe") -PathType Leaf) {
-            $vf3Binary = $vf3Binary + ".exe"
-        }
-    }
-    if (-not (Test-Path -LiteralPath $vf3Binary -PathType Leaf)) {
+    $vf3Binary = Resolve-BinaryPathForWindowsPackaging -BasePath "baselines/vf3lib/bin/vf3"
+    if (-not $vf3Binary -or -not (Test-Path -LiteralPath $vf3Binary -PathType Leaf)) {
         throw "Missing VF3 baseline binary for smoke test: $vf3Binary"
     }
+    Write-Host "VF3 smoke test binary: $vf3Binary"
 
     $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vf3_smoke_" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tmpDir | Out-Null
