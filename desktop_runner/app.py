@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import csv
+import concurrent.futures
 import datetime as dt
 import json
 import math
 import os
 import random
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -226,6 +228,13 @@ def write_ascii_stl(path: Path, solid_name: str, triangles):
 
 class RunAbortedError(RuntimeError):
     pass
+
+
+class SolverTimeoutError(RuntimeError):
+    def __init__(self, timeout_seconds: float, elapsed_seconds: float):
+        super().__init__(f"Solver timed out after {elapsed_seconds:.1f}s (limit {timeout_seconds:.1f}s)")
+        self.timeout_seconds = float(timeout_seconds)
+        self.elapsed_seconds = float(elapsed_seconds)
 
 
 @dataclass(frozen=True)
@@ -474,7 +483,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.stop_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
         self.active_proc_lock = threading.Lock()
-        self.active_proc: subprocess.Popen | None = None
+        self.active_procs: set[subprocess.Popen] = set()
         self.session_output_dir: Path | None = None
         self.last_run_payload: dict | None = None
         self.last_plot_context: dict | None = None
@@ -484,6 +493,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.last_memory_3d_fig: Figure | None = None
         self.run_timer_deadline_monotonic: float | None = None
         self.run_timer_after_id: str | None = None
+        self.live_log_lines: dict[str, str] = {}
 
         self._build_state()
         self._build_ui()
@@ -495,6 +505,12 @@ class BenchmarkRunnerApp(tk.Tk):
         self.seed_var = tk.StringVar(value="")
         self.run_mode_var = tk.StringVar(value="threshold")
         self.time_limit_minutes_var = tk.StringVar(value="10")
+        self.solver_timeout_seconds_var = tk.StringVar(value="0")
+        self.detected_logical_cores = int(psutil.cpu_count(logical=True) or os.cpu_count() or 1)
+        self.parallel_enabled_var = tk.BooleanVar(value=self.detected_logical_cores > 1)
+        default_workers = 1 if self.detected_logical_cores <= 1 else min(8, self.detected_logical_cores)
+        self.max_workers_var = tk.StringVar(value=str(default_workers))
+        self.delete_generated_inputs_var = tk.BooleanVar(value=True)
         self.plot3d_style_var = tk.StringVar(value="surface")
         self.plot3d_variant_var = tk.StringVar(value="")
         self.show_stddev_var = tk.BooleanVar(value=True)
@@ -506,7 +522,7 @@ class BenchmarkRunnerApp(tk.Tk):
             "k": tk.BooleanVar(value=False),
         }
         self.var_start: dict[str, tk.StringVar] = {
-            "n": tk.StringVar(value="1"),
+            "n": tk.StringVar(value="5"),
             "density": tk.StringVar(value="0.01"),
             "k": tk.StringVar(value="10"),
         }
@@ -576,7 +592,7 @@ class BenchmarkRunnerApp(tk.Tk):
         params.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         ttk.Label(
             params,
-            text="Set iterations and seed, then choose threshold or timed mode. Timed mode stops when the limit is reached.",
+            text="Set iterations/seed, configure optional multi-core workers, then choose threshold or timed mode.",
         ).pack(anchor="w", pady=(0, 6))
 
         row1 = ttk.Frame(params)
@@ -597,12 +613,36 @@ class BenchmarkRunnerApp(tk.Tk):
         mode_row.grid(row=1, column=1, pady=(8, 0), padx=(8, 0), sticky="w")
         ttk.Radiobutton(mode_row, text="Threshold", variable=self.run_mode_var, value="threshold", command=self._on_run_mode_changed).pack(side=tk.LEFT)
         ttk.Radiobutton(mode_row, text="Timed", variable=self.run_mode_var, value="timed", command=self._on_run_mode_changed).pack(side=tk.LEFT, padx=(8, 0))
+        self.parallel_check = ttk.Checkbutton(
+            left_col,
+            text="Enable Multi-Core",
+            variable=self.parallel_enabled_var,
+            command=self._on_parallel_settings_changed,
+        )
+        self.parallel_check.grid(row=2, column=0, columnspan=2, pady=(8, 0), sticky="w")
+        ttk.Checkbutton(
+            left_col,
+            text="Delete generated inputs after datapoint",
+            variable=self.delete_generated_inputs_var,
+        ).grid(row=3, column=0, columnspan=2, pady=(8, 0), sticky="w")
 
         ttk.Label(right_col, text="Seed (blank = random)").grid(row=0, column=0, sticky="w")
         ttk.Entry(right_col, textvariable=self.seed_var, width=18).grid(row=0, column=1, padx=(8, 0), sticky="w")
         ttk.Label(right_col, text="Time Limit (minutes)").grid(row=1, column=0, pady=(8, 0), sticky="w")
         self.time_limit_entry = ttk.Entry(right_col, textvariable=self.time_limit_minutes_var, width=10)
         self.time_limit_entry.grid(row=1, column=1, pady=(8, 0), padx=(8, 0), sticky="w")
+        ttk.Label(right_col, text="Max Parallel Workers").grid(row=2, column=0, pady=(8, 0), sticky="w")
+        self.parallel_workers_entry = ttk.Entry(right_col, textvariable=self.max_workers_var, width=10)
+        self.parallel_workers_entry.grid(row=2, column=1, pady=(8, 0), padx=(8, 0), sticky="w")
+        ttk.Label(right_col, text="Solver Timeout (sec, 0=off)").grid(row=3, column=0, pady=(8, 0), sticky="w")
+        self.solver_timeout_entry = ttk.Entry(right_col, textvariable=self.solver_timeout_seconds_var, width=10)
+        self.solver_timeout_entry.grid(row=3, column=1, pady=(8, 0), padx=(8, 0), sticky="w")
+        self.parallel_status_label = ttk.Label(
+            right_col,
+            text=f"Detected logical CPU threads: {self.detected_logical_cores}",
+            foreground="#555555",
+        )
+        self.parallel_status_label.grid(row=4, column=0, columnspan=2, pady=(8, 0), sticky="w")
 
         sweep = ttk.LabelFrame(settings_row, text="Independent Variables", padding=10)
         sweep.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
@@ -822,6 +862,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.tab_id_var.set("subgraph" if tab_index == 0 else "shortest_path")
         self._on_run_mode_changed()
         self._on_variable_selection_changed()
+        self._on_parallel_settings_changed()
         self._refresh_3d_variant_choices()
 
     def _on_run_mode_changed(self):
@@ -829,6 +870,17 @@ class BenchmarkRunnerApp(tk.Tk):
         timed_mode = run_mode == "timed"
         self.time_limit_entry.configure(state=tk.NORMAL if timed_mode else tk.DISABLED)
         self._on_variable_selection_changed()
+
+    def _on_parallel_settings_changed(self):
+        supported = self.detected_logical_cores > 1
+        if not supported:
+            self.parallel_enabled_var.set(False)
+        try:
+            self.parallel_check.configure(state=tk.NORMAL if supported else tk.DISABLED)
+            entry_enabled = supported and bool(self.parallel_enabled_var.get())
+            self.parallel_workers_entry.configure(state=tk.NORMAL if entry_enabled else tk.DISABLED)
+        except Exception:
+            pass
 
     def _on_variable_selection_changed(self):
         tab_id = self.tab_id_var.get()
@@ -862,6 +914,7 @@ class BenchmarkRunnerApp(tk.Tk):
 
     def _append_log(self, text: str, level: str = "info"):
         self.log_box.configure(state=tk.NORMAL)
+        self._clear_live_log_line_locked()
         tag = None
         if level in {"error", "warn", "success", "notice"}:
             tag = level
@@ -874,6 +927,76 @@ class BenchmarkRunnerApp(tk.Tk):
 
     def _append_log_threadsafe(self, text: str, level: str = "info"):
         self.after(0, lambda: self._append_log(text, level=level))
+
+    def _clear_live_log_line_locked(self, token: str | None = None):
+        if token is None:
+            tokens = list(self.live_log_lines.keys())
+        else:
+            if token not in self.live_log_lines:
+                return
+            tokens = [token]
+        for tok in tokens:
+            mark_name = self.live_log_lines.pop(tok, None)
+            if not mark_name:
+                continue
+            try:
+                idx = self.log_box.index(mark_name)
+                self.log_box.delete(idx, f"{idx} lineend+1c")
+            except Exception:
+                pass
+            try:
+                self.log_box.mark_unset(mark_name)
+            except Exception:
+                pass
+
+    def _set_live_log_line(self, token: str, text: str, level: str = "notice"):
+        self.log_box.configure(state=tk.NORMAL)
+        try:
+            mark_name = self.live_log_lines.get(token)
+            if mark_name is None:
+                last_idx = self.log_box.index("end-1c")
+                if last_idx != "1.0":
+                    prev_char = self.log_box.get("end-2c", "end-1c")
+                    if prev_char != "\n":
+                        self.log_box.insert(tk.END, "\n")
+                mark_name = f"live_log_{len(self.live_log_lines) + 1}_{int(time.perf_counter_ns())}"
+                self.live_log_lines[token] = mark_name
+                self.log_box.mark_set(mark_name, "end-1c")
+                self.log_box.mark_gravity(mark_name, tk.LEFT)
+            else:
+                try:
+                    idx = self.log_box.index(mark_name)
+                    self.log_box.delete(idx, f"{idx} lineend+1c")
+                except Exception:
+                    try:
+                        self.log_box.mark_unset(mark_name)
+                    except Exception:
+                        pass
+                    mark_name = f"live_log_{len(self.live_log_lines) + 1}_{int(time.perf_counter_ns())}"
+                    self.live_log_lines[token] = mark_name
+                    self.log_box.mark_set(mark_name, "end-1c")
+                    self.log_box.mark_gravity(mark_name, tk.LEFT)
+            tag = (level,) if level in {"error", "warn", "success", "notice"} else ()
+            if tag:
+                self.log_box.insert(mark_name, text + "\n", tag)
+            else:
+                self.log_box.insert(mark_name, text + "\n")
+            self.log_box.see(tk.END)
+        finally:
+            self.log_box.configure(state=tk.DISABLED)
+
+    def _set_live_log_line_threadsafe(self, token: str, text: str, level: str = "notice"):
+        self.after(0, lambda: self._set_live_log_line(token, text, level=level))
+
+    def _clear_live_log_line_threadsafe(self, token: str | None = None):
+        self.after(0, lambda: self._clear_live_log_line(token=token))
+
+    def _clear_live_log_line(self, token: str | None = None):
+        self.log_box.configure(state=tk.NORMAL)
+        try:
+            self._clear_live_log_line_locked(token=token)
+        finally:
+            self.log_box.configure(state=tk.DISABLED)
 
     def _set_run_timer_visible(self, visible: bool):
         if visible:
@@ -923,6 +1046,7 @@ class BenchmarkRunnerApp(tk.Tk):
     def _clear_run_log(self):
         self.log_box.configure(state=tk.NORMAL)
         self.log_box.delete("1.0", tk.END)
+        self.live_log_lines = {}
         self.log_box.configure(state=tk.DISABLED)
 
     def _clear_graphs(self, announce: bool = False):
@@ -1023,6 +1147,13 @@ class BenchmarkRunnerApp(tk.Tk):
         iterations = parse_int(self.iterations_var.get(), "Iterations per datapoint", minimum=1)
         seed_raw = self.seed_var.get().strip()
         base_seed = random.SystemRandom().randint(1, 2_147_483_647) if seed_raw == "" else parse_int(seed_raw, "Seed", minimum=0)
+        detected_cores = int(self.detected_logical_cores)
+        parallel_requested = bool(self.parallel_enabled_var.get()) and detected_cores > 1
+        requested_workers = parse_int(self.max_workers_var.get(), "Max parallel workers", minimum=1)
+        if parallel_requested:
+            max_workers = max(1, min(requested_workers, detected_cores))
+        else:
+            max_workers = 1
 
         run_mode = self.run_mode_var.get().strip().lower()
         if run_mode not in {"threshold", "timed"}:
@@ -1030,6 +1161,14 @@ class BenchmarkRunnerApp(tk.Tk):
         time_limit_minutes = None
         if run_mode == "timed":
             time_limit_minutes = parse_float(self.time_limit_minutes_var.get(), "Time limit (minutes)", minimum=0.01)
+        solver_timeout_raw = self.solver_timeout_seconds_var.get().strip()
+        solver_timeout_seconds = parse_float(
+            solver_timeout_raw if solver_timeout_raw != "" else "0",
+            "Solver timeout (seconds)",
+            minimum=0.0,
+        )
+        if solver_timeout_seconds <= 0:
+            solver_timeout_seconds = None
 
         variable_order = ["n", "density", "k"]
         allowed_vars = ["n", "density"] if tab_id == "shortest_path" else variable_order
@@ -1187,6 +1326,7 @@ class BenchmarkRunnerApp(tk.Tk):
             "base_seed": base_seed,
             "run_mode": run_mode,
             "time_limit_minutes": time_limit_minutes,
+            "solver_timeout_seconds": solver_timeout_seconds,
             "primary_var": primary_var,
             "secondary_var": secondary_var,
             "var_ranges": var_ranges,
@@ -1199,6 +1339,11 @@ class BenchmarkRunnerApp(tk.Tk):
             "plot3d_variant": variant_for_3d,
             "show_stddev_bars": bool(self.show_stddev_var.get()),
             "show_regression_line": bool(self.show_regression_var.get()),
+            "parallel_requested": parallel_requested,
+            "requested_workers": requested_workers,
+            "max_workers": max_workers,
+            "detected_logical_cores": detected_cores,
+            "delete_generated_inputs": bool(self.delete_generated_inputs_var.get()),
         }
 
     def _start_run(self):
@@ -1222,9 +1367,21 @@ class BenchmarkRunnerApp(tk.Tk):
         datapoints_label = str(len(config["datapoints"])) if config["run_mode"] != "timed" else "unbounded (timed)"
         vars_for_log = ["n", "density"] if config["tab_id"] == "shortest_path" else ["n", "k", "density"]
         variable_segments = " | ".join(self._format_run_input_segment(config, var_id) for var_id in vars_for_log)
+        if config["parallel_requested"] and config["requested_workers"] > config["max_workers"]:
+            self._append_log(
+                f"Parallel workers clamped from {config['requested_workers']} to {config['max_workers']} "
+                f"(detected logical cores={config['detected_logical_cores']}).",
+                level="notice",
+            )
+        parallel_mode = "on" if config["max_workers"] > 1 else "off"
+        timeout_mode = "off" if config.get("solver_timeout_seconds") is None else f"{float(config['solver_timeout_seconds']):.1f}s"
         self._append_log(
             f"Starting run | tab={config['tab_id']} | variants={len(config['selected_variants'])} | "
-            f"datapoints={datapoints_label} | iterations={config['iterations']} | {variable_segments}"
+            f"datapoints={datapoints_label} | iterations={config['iterations']} | "
+            f"parallel={parallel_mode} workers={config['max_workers']} cores={config['detected_logical_cores']} | "
+            f"solver_timeout={timeout_mode} | "
+            f"delete_generated_inputs={'on' if config.get('delete_generated_inputs') else 'off'} | "
+            f"{variable_segments}"
         )
 
         self.run_btn.configure(state=tk.DISABLED)
@@ -1238,8 +1395,10 @@ class BenchmarkRunnerApp(tk.Tk):
     def _abort_run(self):
         self.stop_event.set()
         with self.active_proc_lock:
-            proc = self.active_proc
-        if proc and proc.poll() is None:
+            procs = list(self.active_procs)
+        for proc in procs:
+            if proc.poll() is not None:
+                continue
             try:
                 proc.terminate()
             except Exception:
@@ -1369,17 +1528,30 @@ class BenchmarkRunnerApp(tk.Tk):
         aborted = False
         total_trials_planned = None if config["run_mode"] == "timed" else len(config["datapoints"]) * len(config["selected_variants"]) * config["iterations"]
         completed_trials = 0
+        streamed_datapoint_rows = 0
 
-        datapoint_results = {variant_id: [] for variant_id in config["selected_variants"]}
         generated_root = self.session_output_dir / "generated_inputs"
         generated_root.mkdir(parents=True, exist_ok=True)
+        datapoints_stream_path = self.session_output_dir / "benchmark-datapoints.ndjson"
+        datapoints_stream_fh = None
+        try:
+            if datapoints_stream_path.exists():
+                datapoints_stream_path.unlink()
+        except Exception:
+            pass
         observed_var_values = {config["primary_var"]: set()}
         if config["secondary_var"] is not None:
             observed_var_values[config["secondary_var"]] = set()
-        finishing_current_datapoint = False
         timeout_notice_emitted = False
         timeout_completion_notice_emitted = False
         timed_points_exhausted = False
+        selected_variants = list(config["selected_variants"])
+        solver_timeout_seconds = config.get("solver_timeout_seconds")
+        parallel_workers = int(max(1, config.get("max_workers", 1)))
+        executor: concurrent.futures.ThreadPoolExecutor | None = concurrent.futures.ThreadPoolExecutor(
+            max_workers=parallel_workers,
+            thread_name_prefix="solver",
+        )
 
         if config["run_mode"] == "timed":
             bounded_vars = [v for v in (config["primary_var"], config["secondary_var"]) if v in {"density", "k"}]
@@ -1392,165 +1564,359 @@ class BenchmarkRunnerApp(tk.Tk):
                 )
 
         try:
-            for point_idx, point in self._iter_config_datapoints(config):
-                if self.stop_event.is_set():
-                    aborted = True
-                    break
-                if deadline is not None and time.monotonic() >= deadline and not finishing_current_datapoint:
-                    timed_out = True
-                    break
+            datapoints_stream_fh = datapoints_stream_path.open("w", encoding="utf-8", newline="\n")
+            point_states: dict[int, dict] = {}
+            datapoint_iter = self._iter_config_datapoints(config)
+            future_map: dict[concurrent.futures.Future, dict] = {}
+            submission_closed = False
+            fatal_error: Exception | None = None
+            cursor = {
+                "point_idx": None,
+                "point": None,
+                "state": None,
+                "iter_idx": 0,
+                "variant_pos": 0,
+                "generated": None,
+                "iter_seed": None,
+            }
 
-                point_seed_records = {variant_id: [] for variant_id in config["selected_variants"]}
-                samples_runtime = {variant_id: [] for variant_id in config["selected_variants"]}
-                samples_memory = {variant_id: [] for variant_id in config["selected_variants"]}
-                completed_iterations = 0
+            def _record_trial_completion():
+                nonlocal completed_trials
+                completed_trials += 1
+                if total_trials_planned is None:
+                    if completed_trials % 5 == 0:
+                        self._append_log_threadsafe(f"Progress: {completed_trials} trial runs complete (timed mode)")
+                else:
+                    if completed_trials % 5 == 0 or completed_trials == total_trials_planned:
+                        self._append_log_threadsafe(f"Progress: {completed_trials}/{total_trials_planned} trial runs complete")
 
-                for iter_idx in range(config["iterations"]):
-                    if self.stop_event.is_set():
-                        aborted = True
-                        break
-                    if deadline is not None and time.monotonic() >= deadline and not finishing_current_datapoint:
-                        timed_out = True
-                        finishing_current_datapoint = True
-                        if not timeout_notice_emitted:
-                            self._append_log_threadsafe(
-                                "Timed limit reached. Finishing the active datapoint before stopping.",
-                                level="warn",
-                            )
-                            timeout_notice_emitted = True
+            def _finalize_datapoint_if_ready(state: dict):
+                nonlocal timeout_completion_notice_emitted, streamed_datapoint_rows
+                if state.get("logged"):
+                    return
+                if not state.get("submission_done"):
+                    return
+                if int(state.get("completed_trials", 0)) < int(state.get("submitted_trials", 0)):
+                    return
 
-                    iter_seed = int(config["base_seed"]) + (point_idx * 100000) + iter_idx
-                    iter_dir = generated_root / f"point_{point_idx + 1:05d}" / f"iter_{iter_idx + 1:03d}"
-                    iter_dir.mkdir(parents=True, exist_ok=True)
-
-                    n_value = int(round(point["n"]))
-                    density_value = float(point["density"])
-                    k_value = int(round(point.get("k_nodes", 1)))
-
-                    if config["tab_id"] == "shortest_path":
-                        generated = {"dijkstra_file": generate_dijkstra_inputs(iter_dir, n_value, density_value, iter_seed)}
-                    else:
-                        generated = generate_subgraph_inputs(iter_dir, n_value, k_value, density_value, iter_seed)
-
-                    completed_variant_count = 0
-                    iteration_solution_counts: dict[str, int] = {}
-                    for variant_id in config["selected_variants"]:
-                        if self.stop_event.is_set():
-                            aborted = True
-                            break
-                        if deadline is not None and time.monotonic() >= deadline and not finishing_current_datapoint:
-                            timed_out = True
-                            finishing_current_datapoint = True
-                            if not timeout_notice_emitted:
-                                self._append_log_threadsafe(
-                                    "Timed limit reached. Finishing the active datapoint before stopping.",
-                                    level="warn",
-                                )
-                                timeout_notice_emitted = True
-                        try:
-                            runtime_ms, peak_kb, solution_count = self._run_solver_variant(variant_id, generated)
-                        except Exception as exc:
-                            context_bits = [
-                                f"seed={iter_seed}",
-                                f"N={int(round(point.get('n', 0)))}",
-                                f"Density={float(point.get('density', 0.0)):.6f}",
-                            ]
-                            if config["tab_id"] == "subgraph":
-                                context_bits.append(f"k%={float(point.get('k', 0.0)):.4f}")
-                                context_bits.append(f"k_nodes={int(round(point.get('k_nodes', 0)))}")
-                            raise RuntimeError(f"{exc} | context: {', '.join(context_bits)}") from exc
-                        samples_runtime[variant_id].append(runtime_ms)
-                        samples_memory[variant_id].append(peak_kb)
-                        point_seed_records[variant_id].append(iter_seed)
-                        if solution_count is not None:
-                            iteration_solution_counts[variant_id] = solution_count
-                        completed_trials += 1
-                        completed_variant_count += 1
-                        if total_trials_planned is None:
-                            if completed_trials % 5 == 0:
-                                self._append_log_threadsafe(f"Progress: {completed_trials} trial runs complete (timed mode)")
-                        else:
-                            if completed_trials % 5 == 0 or completed_trials == total_trials_planned:
-                                self._append_log_threadsafe(f"Progress: {completed_trials}/{total_trials_planned} trial runs complete")
-
-                    if aborted:
-                        break
-                    if completed_variant_count == len(config["selected_variants"]):
-                        completed_iterations += 1
-                        if config["tab_id"] == "subgraph":
-                            known_counts = {vid: count for vid, count in iteration_solution_counts.items()}
-                            if len(known_counts) >= 2 and len(set(known_counts.values())) > 1:
-                                labels = config["selected_variant_labels"]
-                                details = ", ".join(
-                                    f"{labels.get(vid, vid)}={known_counts[vid]}" for vid in sorted(known_counts.keys())
-                                )
-                                self._append_log_threadsafe(
-                                    f"Consistency check mismatch at datapoint {point_idx + 1}, seed={iter_seed}: {details}",
-                                    level="error",
-                                )
-
-                x_value = float(point[config["primary_var"]])
-                y_value = float(point[config["secondary_var"]]) if config["secondary_var"] else None
-                observed_var_values[config["primary_var"]].add(x_value)
-                if config["secondary_var"] is not None and y_value is not None:
-                    observed_var_values[config["secondary_var"]].add(y_value)
-                for variant_id in config["selected_variants"]:
-                    runtimes = samples_runtime[variant_id]
-                    memories = samples_memory[variant_id]
+                x_value = float(state["x_value"])
+                y_value = float(state["y_value"]) if state["y_value"] is not None else None
+                for variant_id in selected_variants:
+                    runtimes = state["samples_runtime"][variant_id]
+                    memories = state["samples_memory"][variant_id]
                     if not runtimes and not memories:
                         if timed_out or aborted:
                             continue
-                    datapoint_results[variant_id].append(
-                        DatapointStats(
-                            x_value=x_value,
-                            y_value=y_value,
-                            runtime_median_ms=median_or_none(runtimes),
-                            runtime_stdev_ms=safe_stdev(runtimes),
-                            runtime_samples_n=len(runtimes),
-                            memory_median_kb=median_or_none(memories),
-                            memory_stdev_kb=safe_stdev(memories),
-                            memory_samples_n=len(memories),
-                            completed_iterations=completed_iterations,
-                            requested_iterations=config["iterations"],
-                            seeds=point_seed_records[variant_id],
-                        )
-                    )
+                    row = {
+                        "variant_id": variant_id,
+                        "variant_label": config["selected_variant_labels"].get(variant_id, variant_id),
+                        "x_value": x_value,
+                        "y_value": y_value,
+                        "runtime_median_ms": median_or_none(runtimes),
+                        "runtime_stdev_ms": safe_stdev(runtimes),
+                        "runtime_samples_n": len(runtimes),
+                        "memory_median_kb": median_or_none(memories),
+                        "memory_stdev_kb": safe_stdev(memories),
+                        "memory_samples_n": len(memories),
+                        "completed_iterations": int(state["completed_iterations"]),
+                        "requested_iterations": config["iterations"],
+                        "seeds": list(state["seed_records"][variant_id]),
+                    }
+                    datapoints_stream_fh.write(json.dumps(row, default=serialize_for_json) + "\n")
+                    streamed_datapoint_rows += 1
 
-                point_label = f"{config['primary_var']}={format_point_value(config['primary_var'], x_value)}"
-                if config["secondary_var"] is not None and y_value is not None:
-                    point_label += f", {config['secondary_var']}={format_point_value(config['secondary_var'], y_value)}"
                 combined_runtime_samples: list[float] = []
-                for variant_id in config["selected_variants"]:
-                    combined_runtime_samples.extend(samples_runtime[variant_id])
+                for variant_id in selected_variants:
+                    combined_runtime_samples.extend(state["samples_runtime"][variant_id])
                 combined_median_runtime = median_or_none(combined_runtime_samples)
                 median_runtime_text = (
                     "combined median runtime=n/a"
                     if combined_median_runtime is None
                     else f"combined median runtime={combined_median_runtime:.3f} ms"
                 )
+                point_idx = int(state["point_idx"]) + 1
+                point_label = str(state["point_label"])
                 if config["run_mode"] == "timed":
-                    self._append_log_threadsafe(f"Datapoint {point_idx + 1} complete ({point_label}) | {median_runtime_text}")
+                    self._append_log_threadsafe(f"Datapoint {point_idx} complete ({point_label}) | {median_runtime_text}")
                 else:
-                    self._append_log_threadsafe(f"Datapoint {point_idx + 1}/{len(config['datapoints'])} complete ({point_label}) | {median_runtime_text}")
+                    self._append_log_threadsafe(f"Datapoint {point_idx}/{len(config['datapoints'])} complete ({point_label}) | {median_runtime_text}")
+                state["logged"] = True
+                try:
+                    datapoints_stream_fh.flush()
+                except Exception:
+                    pass
 
-                if timed_out and finishing_current_datapoint and not timeout_completion_notice_emitted:
+                if config.get("delete_generated_inputs", True) and not state.get("inputs_deleted", False):
+                    point_dir = state.get("point_dir")
+                    if point_dir is not None:
+                        try:
+                            shutil.rmtree(point_dir, ignore_errors=False)
+                        except FileNotFoundError:
+                            pass
+                        except Exception as cleanup_exc:
+                            self._append_log_threadsafe(
+                                f"Update: failed to delete generated inputs for datapoint {point_idx}: {cleanup_exc}",
+                                level="warn",
+                            )
+                    state["inputs_deleted"] = True
+
+                if timed_out and timeout_notice_emitted and not timeout_completion_notice_emitted:
                     self._append_log_threadsafe(
-                        f"Active datapoint completed after timed limit ({point_label}). Stopping now.",
+                        "Timed limit reached earlier; queued trials/datapoints have now completed.",
                         level="success",
                     )
                     timeout_completion_notice_emitted = True
 
-                if aborted:
-                    break
-                if timed_out and finishing_current_datapoint:
-                    break
-            else:
-                if config["run_mode"] == "timed" and not timed_out and not aborted:
-                    timed_points_exhausted = True
-                    self._append_log_threadsafe(
-                        "Timed mode reached all unique datapoints allowed by bounded variables; stopping before duplicate capped datapoints.",
-                        level="notice",
+            def _build_context_error(trial: dict, inner_exc: Exception):
+                point = trial["point"]
+                context_bits = [
+                    f"seed={trial['iter_seed']}",
+                    f"N={int(round(point.get('n', 0)))}",
+                    f"Density={float(point.get('density', 0.0)):.6f}",
+                ]
+                if config["tab_id"] == "subgraph":
+                    context_bits.append(f"k%={float(point.get('k', 0.0)):.4f}")
+                    context_bits.append(f"k_nodes={int(round(point.get('k_nodes', 0)))}")
+                return RuntimeError(f"{inner_exc} | context: {', '.join(context_bits)}")
+
+            def _mark_cursor_submission_done():
+                state = cursor.get("state")
+                if isinstance(state, dict):
+                    state["submission_done"] = True
+
+            def _next_trial():
+                while True:
+                    if cursor["point"] is None:
+                        point_idx, point = next(datapoint_iter)
+                        x_value = float(point[config["primary_var"]])
+                        y_value = float(point[config["secondary_var"]]) if config["secondary_var"] else None
+                        observed_var_values[config["primary_var"]].add(x_value)
+                        if config["secondary_var"] is not None and y_value is not None:
+                            observed_var_values[config["secondary_var"]].add(y_value)
+                        point_label = f"{config['primary_var']}={format_point_value(config['primary_var'], x_value)}"
+                        if config["secondary_var"] is not None and y_value is not None:
+                            point_label += f", {config['secondary_var']}={format_point_value(config['secondary_var'], y_value)}"
+                        state = {
+                            "point_idx": point_idx,
+                            "point_label": point_label,
+                            "x_value": x_value,
+                            "y_value": y_value,
+                            "point_dir": generated_root / f"point_{point_idx + 1:05d}",
+                            "samples_runtime": {variant_id: [] for variant_id in selected_variants},
+                            "samples_memory": {variant_id: [] for variant_id in selected_variants},
+                            "seed_records": {variant_id: [] for variant_id in selected_variants},
+                            "submitted_trials": 0,
+                            "completed_trials": 0,
+                            "submission_done": False,
+                            "completed_iterations": 0,
+                            "iter_pending": {iter_idx: set(selected_variants) for iter_idx in range(config["iterations"])},
+                            "iter_solution_counts": {iter_idx: {} for iter_idx in range(config["iterations"])},
+                            "iter_success_count": {iter_idx: 0 for iter_idx in range(config["iterations"])},
+                            "inputs_deleted": False,
+                            "logged": False,
+                        }
+                        point_states[point_idx] = state
+                        cursor["point_idx"] = point_idx
+                        cursor["point"] = point
+                        cursor["state"] = state
+                        cursor["iter_idx"] = 0
+                        cursor["variant_pos"] = 0
+                        cursor["generated"] = None
+                        cursor["iter_seed"] = None
+
+                    if int(cursor["iter_idx"]) >= int(config["iterations"]):
+                        state = cursor["state"]
+                        if isinstance(state, dict):
+                            state["submission_done"] = True
+                        cursor["point_idx"] = None
+                        cursor["point"] = None
+                        cursor["state"] = None
+                        cursor["iter_idx"] = 0
+                        cursor["variant_pos"] = 0
+                        cursor["generated"] = None
+                        cursor["iter_seed"] = None
+                        continue
+
+                    point = cursor["point"]
+                    if cursor["generated"] is None:
+                        point_idx = int(cursor["point_idx"])
+                        iter_idx = int(cursor["iter_idx"])
+                        iter_seed = int(config["base_seed"]) + (point_idx * 100000) + iter_idx
+                        point_dir = cursor["state"]["point_dir"]
+                        iter_dir = point_dir / f"iter_{iter_idx + 1:03d}"
+                        iter_dir.mkdir(parents=True, exist_ok=True)
+                        n_value = int(round(point["n"]))
+                        density_value = float(point["density"])
+                        k_value = int(round(point.get("k_nodes", 1)))
+                        if config["tab_id"] == "shortest_path":
+                            generated = {"dijkstra_file": generate_dijkstra_inputs(iter_dir, n_value, density_value, iter_seed)}
+                        else:
+                            generated = generate_subgraph_inputs(iter_dir, n_value, k_value, density_value, iter_seed)
+                        cursor["generated"] = generated
+                        cursor["iter_seed"] = iter_seed
+
+                    variant_pos = int(cursor["variant_pos"])
+                    variant_id = selected_variants[variant_pos]
+                    iter_idx = int(cursor["iter_idx"])
+                    heartbeat_label = (
+                        f"datapoint {int(cursor['point_idx']) + 1}, iter {iter_idx + 1}/{config['iterations']}, "
+                        f"{config['selected_variant_labels'].get(variant_id, variant_id)}"
                     )
+                    trial = {
+                        "point_idx": int(cursor["point_idx"]),
+                        "point": point,
+                        "state": cursor["state"],
+                        "iter_idx": iter_idx,
+                        "iter_seed": int(cursor["iter_seed"]),
+                        "variant_id": variant_id,
+                        "generated": cursor["generated"],
+                        "heartbeat_label": heartbeat_label,
+                    }
+                    cursor["state"]["submitted_trials"] += 1
+
+                    variant_pos += 1
+                    if variant_pos >= len(selected_variants):
+                        variant_pos = 0
+                        cursor["iter_idx"] = iter_idx + 1
+                        cursor["generated"] = None
+                        cursor["iter_seed"] = None
+                    cursor["variant_pos"] = variant_pos
+                    return trial
+
+            while True:
+                while not submission_closed and len(future_map) < parallel_workers:
+                    if self.stop_event.is_set():
+                        aborted = True
+                        submission_closed = True
+                        _mark_cursor_submission_done()
+                        break
+
+                    if deadline is not None and time.monotonic() >= deadline:
+                        timed_out = True
+                        submission_closed = True
+                        _mark_cursor_submission_done()
+                        if not timeout_notice_emitted:
+                            self._append_log_threadsafe(
+                                "Timed limit reached. Finishing in-flight trials before stopping.",
+                                level="warn",
+                            )
+                            timeout_notice_emitted = True
+                        break
+
+                    try:
+                        trial = _next_trial()
+                    except StopIteration:
+                        submission_closed = True
+                        if config["run_mode"] == "timed" and not timed_out and not aborted:
+                            timed_points_exhausted = True
+                            self._append_log_threadsafe(
+                                "Timed mode reached all unique datapoints allowed by bounded variables; stopping before duplicate capped datapoints.",
+                                level="notice",
+                            )
+                        break
+                    except Exception as exc:
+                        fatal_error = exc
+                        submission_closed = True
+                        self.stop_event.set()
+                        break
+
+                    future = executor.submit(
+                        self._run_solver_variant,
+                        trial["variant_id"],
+                        trial["generated"],
+                        trial["heartbeat_label"],
+                        solver_timeout_seconds,
+                    )
+                    future_map[future] = trial
+
+                if fatal_error is not None:
+                    break
+                if not future_map:
+                    if submission_closed:
+                        break
+                    time.sleep(0.05)
+                    continue
+
+                done, _pending = concurrent.futures.wait(
+                    set(future_map.keys()),
+                    timeout=0.2,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                if not done:
+                    continue
+
+                for future in done:
+                    trial = future_map.pop(future)
+                    state = trial["state"]
+                    variant_id = trial["variant_id"]
+                    iter_idx = int(trial["iter_idx"])
+                    success = False
+                    solution_count = None
+                    runtime_ms = 0.0
+                    peak_kb = 0.0
+
+                    try:
+                        runtime_ms, peak_kb, solution_count = future.result()
+                        success = True
+                    except SolverTimeoutError as exc:
+                        self._append_log_threadsafe(
+                            f"Solver timeout: {config['selected_variant_labels'].get(variant_id, variant_id)} "
+                            f"exceeded {exc.timeout_seconds:.1f}s (elapsed {exc.elapsed_seconds:.1f}s); "
+                            "skipping this trial and continuing.",
+                            level="warn",
+                        )
+                    except RunAbortedError:
+                        aborted = True
+                    except Exception as exc:
+                        fatal_error = _build_context_error(trial, exc)
+                        self.stop_event.set()
+
+                    pending_set = state["iter_pending"].get(iter_idx)
+                    if isinstance(pending_set, set):
+                        pending_set.discard(variant_id)
+
+                    if success:
+                        state["samples_runtime"][variant_id].append(runtime_ms)
+                        state["samples_memory"][variant_id].append(peak_kb)
+                        state["seed_records"][variant_id].append(int(trial["iter_seed"]))
+                        state["iter_success_count"][iter_idx] = int(state["iter_success_count"][iter_idx]) + 1
+                        if solution_count is not None:
+                            state["iter_solution_counts"][iter_idx][variant_id] = solution_count
+
+                    state["completed_trials"] = int(state["completed_trials"]) + 1
+                    _record_trial_completion()
+
+                    if isinstance(pending_set, set) and len(pending_set) == 0:
+                        if config["tab_id"] == "subgraph":
+                            known_counts = state["iter_solution_counts"].get(iter_idx, {})
+                            if len(known_counts) >= 2 and len(set(known_counts.values())) > 1:
+                                labels = config["selected_variant_labels"]
+                                details = ", ".join(
+                                    f"{labels.get(vid, vid)}={known_counts[vid]}" for vid in sorted(known_counts.keys())
+                                )
+                                self._append_log_threadsafe(
+                                    f"Consistency check mismatch at datapoint {int(state['point_idx']) + 1}, "
+                                    f"seed={int(trial['iter_seed'])}: {details}",
+                                    level="error",
+                                )
+                        if int(state["iter_success_count"].get(iter_idx, 0)) == len(selected_variants):
+                            state["completed_iterations"] = int(state["completed_iterations"]) + 1
+
+                    _finalize_datapoint_if_ready(state)
+
+                    if fatal_error is not None:
+                        break
+
+                if fatal_error is not None:
+                    break
+
+            if fatal_error is not None:
+                raise fatal_error
+
+            for state in point_states.values():
+                if not state.get("submission_done"):
+                    state["submission_done"] = True
+                _finalize_datapoint_if_ready(state)
 
             if config["run_mode"] == "timed":
                 primary_var = config["primary_var"]
@@ -1558,9 +1924,26 @@ class BenchmarkRunnerApp(tk.Tk):
                 secondary_var = config["secondary_var"]
                 if secondary_var is not None:
                     config["var_ranges"][secondary_var] = sorted(observed_var_values.get(secondary_var, set()))
+            if datapoints_stream_fh is not None:
+                try:
+                    datapoints_stream_fh.flush()
+                except Exception:
+                    pass
+                datapoints_stream_fh.close()
+                datapoints_stream_fh = None
 
             ended_at = dt.datetime.now(dt.timezone.utc)
-            payload = self._build_payload(config, datapoint_results, started_at, ended_at, aborted, timed_out, completed_trials, total_trials_planned)
+            payload = self._build_payload(
+                config,
+                started_at,
+                ended_at,
+                aborted,
+                timed_out,
+                completed_trials,
+                total_trials_planned,
+                datapoints_stream_path,
+                streamed_datapoint_rows,
+            )
             self.last_run_payload = payload
             self.last_plot_context = payload
             self.after(0, lambda: self._render_plots(payload))
@@ -1572,7 +1955,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 status_msg = "Run complete: all unique bounded timed datapoints were finished."
                 status_level = "success"
             if timed_out:
-                status_msg = "Run stopped due to timed limit (active datapoint was completed)."
+                status_msg = "Run stopped due to timed limit (in-flight queued trials were completed)."
                 status_level = "warn"
             if aborted:
                 status_msg = "Run aborted by user."
@@ -1585,18 +1968,35 @@ class BenchmarkRunnerApp(tk.Tk):
             self._append_log_threadsafe(f"Run failed: {exc}", level="error")
             self.after(0, lambda: messagebox.showerror(APP_TITLE, f"Benchmark run failed:\n{exc}"))
         finally:
+            try:
+                if datapoints_stream_fh is not None:
+                    datapoints_stream_fh.close()
+            except Exception:
+                pass
+            if executor is not None:
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
             with self.active_proc_lock:
-                self.active_proc = None
+                self.active_procs.clear()
             self.after(0, self._on_run_finished_ui)
 
     def _on_run_finished_ui(self):
         self._stop_run_timer(hide=True)
+        self._clear_live_log_line()
         self.run_btn.configure(state=tk.NORMAL)
         self.abort_btn.configure(state=tk.DISABLED)
         if self.last_run_payload:
             self.save_btn.configure(state=tk.NORMAL)
 
-    def _run_solver_variant(self, variant_id: str, generated: dict[str, Path]):
+    def _run_solver_variant(
+        self,
+        variant_id: str,
+        generated: dict[str, Path],
+        heartbeat_label: str | None = None,
+        solver_timeout_seconds: float | None = None,
+    ):
         binary = self.binary_paths[variant_id]
         if not binary.exists():
             raise FileNotFoundError(f"Missing binary for {variant_id}: {binary}")
@@ -1617,7 +2017,12 @@ class BenchmarkRunnerApp(tk.Tk):
         else:
             raise ValueError(f"Unsupported variant: {variant_id}")
 
-        runtime_ms, peak_kb, return_code, stdout_text, stderr_text = self._run_process_with_peak_memory(command, cwd=binary.parent)
+        runtime_ms, peak_kb, return_code, stdout_text, stderr_text = self._run_process_with_peak_memory(
+            command,
+            cwd=binary.parent,
+            heartbeat_label=heartbeat_label,
+            solver_timeout_seconds=solver_timeout_seconds,
+        )
         if return_code != 0:
             detail = stderr_text.strip() or stdout_text.strip()
             stderr_clean = (stderr_text or "").strip()
@@ -1641,8 +2046,16 @@ class BenchmarkRunnerApp(tk.Tk):
             solution_count = parse_solution_count(stdout_text + "\n" + stderr_text)
         return runtime_ms, peak_kb, solution_count
 
-    def _run_process_with_peak_memory(self, command: list[str], cwd: Path):
+    def _run_process_with_peak_memory(
+        self,
+        command: list[str],
+        cwd: Path,
+        heartbeat_label: str | None = None,
+        solver_timeout_seconds: float | None = None,
+    ):
         started = time.perf_counter()
+        heartbeat_token = f"hb-{threading.get_ident()}-{time.perf_counter_ns()}"
+        last_heartbeat_second = -1
         popen_kwargs = {
             "args": command,
             "cwd": str(cwd),
@@ -1661,63 +2074,87 @@ class BenchmarkRunnerApp(tk.Tk):
 
         proc = subprocess.Popen(**popen_kwargs)
         with self.active_proc_lock:
-            self.active_proc = proc
+            self.active_procs.add(proc)
 
         peak_bytes = 0
-        ps_proc = psutil.Process(proc.pid)
-        while True:
-            if self.stop_event.is_set():
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-                raise RunAbortedError("Abort requested")
+        ps_proc = None
+        try:
+            ps_proc = psutil.Process(proc.pid)
+        except psutil.Error:
+            # Child can exit before psutil attaches; continue without peak memory sampling.
+            ps_proc = None
+        try:
+            while True:
+                if self.stop_event.is_set():
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
+                    raise RunAbortedError("Abort requested")
 
-            ret = proc.poll()
-            try:
-                mem_info = ps_proc.memory_info()
-                candidate = getattr(mem_info, "peak_wset", None)
-                if candidate is None:
-                    candidate = mem_info.rss
-                if isinstance(candidate, (int, float)):
-                    peak_bytes = max(peak_bytes, int(candidate))
-            except psutil.Error:
-                pass
+                elapsed_seconds = time.perf_counter() - started
+                if solver_timeout_seconds is not None and elapsed_seconds >= float(solver_timeout_seconds):
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=2)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    raise SolverTimeoutError(float(solver_timeout_seconds), float(elapsed_seconds))
 
-            if ret is not None:
-                break
-            time.sleep(0.02)
+                if heartbeat_label:
+                    elapsed_seconds_int = int(elapsed_seconds)
+                    if elapsed_seconds_int >= 15 and elapsed_seconds_int != last_heartbeat_second:
+                        self._set_live_log_line_threadsafe(
+                            heartbeat_token,
+                            f"Update: {heartbeat_label} running for {self._format_hms(elapsed_seconds_int)}",
+                            level="notice",
+                        )
+                        last_heartbeat_second = elapsed_seconds_int
 
-        stdout_text, stderr_text = proc.communicate()
-        ended = time.perf_counter()
-        runtime_ms = max(0.0, (ended - started) * 1000.0)
-        peak_kb = max(0.0, peak_bytes / 1024.0)
-        with self.active_proc_lock:
-            self.active_proc = None
-        return runtime_ms, peak_kb, int(proc.returncode or 0), stdout_text, stderr_text
+                ret = proc.poll()
+                if ps_proc is not None:
+                    try:
+                        mem_info = ps_proc.memory_info()
+                        candidate = getattr(mem_info, "peak_wset", None)
+                        if candidate is None:
+                            candidate = mem_info.rss
+                        if isinstance(candidate, (int, float)):
+                            peak_bytes = max(peak_bytes, int(candidate))
+                    except psutil.Error:
+                        ps_proc = None
 
-    def _build_payload(self, config, datapoint_results, started_at, ended_at, aborted, timed_out, completed_trials, total_trials_planned):
+                if ret is not None:
+                    break
+                time.sleep(0.02)
+
+            stdout_text, stderr_text = proc.communicate()
+            ended = time.perf_counter()
+            runtime_ms = max(0.0, (ended - started) * 1000.0)
+            peak_kb = max(0.0, peak_bytes / 1024.0)
+            return runtime_ms, peak_kb, int(proc.returncode or 0), stdout_text, stderr_text
+        finally:
+            if heartbeat_label:
+                self._clear_live_log_line_threadsafe(token=heartbeat_token)
+            with self.active_proc_lock:
+                self.active_procs.discard(proc)
+
+    def _build_payload(
+        self,
+        config,
+        started_at,
+        ended_at,
+        aborted,
+        timed_out,
+        completed_trials,
+        total_trials_planned,
+        datapoints_path: Path,
+        streamed_datapoint_rows: int,
+    ):
         duration_ms = (ended_at - started_at).total_seconds() * 1000.0
-        datapoint_rows = []
-        for variant_id, points in datapoint_results.items():
-            for row in points:
-                datapoint_rows.append(
-                    {
-                        "variant_id": variant_id,
-                        "variant_label": config["selected_variant_labels"].get(variant_id, variant_id),
-                        "x_value": row.x_value,
-                        "y_value": row.y_value,
-                        "runtime_median_ms": row.runtime_median_ms,
-                        "runtime_stdev_ms": row.runtime_stdev_ms,
-                        "runtime_samples_n": row.runtime_samples_n,
-                        "memory_median_kb": row.memory_median_kb,
-                        "memory_stdev_kb": row.memory_stdev_kb,
-                        "memory_samples_n": row.memory_samples_n,
-                        "completed_iterations": row.completed_iterations,
-                        "requested_iterations": row.requested_iterations,
-                        "seeds": list(row.seeds),
-                    }
-                )
 
         return {
             "schema_version": "desktop-benchmark-v1",
@@ -1737,6 +2174,9 @@ class BenchmarkRunnerApp(tk.Tk):
                 "seed": config["base_seed"],
                 "stop_mode": config["run_mode"],
                 "time_limit_minutes": config["time_limit_minutes"],
+                "solver_timeout_seconds": config.get("solver_timeout_seconds"),
+                "max_workers": config.get("max_workers"),
+                "detected_logical_cores": config.get("detected_logical_cores"),
                 "primary_variable": config["primary_var"],
                 "secondary_variable": config["secondary_var"],
                 "var_ranges": config["var_ranges"],
@@ -1748,8 +2188,11 @@ class BenchmarkRunnerApp(tk.Tk):
                 "plot3d_variant": config["plot3d_variant"],
                 "show_stddev_bars": config.get("show_stddev_bars"),
                 "show_regression_line": config.get("show_regression_line"),
+                "delete_generated_inputs": config.get("delete_generated_inputs"),
             },
-            "datapoints": datapoint_rows,
+            "datapoints": [],
+            "datapoints_path": str(datapoints_path),
+            "streamed_datapoint_rows": int(streamed_datapoint_rows),
         }
 
     def _render_figure_in_frame(self, frame: ttk.Frame, fig: Figure, existing_canvas: FigureCanvasTkAgg | None):
@@ -1764,7 +2207,35 @@ class BenchmarkRunnerApp(tk.Tk):
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         return canvas
 
-    def _make_metric_2d_figure(self, payload: dict, metric: str):
+    def _iter_payload_datapoints(self, payload: dict):
+        datapoints = payload.get("datapoints")
+        if isinstance(datapoints, list) and datapoints:
+            for row in datapoints:
+                if isinstance(row, dict):
+                    yield row
+            return
+        datapoints_path = payload.get("datapoints_path")
+        if not datapoints_path:
+            return
+        path = Path(datapoints_path)
+        if not path.exists():
+            return
+        with path.open("r", encoding="utf-8") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(row, dict):
+                    yield row
+
+    def _collect_payload_datapoints(self, payload: dict):
+        return list(self._iter_payload_datapoints(payload))
+
+    def _make_metric_2d_figure(self, payload: dict, metric: str, datapoints: list[dict]):
         fig = Figure(figsize=(7.5, 5.0), dpi=100)
         ax = fig.add_subplot(111)
         config = payload["run_config"]
@@ -1774,11 +2245,18 @@ class BenchmarkRunnerApp(tk.Tk):
 
         selected_variants = config["selected_variants"]
         label_map = config["selected_variant_labels"]
-        datapoints = payload["datapoints"]
         show_stddev = bool(self.show_stddev_var.get())
         show_regression = bool(self.show_regression_var.get())
         if not x_values_full:
             x_values_full = sorted({float(row["x_value"]) for row in datapoints if row["x_value"] is not None})
+        point_lookup = {}
+        for row in datapoints:
+            variant_id = row.get("variant_id")
+            x_val = row.get("x_value")
+            y_val = row.get("y_value")
+            if variant_id is None or x_val is None:
+                continue
+            point_lookup[(variant_id, float(x_val), None if y_val is None else float(y_val))] = row
 
         def plot_series(xs: list[float], ys: list[float], errs: list[float], label: str):
             if not xs:
@@ -1811,7 +2289,7 @@ class BenchmarkRunnerApp(tk.Tk):
             for variant_id in selected_variants:
                 xs, ys, errs = [], [], []
                 for x in x_values_full:
-                    match = next((row for row in datapoints if row["variant_id"] == variant_id and row["x_value"] == x and row["y_value"] is None), None)
+                    match = point_lookup.get((variant_id, float(x), None))
                     if not match:
                         continue
                     y_key = "runtime_median_ms" if metric == "runtime" else "memory_median_kb"
@@ -1831,7 +2309,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 for y_const in y_values_full:
                     xs, ys, errs = [], [], []
                     for x in x_values_full:
-                        match = next((row for row in datapoints if row["variant_id"] == variant_id and row["x_value"] == x and row["y_value"] == y_const), None)
+                        match = point_lookup.get((variant_id, float(x), float(y_const)))
                         if not match:
                             continue
                         y_key = "runtime_median_ms" if metric == "runtime" else "memory_median_kb"
@@ -1878,7 +2356,7 @@ class BenchmarkRunnerApp(tk.Tk):
             fig.tight_layout()
         return fig
 
-    def _build_3d_grid_for_variant(self, payload: dict, variant_id: str, metric: str):
+    def _build_3d_grid_for_variant(self, payload: dict, variant_id: str, metric: str, datapoints: list[dict]):
         config = payload["run_config"]
         primary_var = config["primary_variable"]
         secondary_var = config["secondary_variable"]
@@ -1887,15 +2365,14 @@ class BenchmarkRunnerApp(tk.Tk):
         xs = list(config["var_ranges"].get(primary_var, []))
         ys = list(config["var_ranges"].get(secondary_var, []))
         if not xs:
-            xs = sorted({float(row["x_value"]) for row in payload["datapoints"] if row["variant_id"] == variant_id and row["x_value"] is not None})
+            xs = sorted({float(row["x_value"]) for row in datapoints if row["variant_id"] == variant_id and row["x_value"] is not None})
         if not ys:
             ys = sorted(
-                {float(row["y_value"]) for row in payload["datapoints"] if row["variant_id"] == variant_id and row["y_value"] is not None}
+                {float(row["y_value"]) for row in datapoints if row["variant_id"] == variant_id and row["y_value"] is not None}
             )
         if not xs or not ys:
             return None
         z_grid = [[math.nan for _ in xs] for _ in ys]
-        datapoints = payload["datapoints"]
         z_key = "runtime_median_ms" if metric == "runtime" else "memory_median_kb"
         x_index = {x: i for i, x in enumerate(xs)}
         y_index = {y: i for i, y in enumerate(ys)}
@@ -1912,7 +2389,7 @@ class BenchmarkRunnerApp(tk.Tk):
             z_grid[y_index[y]][x_index[x]] = float(z)
         return xs, ys, z_grid
 
-    def _make_metric_3d_figure(self, payload: dict, metric: str):
+    def _make_metric_3d_figure(self, payload: dict, metric: str, datapoints: list[dict]):
         fig = Figure(figsize=(7.5, 5.0), dpi=100)
         ax = fig.add_subplot(111, projection="3d")
         config = payload["run_config"]
@@ -1930,7 +2407,7 @@ class BenchmarkRunnerApp(tk.Tk):
             fig.tight_layout()
             return fig
 
-        built = self._build_3d_grid_for_variant(payload, variant_id, metric)
+        built = self._build_3d_grid_for_variant(payload, variant_id, metric, datapoints)
         if built is None:
             ax.text2D(0.1, 0.5, "No 3D data.", transform=ax.transAxes)
             fig.tight_layout()
@@ -1976,10 +2453,11 @@ class BenchmarkRunnerApp(tk.Tk):
         return fig
 
     def _render_plots(self, payload: dict):
-        runtime_fig = self._make_metric_2d_figure(payload, metric="runtime")
-        memory_fig = self._make_metric_2d_figure(payload, metric="memory")
-        runtime_3d_fig = self._make_metric_3d_figure(payload, metric="runtime")
-        memory_3d_fig = self._make_metric_3d_figure(payload, metric="memory")
+        datapoints = self._collect_payload_datapoints(payload)
+        runtime_fig = self._make_metric_2d_figure(payload, metric="runtime", datapoints=datapoints)
+        memory_fig = self._make_metric_2d_figure(payload, metric="memory", datapoints=datapoints)
+        runtime_3d_fig = self._make_metric_3d_figure(payload, metric="runtime", datapoints=datapoints)
+        memory_3d_fig = self._make_metric_3d_figure(payload, metric="memory", datapoints=datapoints)
 
         self.runtime_canvas = self._render_figure_in_frame(self.runtime_frame, runtime_fig, self.runtime_canvas)
         self.memory_canvas = self._render_figure_in_frame(self.memory_frame, memory_fig, self.memory_canvas)
@@ -2080,7 +2558,8 @@ class BenchmarkRunnerApp(tk.Tk):
         variant_id = self._resolve_3d_variant_id(payload)
         if not variant_id:
             return False
-        built = self._build_3d_grid_for_variant(payload, variant_id, metric)
+        datapoints = self._collect_payload_datapoints(payload)
+        built = self._build_3d_grid_for_variant(payload, variant_id, metric, datapoints)
         if built is None:
             return False
         xs, ys, z_grid = built
@@ -2099,12 +2578,37 @@ class BenchmarkRunnerApp(tk.Tk):
         write_ascii_stl(target_path, f"{metric}_surface", triangles)
         return True
 
+    def _write_session_json_streaming(self, payload: dict, json_path: Path):
+        items_without_datapoints = [(k, v) for k, v in payload.items() if k != "datapoints"]
+        with json_path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write("{\n")
+            if items_without_datapoints:
+                for key, value in items_without_datapoints:
+                    serialized = json.dumps(value, indent=2, default=serialize_for_json)
+                    if "\n" in serialized:
+                        serialized = serialized.replace("\n", "\n  ")
+                    fh.write(f"  {json.dumps(key)}: {serialized},\n")
+            fh.write('  "datapoints": [')
+            first = True
+            for row in self._iter_payload_datapoints(payload):
+                row_json = json.dumps(row, default=serialize_for_json)
+                if first:
+                    fh.write("\n")
+                    first = False
+                else:
+                    fh.write(",\n")
+                fh.write(f"    {row_json}")
+            if first:
+                fh.write("]\n")
+            else:
+                fh.write("\n  ]\n")
+            fh.write("}\n")
+
     def _save_exports(self, payload: dict, out_dir: Path):
         out_dir.mkdir(parents=True, exist_ok=True)
         json_path = out_dir / "benchmark-session.json"
         csv_path = out_dir / "benchmark-session.csv"
-        with json_path.open("w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, default=serialize_for_json)
+        self._write_session_json_streaming(payload, json_path)
 
         with csv_path.open("w", encoding="utf-8", newline="") as fh:
             writer = csv.writer(fh)
@@ -2112,7 +2616,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 "variant_id", "variant_label", "x_value", "y_value", "runtime_median_ms", "runtime_stdev_ms", "runtime_samples_n",
                 "memory_median_kb", "memory_stdev_kb", "memory_samples_n", "completed_iterations", "requested_iterations", "seeds_json",
             ])
-            for row in payload["datapoints"]:
+            for row in self._iter_payload_datapoints(payload):
                 writer.writerow([
                     row["variant_id"],
                     row["variant_label"],
@@ -2161,3 +2665,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
