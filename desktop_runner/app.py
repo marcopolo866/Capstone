@@ -32,6 +32,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 APP_TITLE = "Capstone Benchmark Runner"
 DEFAULT_WIDTH = 1500
 DEFAULT_HEIGHT = 980
+DEFAULT_DISCARDED_WARMUP_TRIALS = 5
 
 
 def resource_root() -> Path:
@@ -481,9 +482,11 @@ class BenchmarkRunnerApp(tk.Tk):
 
         self.binary_paths = build_binary_path_map()
         self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
         self.active_proc_lock = threading.Lock()
         self.active_procs: set[subprocess.Popen] = set()
+        self.suspended_proc_pids: set[int] = set()
         self.session_output_dir: Path | None = None
         self.last_run_payload: dict | None = None
         self.last_plot_context: dict | None = None
@@ -494,10 +497,17 @@ class BenchmarkRunnerApp(tk.Tk):
         self.run_timer_deadline_monotonic: float | None = None
         self.run_timer_after_id: str | None = None
         self.live_log_lines: dict[str, str] = {}
+        self.drilldown_popup: tk.Toplevel | None = None
+        self.drilldown_popup_mode: str | None = None
+        self.drilldown_popup_point_key: tuple | None = None
+        self.drilldown_highlight_artist = None
+        self.drilldown_highlight_canvas: FigureCanvasTkAgg | None = None
 
         self._build_state()
         self._build_ui()
         self._on_tab_changed()
+        self.after(0, self._apply_default_window_state)
+        self.after(120, self._set_default_body_split)
 
     def _build_state(self):
         self.tab_id_var = tk.StringVar(value="subgraph")
@@ -515,6 +525,11 @@ class BenchmarkRunnerApp(tk.Tk):
         self.plot3d_variant_var = tk.StringVar(value="")
         self.show_stddev_var = tk.BooleanVar(value=True)
         self.show_regression_var = tk.BooleanVar(value=False)
+        self.log_x_scale_var = tk.BooleanVar(value=False)
+        self.log_y_scale_var = tk.BooleanVar(value=False)
+        self.failure_policy_var = tk.StringVar(value="stop")
+        self.retry_failed_trials_var = tk.StringVar(value="0")
+        self.timeout_as_missing_var = tk.BooleanVar(value=True)
 
         self.var_selected: dict[str, tk.BooleanVar] = {
             "n": tk.BooleanVar(value=True),
@@ -643,6 +658,22 @@ class BenchmarkRunnerApp(tk.Tk):
             foreground="#555555",
         )
         self.parallel_status_label.grid(row=4, column=0, columnspan=2, pady=(8, 0), sticky="w")
+        ttk.Label(right_col, text="Failure Policy").grid(row=5, column=0, pady=(8, 0), sticky="w")
+        self.failure_policy_combo = ttk.Combobox(
+            right_col,
+            state="readonly",
+            textvariable=self.failure_policy_var,
+            values=["stop", "continue"],
+            width=12,
+        )
+        self.failure_policy_combo.grid(row=5, column=1, pady=(8, 0), padx=(8, 0), sticky="w")
+        ttk.Label(right_col, text="Retry Failed Trials").grid(row=6, column=0, pady=(8, 0), sticky="w")
+        ttk.Entry(right_col, textvariable=self.retry_failed_trials_var, width=10).grid(row=6, column=1, pady=(8, 0), padx=(8, 0), sticky="w")
+        ttk.Checkbutton(
+            right_col,
+            text="Treat timeout as missing",
+            variable=self.timeout_as_missing_var,
+        ).grid(row=7, column=0, columnspan=2, pady=(8, 0), sticky="w")
 
         sweep = ttk.LabelFrame(settings_row, text="Independent Variables", padding=10)
         sweep.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
@@ -688,31 +719,16 @@ class BenchmarkRunnerApp(tk.Tk):
         self.variant_combo.grid(row=1, column=3, padx=(8, 0), sticky="w")
         self.variant_combo.bind("<<ComboboxSelected>>", lambda _evt: self._repaint_existing_plots())
 
-        plot2d_opts = ttk.LabelFrame(control_col, text="2D Options", padding=10)
-        plot2d_opts.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(
-            plot2d_opts,
-            text="Toggle standard deviation error bars and linear regression trend lines on 2D charts.",
-        ).pack(anchor="w", pady=(0, 6))
-        ttk.Checkbutton(
-            plot2d_opts,
-            text="Show SD Error Bars",
-            variable=self.show_stddev_var,
-            command=self._repaint_existing_plots,
-        ).pack(side=tk.LEFT)
-        ttk.Checkbutton(
-            plot2d_opts,
-            text="Show Regression Line",
-            variable=self.show_regression_var,
-            command=self._repaint_existing_plots,
-        ).pack(side=tk.LEFT, padx=(12, 0))
-
         actions = ttk.Frame(control_col)
         actions.pack(fill=tk.X, pady=(0, 8))
         self.run_btn = ttk.Button(actions, text="Run Benchmark", command=self._start_run)
         self.run_btn.pack(side=tk.LEFT)
         self.abort_btn = ttk.Button(actions, text="Abort Test", command=self._abort_run, state=tk.DISABLED)
         self.abort_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self.pause_btn = ttk.Button(actions, text="Pause", command=self._toggle_pause, state=tk.DISABLED)
+        self.pause_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self.estimate_btn = ttk.Button(actions, text="Estimate Run", command=self._estimate_run)
+        self.estimate_btn.pack(side=tk.LEFT, padx=(8, 0))
         self.open_dir_btn = ttk.Button(actions, text="Open Output Folder", command=self._open_output_dir, state=tk.DISABLED)
         self.open_dir_btn.pack(side=tk.LEFT, padx=(8, 0))
         self.save_btn = ttk.Button(actions, text="Save Exports Again", command=self._save_exports_again, state=tk.DISABLED)
@@ -724,6 +740,7 @@ class BenchmarkRunnerApp(tk.Tk):
 
         body = ttk.Panedwindow(root, orient=tk.HORIZONTAL)
         body.pack(fill=tk.BOTH, expand=True)
+        self.body_pane = body
 
         log_container = ttk.Frame(body, padding=6)
         log_header = ttk.Frame(log_container)
@@ -740,7 +757,8 @@ class BenchmarkRunnerApp(tk.Tk):
         body.add(log_container, weight=1)
 
         chart_panel = ttk.Notebook(body)
-        body.add(chart_panel, weight=2)
+        self.chart_panel = chart_panel
+        body.add(chart_panel, weight=1)
 
         runtime_tab = ttk.Frame(chart_panel)
         memory_tab = ttk.Frame(chart_panel)
@@ -753,18 +771,81 @@ class BenchmarkRunnerApp(tk.Tk):
 
         runtime_toolbar = ttk.Frame(runtime_tab)
         runtime_toolbar.pack(fill=tk.X, padx=4, pady=(4, 2))
+        ttk.Checkbutton(
+            runtime_toolbar,
+            text="Show SD Bars",
+            variable=self.show_stddev_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            runtime_toolbar,
+            text="Show Regression Line",
+            variable=self.show_regression_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Checkbutton(
+            runtime_toolbar,
+            text="Log X",
+            variable=self.log_x_scale_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Checkbutton(
+            runtime_toolbar,
+            text="Log Y",
+            variable=self.log_y_scale_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(runtime_toolbar, text="Fullscreen", command=lambda: self._open_graph_fullscreen("runtime_2d")).pack(side=tk.RIGHT, padx=(0, 8))
         ttk.Button(runtime_toolbar, text="Save Graph", command=lambda: self._save_graph_from_tab("runtime_2d")).pack(side=tk.RIGHT)
         self.runtime_frame = ttk.Frame(runtime_tab)
         self.runtime_frame.pack(fill=tk.BOTH, expand=True)
 
         memory_toolbar = ttk.Frame(memory_tab)
         memory_toolbar.pack(fill=tk.X, padx=4, pady=(4, 2))
+        ttk.Checkbutton(
+            memory_toolbar,
+            text="Show SD Bars",
+            variable=self.show_stddev_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            memory_toolbar,
+            text="Show Regression Line",
+            variable=self.show_regression_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Checkbutton(
+            memory_toolbar,
+            text="Log X",
+            variable=self.log_x_scale_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Checkbutton(
+            memory_toolbar,
+            text="Log Y",
+            variable=self.log_y_scale_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(memory_toolbar, text="Fullscreen", command=lambda: self._open_graph_fullscreen("memory_2d")).pack(side=tk.RIGHT, padx=(0, 8))
         ttk.Button(memory_toolbar, text="Save Graph", command=lambda: self._save_graph_from_tab("memory_2d")).pack(side=tk.RIGHT)
         self.memory_frame = ttk.Frame(memory_tab)
         self.memory_frame.pack(fill=tk.BOTH, expand=True)
 
         runtime3d_toolbar = ttk.Frame(runtime_3d_tab)
         runtime3d_toolbar.pack(fill=tk.X, padx=4, pady=(4, 2))
+        ttk.Checkbutton(
+            runtime3d_toolbar,
+            text="Log X",
+            variable=self.log_x_scale_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            runtime3d_toolbar,
+            text="Log Y",
+            variable=self.log_y_scale_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(runtime3d_toolbar, text="Fullscreen", command=lambda: self._open_graph_fullscreen("runtime_3d")).pack(side=tk.RIGHT, padx=(0, 8))
         ttk.Button(runtime3d_toolbar, text="Save Graph", command=lambda: self._save_graph_from_tab("runtime_3d")).pack(side=tk.RIGHT)
         ttk.Button(runtime3d_toolbar, text="Center", command=lambda: self._center_3d_view("runtime")).pack(side=tk.RIGHT, padx=(0, 8))
         self.runtime_3d_frame = ttk.Frame(runtime_3d_tab)
@@ -772,6 +853,19 @@ class BenchmarkRunnerApp(tk.Tk):
 
         memory3d_toolbar = ttk.Frame(memory_3d_tab)
         memory3d_toolbar.pack(fill=tk.X, padx=4, pady=(4, 2))
+        ttk.Checkbutton(
+            memory3d_toolbar,
+            text="Log X",
+            variable=self.log_x_scale_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            memory3d_toolbar,
+            text="Log Y",
+            variable=self.log_y_scale_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(memory3d_toolbar, text="Fullscreen", command=lambda: self._open_graph_fullscreen("memory_3d")).pack(side=tk.RIGHT, padx=(0, 8))
         ttk.Button(memory3d_toolbar, text="Save Graph", command=lambda: self._save_graph_from_tab("memory_3d")).pack(side=tk.RIGHT)
         ttk.Button(memory3d_toolbar, text="Center", command=lambda: self._center_3d_view("memory")).pack(side=tk.RIGHT, padx=(0, 8))
         self.memory_3d_frame = ttk.Frame(memory_3d_tab)
@@ -792,6 +886,31 @@ class BenchmarkRunnerApp(tk.Tk):
         delta = int(getattr(evt, "delta", 0))
         if delta != 0:
             self._scroll_canvas.yview_scroll(int(-delta / 120), "units")
+
+    def _apply_default_window_state(self):
+        try:
+            self.attributes("-fullscreen", True)
+            self.bind("<Escape>", lambda _evt: self.attributes("-fullscreen", False))
+            self.bind("<F11>", lambda _evt: self.attributes("-fullscreen", not bool(self.attributes("-fullscreen"))))
+            return
+        except Exception:
+            pass
+        try:
+            self.state("zoomed")
+        except Exception:
+            pass
+
+    def _set_default_body_split(self):
+        pane = getattr(self, "body_pane", None)
+        if pane is None:
+            return
+        try:
+            self.update_idletasks()
+            width = int(pane.winfo_width())
+            if width > 100:
+                pane.sashpos(0, width // 2)
+        except Exception:
+            pass
 
     def _build_variant_section(self, parent: ttk.Frame, tab_id: str):
         container = ttk.Frame(parent, padding=8)
@@ -914,15 +1033,19 @@ class BenchmarkRunnerApp(tk.Tk):
 
     def _append_log(self, text: str, level: str = "info"):
         self.log_box.configure(state=tk.NORMAL)
-        self._clear_live_log_line_locked()
+        auto_follow = self._log_should_autoscroll()
         tag = None
         if level in {"error", "warn", "success", "notice"}:
             tag = level
+        insert_at = self._first_live_log_index_locked()
+        if insert_at is None:
+            insert_at = tk.END
         if tag is not None:
-            self.log_box.insert(tk.END, text + "\n", (tag,))
+            self.log_box.insert(insert_at, text + "\n", (tag,))
         else:
-            self.log_box.insert(tk.END, text + "\n")
-        self.log_box.see(tk.END)
+            self.log_box.insert(insert_at, text + "\n")
+        if auto_follow:
+            self.log_box.see(tk.END)
         self.log_box.configure(state=tk.DISABLED)
 
     def _append_log_threadsafe(self, text: str, level: str = "info"):
@@ -949,8 +1072,31 @@ class BenchmarkRunnerApp(tk.Tk):
             except Exception:
                 pass
 
+    def _first_live_log_index_locked(self):
+        best_idx = None
+        best_key = None
+        for token, mark_name in self.live_log_lines.items():
+            try:
+                idx = self.log_box.index(mark_name)
+                line_str, col_str = idx.split(".", 1)
+                key = (int(line_str), int(col_str))
+            except Exception:
+                continue
+            if best_key is None or key < best_key:
+                best_key = key
+                best_idx = idx
+        return best_idx
+
+    def _log_should_autoscroll(self):
+        try:
+            _start, end = self.log_box.yview()
+            return float(end) >= 0.995
+        except Exception:
+            return True
+
     def _set_live_log_line(self, token: str, text: str, level: str = "notice"):
         self.log_box.configure(state=tk.NORMAL)
+        auto_follow = self._log_should_autoscroll()
         try:
             mark_name = self.live_log_lines.get(token)
             if mark_name is None:
@@ -981,7 +1127,8 @@ class BenchmarkRunnerApp(tk.Tk):
                 self.log_box.insert(mark_name, text + "\n", tag)
             else:
                 self.log_box.insert(mark_name, text + "\n")
-            self.log_box.see(tk.END)
+            if auto_follow:
+                self.log_box.see(tk.END)
         finally:
             self.log_box.configure(state=tk.DISABLED)
 
@@ -1079,9 +1226,92 @@ class BenchmarkRunnerApp(tk.Tk):
                     pass
                 setattr(self, fig_attr, None)
 
+        self._clear_drilldown()
         self.last_plot_context = None
         if announce and had_graphs:
             self._append_log("Graphs cleared.", level="notice")
+
+    def _clear_drilldown(self):
+        popup = self.drilldown_popup
+        self.drilldown_popup = None
+        self.drilldown_popup_mode = None
+        self.drilldown_popup_point_key = None
+        if popup is not None:
+            try:
+                popup.destroy()
+            except Exception:
+                pass
+        if self.drilldown_highlight_artist is not None:
+            try:
+                self.drilldown_highlight_artist.remove()
+            except Exception:
+                pass
+            self.drilldown_highlight_artist = None
+            if self.drilldown_highlight_canvas is not None:
+                try:
+                    self.drilldown_highlight_canvas.draw_idle()
+                except Exception:
+                    pass
+        self.drilldown_highlight_canvas = None
+
+    def _drilldown_point_key(self, metric: str, row: dict):
+        return (
+            metric,
+            str(row.get("variant_id", "")),
+            float(row.get("x_value", 0.0)) if row.get("x_value") is not None else None,
+            float(row.get("y_value", 0.0)) if row.get("y_value") is not None else None,
+        )
+
+    def _drilldown_text_for_row(self, row: dict, metric: str):
+        x_val = row.get("x_value")
+        y_val = row.get("y_value")
+        runtime_samples = list(row.get("runtime_samples_ms") or [])
+        memory_samples = list(row.get("memory_samples_kb") or [])
+        seeds = list(row.get("seeds") or [])
+        lines = [
+            "Datapoint Drilldown",
+            f"Metric: {metric}",
+            f"Variant: {row.get('variant_label', row.get('variant_id', 'unknown'))}",
+            f"X value: {number_or_blank(x_val) if x_val is not None else 'n/a'}",
+            f"Y value: {number_or_blank(y_val) if y_val is not None else 'n/a'}",
+            "",
+            f"Runtime median (ms): {number_or_blank(row.get('runtime_median_ms'))}",
+            f"Runtime stdev (ms): {number_or_blank(row.get('runtime_stdev_ms'))}",
+            f"Runtime samples: {len(runtime_samples)}",
+            f"Runtime samples raw: {json.dumps(runtime_samples)}",
+            "",
+            f"Memory median (KiB): {number_or_blank(row.get('memory_median_kb'))}",
+            f"Memory stdev (KiB): {number_or_blank(row.get('memory_stdev_kb'))}",
+            f"Memory samples: {len(memory_samples)}",
+            f"Memory samples raw: {json.dumps(memory_samples)}",
+            "",
+            f"Completed iterations: {row.get('completed_iterations')}/{row.get('requested_iterations')}",
+            f"Seeds: {json.dumps(seeds)}",
+        ]
+        return "\n".join(lines)
+
+    def _set_drilldown_highlight(self, ax, canvas: FigureCanvasTkAgg, x_value: float, y_value: float):
+        if self.drilldown_highlight_artist is not None:
+            try:
+                self.drilldown_highlight_artist.remove()
+            except Exception:
+                pass
+        self.drilldown_highlight_artist = ax.plot(
+            [x_value],
+            [y_value],
+            marker="o",
+            markersize=12,
+            markerfacecolor="none",
+            markeredgecolor="#d7263d",
+            markeredgewidth=2.0,
+            linestyle="None",
+            zorder=1000,
+        )[0]
+        self.drilldown_highlight_canvas = canvas
+        try:
+            canvas.draw_idle()
+        except Exception:
+            pass
 
     def _open_output_dir(self):
         if not self.session_output_dir:
@@ -1169,6 +1399,11 @@ class BenchmarkRunnerApp(tk.Tk):
         )
         if solver_timeout_seconds <= 0:
             solver_timeout_seconds = None
+        failure_policy = self.failure_policy_var.get().strip().lower()
+        if failure_policy not in {"stop", "continue"}:
+            raise ValueError("Failure policy must be stop or continue.")
+        retry_failed_trials = parse_int(self.retry_failed_trials_var.get(), "Retry failed trials", minimum=0)
+        timeout_as_missing = bool(self.timeout_as_missing_var.get())
 
         variable_order = ["n", "density", "k"]
         allowed_vars = ["n", "density"] if tab_id == "shortest_path" else variable_order
@@ -1327,6 +1562,9 @@ class BenchmarkRunnerApp(tk.Tk):
             "run_mode": run_mode,
             "time_limit_minutes": time_limit_minutes,
             "solver_timeout_seconds": solver_timeout_seconds,
+            "failure_policy": failure_policy,
+            "retry_failed_trials": retry_failed_trials,
+            "timeout_as_missing": timeout_as_missing,
             "primary_var": primary_var,
             "secondary_var": secondary_var,
             "var_ranges": var_ranges,
@@ -1344,6 +1582,7 @@ class BenchmarkRunnerApp(tk.Tk):
             "max_workers": max_workers,
             "detected_logical_cores": detected_cores,
             "delete_generated_inputs": bool(self.delete_generated_inputs_var.get()),
+            "warmup_trials": int(DEFAULT_DISCARDED_WARMUP_TRIALS),
         }
 
     def _start_run(self):
@@ -1357,9 +1596,11 @@ class BenchmarkRunnerApp(tk.Tk):
             return
 
         self.stop_event.clear()
+        self.pause_event.clear()
         self.session_output_dir = make_session_output_dir()
         self.last_run_payload = None
         self._clear_graphs(announce=False)
+        self._clear_drilldown()
         self._append_log("Cleared previous graphs for new run.", level="notice")
         deadline = self._start_run_timer(config["time_limit_minutes"] if config["run_mode"] == "timed" else None)
         config["deadline_monotonic"] = deadline
@@ -1375,17 +1616,22 @@ class BenchmarkRunnerApp(tk.Tk):
             )
         parallel_mode = "on" if config["max_workers"] > 1 else "off"
         timeout_mode = "off" if config.get("solver_timeout_seconds") is None else f"{float(config['solver_timeout_seconds']):.1f}s"
+        failure_mode = config.get("failure_policy", "stop")
+        retry_count = int(config.get("retry_failed_trials", 0))
+        timeout_mode_policy = "missing" if config.get("timeout_as_missing", True) else "strict"
         self._append_log(
             f"Starting run | tab={config['tab_id']} | variants={len(config['selected_variants'])} | "
             f"datapoints={datapoints_label} | iterations={config['iterations']} | "
             f"parallel={parallel_mode} workers={config['max_workers']} cores={config['detected_logical_cores']} | "
             f"solver_timeout={timeout_mode} | "
+            f"failure_policy={failure_mode} retries={retry_count} timeout_policy={timeout_mode_policy} | "
             f"delete_generated_inputs={'on' if config.get('delete_generated_inputs') else 'off'} | "
             f"{variable_segments}"
         )
 
         self.run_btn.configure(state=tk.DISABLED)
         self.abort_btn.configure(state=tk.NORMAL)
+        self.pause_btn.configure(state=tk.NORMAL, text="Pause")
         self.open_dir_btn.configure(state=tk.NORMAL)
         self.save_btn.configure(state=tk.DISABLED)
 
@@ -1394,6 +1640,8 @@ class BenchmarkRunnerApp(tk.Tk):
 
     def _abort_run(self):
         self.stop_event.set()
+        self.pause_event.clear()
+        self._set_process_pause_state(paused=False)
         with self.active_proc_lock:
             procs = list(self.active_procs)
         for proc in procs:
@@ -1404,6 +1652,95 @@ class BenchmarkRunnerApp(tk.Tk):
             except Exception:
                 pass
         self._append_log("Abort requested.")
+
+    def _toggle_pause(self):
+        if not (self.worker_thread and self.worker_thread.is_alive()):
+            return
+        if self.pause_event.is_set():
+            self._set_process_pause_state(paused=False)
+            self.pause_event.clear()
+            self.pause_btn.configure(text="Pause")
+            self._append_log("Run resumed.", level="notice")
+        else:
+            self.pause_event.set()
+            self._set_process_pause_state(paused=True)
+            self._clear_live_log_line()
+            self.pause_btn.configure(text="Resume")
+            self._append_log("Run paused. Active solver processes suspended; no new trials will start.", level="warn")
+
+    def _set_process_pause_state(self, paused: bool):
+        with self.active_proc_lock:
+            procs = list(self.active_procs)
+        if paused:
+            for proc in procs:
+                if proc.poll() is not None:
+                    continue
+                try:
+                    psutil.Process(proc.pid).suspend()
+                    self.suspended_proc_pids.add(int(proc.pid))
+                except Exception:
+                    pass
+        else:
+            pids = set(self.suspended_proc_pids)
+            self.suspended_proc_pids.clear()
+            for pid in pids:
+                try:
+                    psutil.Process(pid).resume()
+                except Exception:
+                    pass
+
+    def _estimate_run(self):
+        try:
+            config = self._validate_and_build_config()
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+
+        variants = len(config["selected_variants"])
+        iterations = int(config["iterations"])
+        warmups = int(config.get("warmup_trials", 0)) * variants
+        mode = config["run_mode"]
+        lines = [
+            "Run Estimate",
+            f"Tab: {config['tab_id']}",
+            f"Variants: {variants}",
+            f"Iterations per datapoint: {iterations}",
+            f"Discarded warm-up solver calls: {warmups}",
+        ]
+        if mode == "threshold":
+            datapoints = len(config["datapoints"])
+            measured_trials = datapoints * variants * iterations
+            streamed_rows = datapoints * variants
+            generated_iter_dirs = datapoints * iterations
+            lines.extend([
+                f"Mode: threshold",
+                f"Datapoints: {datapoints}",
+                f"Measured solver calls: {measured_trials}",
+                f"Total solver calls (including warm-up): {measured_trials + warmups}",
+                f"Generated iteration folders: {generated_iter_dirs} (+ warm-up folders)",
+                f"Result rows (NDJSON/CSV): {streamed_rows}",
+            ])
+        else:
+            per_datapoint_calls = variants * iterations
+            primary_var = config["primary_var"]
+            secondary_var = config["secondary_var"]
+            primary_cap = self._timed_max_index(config, primary_var)
+            secondary_cap = self._timed_max_index(config, secondary_var) if secondary_var is not None else None
+            bounded_cap = None
+            if secondary_var is None and primary_cap is not None:
+                bounded_cap = primary_cap + 1
+            elif secondary_var is not None and primary_cap is not None and secondary_cap is not None:
+                bounded_cap = (primary_cap + 1) * (secondary_cap + 1)
+            lines.extend([
+                "Mode: timed",
+                f"Per-datapoint solver calls: {per_datapoint_calls}",
+                f"Total solver calls: unbounded until timer/abort",
+            ])
+            if bounded_cap is not None:
+                lines.append(f"Unique bounded datapoint cap: {bounded_cap}")
+            else:
+                lines.append("Unique bounded datapoint cap: unbounded")
+        messagebox.showinfo(APP_TITLE, "\n".join(lines))
 
     def _timed_value_for_index(self, config: dict, var_id: str, index: int) -> float:
         start = float(config["timed_start"][var_id])
@@ -1547,6 +1884,10 @@ class BenchmarkRunnerApp(tk.Tk):
         timed_points_exhausted = False
         selected_variants = list(config["selected_variants"])
         solver_timeout_seconds = config.get("solver_timeout_seconds")
+        warmup_trials = int(max(0, config.get("warmup_trials", 0)))
+        failure_policy = str(config.get("failure_policy", "stop")).strip().lower()
+        retry_failed_trials = int(max(0, config.get("retry_failed_trials", 0)))
+        timeout_as_missing = bool(config.get("timeout_as_missing", True))
         parallel_workers = int(max(1, config.get("max_workers", 1)))
         executor: concurrent.futures.ThreadPoolExecutor | None = concurrent.futures.ThreadPoolExecutor(
             max_workers=parallel_workers,
@@ -1565,6 +1906,70 @@ class BenchmarkRunnerApp(tk.Tk):
 
         try:
             datapoints_stream_fh = datapoints_stream_path.open("w", encoding="utf-8", newline="\n")
+            if warmup_trials > 0:
+                try:
+                    _warmup_point_idx, warmup_point = next(self._iter_config_datapoints(config))
+                except StopIteration:
+                    warmup_point = None
+                if warmup_point is not None:
+                    warmup_token = "warmup-progress"
+                    self._set_live_log_line_threadsafe(warmup_token, "Warming up...", level="notice")
+                    warmup_root = generated_root / "_warmup"
+                    warmup_root.mkdir(parents=True, exist_ok=True)
+                    for warmup_iter in range(warmup_trials):
+                        while self.pause_event.is_set():
+                            if self.stop_event.is_set():
+                                raise RunAbortedError("Abort requested")
+                            time.sleep(0.1)
+                        if self.stop_event.is_set():
+                            raise RunAbortedError("Abort requested")
+                        warmup_seed = int((int(config["base_seed"]) + 700_000_000 + warmup_iter) % 2_147_483_647)
+                        if warmup_seed <= 0:
+                            warmup_seed = warmup_iter + 1
+                        warmup_dir = warmup_root / f"trial_{warmup_iter + 1:03d}"
+                        warmup_dir.mkdir(parents=True, exist_ok=True)
+                        n_value = int(round(warmup_point["n"]))
+                        density_value = float(warmup_point["density"])
+                        k_value = int(round(warmup_point.get("k_nodes", 1)))
+                        if config["tab_id"] == "shortest_path":
+                            generated_warmup = {"dijkstra_file": generate_dijkstra_inputs(warmup_dir, n_value, density_value, warmup_seed)}
+                        else:
+                            generated_warmup = generate_subgraph_inputs(warmup_dir, n_value, k_value, density_value, warmup_seed)
+                        for variant_id in selected_variants:
+                            while self.pause_event.is_set():
+                                if self.stop_event.is_set():
+                                    raise RunAbortedError("Abort requested")
+                                time.sleep(0.1)
+                            if self.stop_event.is_set():
+                                raise RunAbortedError("Abort requested")
+                            warmup_label = (
+                                f"warm-up {warmup_iter + 1}/{warmup_trials}, "
+                                f"{config['selected_variant_labels'].get(variant_id, variant_id)}"
+                            )
+                            self._run_solver_variant(
+                                variant_id,
+                                generated_warmup,
+                                heartbeat_label=warmup_label,
+                                solver_timeout_seconds=solver_timeout_seconds,
+                            )
+                        self._set_live_log_line_threadsafe(
+                            warmup_token,
+                            f"Warming up{'.' * (3 + warmup_iter + 1)}",
+                            level="notice",
+                        )
+                    if config.get("delete_generated_inputs", True):
+                        try:
+                            shutil.rmtree(warmup_root, ignore_errors=False)
+                        except FileNotFoundError:
+                            pass
+                        except Exception as warmup_cleanup_exc:
+                            self._append_log_threadsafe(
+                                f"Update: failed to delete warm-up inputs: {warmup_cleanup_exc}",
+                                level="warn",
+                            )
+                    self._clear_live_log_line_threadsafe(token=warmup_token)
+                    self._append_log_threadsafe("Warm-up complete. Beginning measured datapoints.", level="notice")
+
             point_states: dict[int, dict] = {}
             datapoint_iter = self._iter_config_datapoints(config)
             future_map: dict[concurrent.futures.Future, dict] = {}
@@ -1621,6 +2026,8 @@ class BenchmarkRunnerApp(tk.Tk):
                         "completed_iterations": int(state["completed_iterations"]),
                         "requested_iterations": config["iterations"],
                         "seeds": list(state["seed_records"][variant_id]),
+                        "runtime_samples_ms": [float(v) for v in runtimes],
+                        "memory_samples_kb": [float(v) for v in memories],
                     }
                     datapoints_stream_fh.write(json.dumps(row, default=serialize_for_json) + "\n")
                     streamed_datapoint_rows += 1
@@ -1771,6 +2178,7 @@ class BenchmarkRunnerApp(tk.Tk):
                         "variant_id": variant_id,
                         "generated": cursor["generated"],
                         "heartbeat_label": heartbeat_label,
+                        "attempt": 0,
                     }
                     cursor["state"]["submitted_trials"] += 1
 
@@ -1785,6 +2193,8 @@ class BenchmarkRunnerApp(tk.Tk):
 
             while True:
                 while not submission_closed and len(future_map) < parallel_workers:
+                    if self.pause_event.is_set():
+                        break
                     if self.stop_event.is_set():
                         aborted = True
                         submission_closed = True
@@ -1834,6 +2244,9 @@ class BenchmarkRunnerApp(tk.Tk):
                 if not future_map:
                     if submission_closed:
                         break
+                    if self.pause_event.is_set():
+                        time.sleep(0.1)
+                        continue
                     time.sleep(0.05)
                     continue
 
@@ -1850,26 +2263,87 @@ class BenchmarkRunnerApp(tk.Tk):
                     state = trial["state"]
                     variant_id = trial["variant_id"]
                     iter_idx = int(trial["iter_idx"])
+                    attempt = int(trial.get("attempt", 0))
                     success = False
                     solution_count = None
                     runtime_ms = 0.0
                     peak_kb = 0.0
+                    handled_failure = False
 
                     try:
                         runtime_ms, peak_kb, solution_count = future.result()
                         success = True
                     except SolverTimeoutError as exc:
-                        self._append_log_threadsafe(
-                            f"Solver timeout: {config['selected_variant_labels'].get(variant_id, variant_id)} "
-                            f"exceeded {exc.timeout_seconds:.1f}s (elapsed {exc.elapsed_seconds:.1f}s); "
-                            "skipping this trial and continuing.",
-                            level="warn",
-                        )
+                        if attempt < retry_failed_trials and not self.stop_event.is_set() and not timed_out and not aborted:
+                            retry_trial = dict(trial)
+                            retry_trial["attempt"] = attempt + 1
+                            retry_trial["heartbeat_label"] = (
+                                f"{trial['heartbeat_label']} (retry {attempt + 1}/{retry_failed_trials})"
+                            )
+                            retry_future = executor.submit(
+                                self._run_solver_variant,
+                                retry_trial["variant_id"],
+                                retry_trial["generated"],
+                                retry_trial["heartbeat_label"],
+                                solver_timeout_seconds,
+                            )
+                            future_map[retry_future] = retry_trial
+                            self._append_log_threadsafe(
+                                f"Retry {attempt + 1}/{retry_failed_trials} after timeout for "
+                                f"{config['selected_variant_labels'].get(variant_id, variant_id)}.",
+                                level="warn",
+                            )
+                            continue
+                        if timeout_as_missing:
+                            self._append_log_threadsafe(
+                                f"Solver timeout: {config['selected_variant_labels'].get(variant_id, variant_id)} "
+                                f"exceeded {exc.timeout_seconds:.1f}s (elapsed {exc.elapsed_seconds:.1f}s); "
+                                "recording as missing and continuing.",
+                                level="warn",
+                            )
+                            handled_failure = True
+                        elif failure_policy == "continue":
+                            self._append_log_threadsafe(
+                                f"Timeout treated as failure for {config['selected_variant_labels'].get(variant_id, variant_id)}; continuing.",
+                                level="error",
+                            )
+                            handled_failure = True
+                        else:
+                            fatal_error = _build_context_error(trial, exc)
+                            self.stop_event.set()
                     except RunAbortedError:
                         aborted = True
                     except Exception as exc:
-                        fatal_error = _build_context_error(trial, exc)
-                        self.stop_event.set()
+                        if attempt < retry_failed_trials and not self.stop_event.is_set() and not timed_out and not aborted:
+                            retry_trial = dict(trial)
+                            retry_trial["attempt"] = attempt + 1
+                            retry_trial["heartbeat_label"] = (
+                                f"{trial['heartbeat_label']} (retry {attempt + 1}/{retry_failed_trials})"
+                            )
+                            retry_future = executor.submit(
+                                self._run_solver_variant,
+                                retry_trial["variant_id"],
+                                retry_trial["generated"],
+                                retry_trial["heartbeat_label"],
+                                solver_timeout_seconds,
+                            )
+                            future_map[retry_future] = retry_trial
+                            self._append_log_threadsafe(
+                                f"Retry {attempt + 1}/{retry_failed_trials} after failure for "
+                                f"{config['selected_variant_labels'].get(variant_id, variant_id)}.",
+                                level="warn",
+                            )
+                            continue
+                        if failure_policy == "continue":
+                            self._append_log_threadsafe(
+                                f"Trial failure for {config['selected_variant_labels'].get(variant_id, variant_id)}; "
+                                f"continuing due to failure policy. Details: {_build_context_error(trial, exc)}",
+                                level="error",
+                            )
+                            handled_failure = True
+                        else:
+                            fatal_error = _build_context_error(trial, exc)
+                            self.stop_event.set()
 
                     pending_set = state["iter_pending"].get(iter_idx)
                     if isinstance(pending_set, set):
@@ -1882,6 +2356,9 @@ class BenchmarkRunnerApp(tk.Tk):
                         state["iter_success_count"][iter_idx] = int(state["iter_success_count"][iter_idx]) + 1
                         if solution_count is not None:
                             state["iter_solution_counts"][iter_idx][variant_id] = solution_count
+                    elif not handled_failure and fatal_error is None and not aborted:
+                        # Defensive fallback: treat unexpected non-success as missing so the datapoint can complete.
+                        handled_failure = True
 
                     state["completed_trials"] = int(state["completed_trials"]) + 1
                     _record_trial_completion()
@@ -1978,15 +2455,19 @@ class BenchmarkRunnerApp(tk.Tk):
                     executor.shutdown(wait=False, cancel_futures=True)
                 except Exception:
                     pass
+            self._set_process_pause_state(paused=False)
             with self.active_proc_lock:
                 self.active_procs.clear()
             self.after(0, self._on_run_finished_ui)
 
     def _on_run_finished_ui(self):
         self._stop_run_timer(hide=True)
+        self.pause_event.clear()
+        self._set_process_pause_state(paused=False)
         self._clear_live_log_line()
         self.run_btn.configure(state=tk.NORMAL)
         self.abort_btn.configure(state=tk.DISABLED)
+        self.pause_btn.configure(state=tk.DISABLED, text="Pause")
         if self.last_run_payload:
             self.save_btn.configure(state=tk.NORMAL)
 
@@ -2056,6 +2537,9 @@ class BenchmarkRunnerApp(tk.Tk):
         started = time.perf_counter()
         heartbeat_token = f"hb-{threading.get_ident()}-{time.perf_counter_ns()}"
         last_heartbeat_second = -1
+        paused_accumulated = 0.0
+        paused_since = None
+        heartbeat_hidden_for_pause = False
         popen_kwargs = {
             "args": command,
             "cwd": str(cwd),
@@ -2093,7 +2577,25 @@ class BenchmarkRunnerApp(tk.Tk):
                         pass
                     raise RunAbortedError("Abort requested")
 
-                elapsed_seconds = time.perf_counter() - started
+                now = time.perf_counter()
+                if self.pause_event.is_set():
+                    if paused_since is None:
+                        paused_since = now
+                    if heartbeat_label and not heartbeat_hidden_for_pause:
+                        self._clear_live_log_line_threadsafe(token=heartbeat_token)
+                        heartbeat_hidden_for_pause = True
+                    ret = proc.poll()
+                    if ret is not None:
+                        break
+                    time.sleep(0.05)
+                    continue
+                if paused_since is not None:
+                    paused_accumulated += max(0.0, now - paused_since)
+                    paused_since = None
+                    last_heartbeat_second = -1
+                    heartbeat_hidden_for_pause = False
+
+                elapsed_seconds = max(0.0, now - started - paused_accumulated)
                 if solver_timeout_seconds is not None and elapsed_seconds >= float(solver_timeout_seconds):
                     try:
                         proc.terminate()
@@ -2175,6 +2677,9 @@ class BenchmarkRunnerApp(tk.Tk):
                 "stop_mode": config["run_mode"],
                 "time_limit_minutes": config["time_limit_minutes"],
                 "solver_timeout_seconds": config.get("solver_timeout_seconds"),
+                "failure_policy": config.get("failure_policy"),
+                "retry_failed_trials": config.get("retry_failed_trials"),
+                "timeout_as_missing": config.get("timeout_as_missing"),
                 "max_workers": config.get("max_workers"),
                 "detected_logical_cores": config.get("detected_logical_cores"),
                 "primary_variable": config["primary_var"],
@@ -2189,13 +2694,23 @@ class BenchmarkRunnerApp(tk.Tk):
                 "show_stddev_bars": config.get("show_stddev_bars"),
                 "show_regression_line": config.get("show_regression_line"),
                 "delete_generated_inputs": config.get("delete_generated_inputs"),
+                "warmup_trials": config.get("warmup_trials", 0),
             },
             "datapoints": [],
             "datapoints_path": str(datapoints_path),
             "streamed_datapoint_rows": int(streamed_datapoint_rows),
         }
 
-    def _render_figure_in_frame(self, frame: ttk.Frame, fig: Figure, existing_canvas: FigureCanvasTkAgg | None):
+    def _render_figure_in_frame(
+        self,
+        frame: ttk.Frame,
+        fig: Figure,
+        existing_canvas: FigureCanvasTkAgg | None,
+        pick_handler=None,
+        motion_handler=None,
+        click_handler=None,
+        leave_handler=None,
+    ):
         if existing_canvas is not None:
             existing_canvas.get_tk_widget().destroy()
             try:
@@ -2204,6 +2719,26 @@ class BenchmarkRunnerApp(tk.Tk):
                 pass
         canvas = FigureCanvasTkAgg(fig, master=frame)
         canvas.draw()
+        if pick_handler is not None:
+            try:
+                canvas.mpl_connect("pick_event", pick_handler)
+            except Exception:
+                pass
+        if motion_handler is not None:
+            try:
+                canvas.mpl_connect("motion_notify_event", motion_handler)
+            except Exception:
+                pass
+        if click_handler is not None:
+            try:
+                canvas.mpl_connect("button_press_event", click_handler)
+            except Exception:
+                pass
+        if leave_handler is not None:
+            try:
+                canvas.mpl_connect("axes_leave_event", leave_handler)
+            except Exception:
+                pass
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         return canvas
 
@@ -2247,6 +2782,9 @@ class BenchmarkRunnerApp(tk.Tk):
         label_map = config["selected_variant_labels"]
         show_stddev = bool(self.show_stddev_var.get())
         show_regression = bool(self.show_regression_var.get())
+        use_log_x = bool(self.log_x_scale_var.get())
+        use_log_y = bool(self.log_y_scale_var.get())
+        pick_map = {}
         if not x_values_full:
             x_values_full = sorted({float(row["x_value"]) for row in datapoints if row["x_value"] is not None})
         point_lookup = {}
@@ -2258,18 +2796,45 @@ class BenchmarkRunnerApp(tk.Tk):
                 continue
             point_lookup[(variant_id, float(x_val), None if y_val is None else float(y_val))] = row
 
-        def plot_series(xs: list[float], ys: list[float], errs: list[float], label: str):
+        def plot_series(xs: list[float], ys: list[float], errs: list[float], label: str, rows: list[dict]):
             if not xs:
                 return
+            if use_log_x or use_log_y:
+                filtered = [
+                    (x, y, e, r)
+                    for x, y, e, r in zip(xs, ys, errs, rows)
+                    if ((not use_log_x) or x > 0) and ((not use_log_y) or y > 0)
+                ]
+                if not filtered:
+                    return
+                xs = [item[0] for item in filtered]
+                ys = [item[1] for item in filtered]
+                errs = [item[2] for item in filtered]
+                rows = [item[3] for item in filtered]
+            line_for_pick = None
             if show_stddev:
                 container = ax.errorbar(xs, ys, yerr=errs, marker="o", capsize=3, label=label)
                 line_color = None
                 if getattr(container, "lines", None):
                     first_line = container.lines[0]
                     line_color = first_line.get_color() if first_line is not None else None
+                    line_for_pick = first_line
             else:
                 plotted = ax.plot(xs, ys, marker="o", label=label)
                 line_color = plotted[0].get_color() if plotted else None
+                if plotted:
+                    line_for_pick = plotted[0]
+
+            if line_for_pick is not None:
+                try:
+                    line_for_pick.set_picker(5)
+                    pick_map[line_for_pick] = {
+                        "rows": list(rows),
+                        "xs": list(xs),
+                        "ys": list(ys),
+                    }
+                except Exception:
+                    pass
 
             if show_regression:
                 reg_line = linear_regression_line(xs, ys)
@@ -2287,7 +2852,7 @@ class BenchmarkRunnerApp(tk.Tk):
 
         if secondary_var is None:
             for variant_id in selected_variants:
-                xs, ys, errs = [], [], []
+                xs, ys, errs, rows = [], [], [], []
                 for x in x_values_full:
                     match = point_lookup.get((variant_id, float(x), None))
                     if not match:
@@ -2300,14 +2865,15 @@ class BenchmarkRunnerApp(tk.Tk):
                     xs.append(x)
                     ys.append(y_val)
                     errs.append(match[e_key] or 0.0)
-                plot_series(xs, ys, errs, label_map.get(variant_id, variant_id))
+                    rows.append(match)
+                plot_series(xs, ys, errs, label_map.get(variant_id, variant_id), rows)
         else:
             y_values_full = list(config["var_ranges"].get(secondary_var, []))
             if not y_values_full:
                 y_values_full = sorted({float(row["y_value"]) for row in datapoints if row["y_value"] is not None})
             for variant_id in selected_variants:
                 for y_const in y_values_full:
-                    xs, ys, errs = [], [], []
+                    xs, ys, errs, rows = [], [], [], []
                     for x in x_values_full:
                         match = point_lookup.get((variant_id, float(x), float(y_const)))
                         if not match:
@@ -2320,9 +2886,10 @@ class BenchmarkRunnerApp(tk.Tk):
                         xs.append(x)
                         ys.append(y_val)
                         errs.append(match[e_key] or 0.0)
+                        rows.append(match)
                     if xs:
                         series_name = f"{label_map.get(variant_id, variant_id)} | {axis_label(secondary_var)}={format_point_value(secondary_var, y_const)}"
-                        plot_series(xs, ys, errs, series_name)
+                        plot_series(xs, ys, errs, series_name, rows)
 
         ax.set_xlabel(axis_label(primary_var))
         if metric == "runtime":
@@ -2333,6 +2900,13 @@ class BenchmarkRunnerApp(tk.Tk):
             ax.set_title("Peak Child Process Memory by Independent Variable")
         if x_values_full:
             ax.set_xlim(min(x_values_full), max(x_values_full))
+        try:
+            if use_log_x:
+                ax.set_xscale("log")
+            if use_log_y:
+                ax.set_yscale("log")
+        except Exception:
+            pass
         ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
         handles, _labels = ax.get_legend_handles_labels()
         if handles:
@@ -2354,6 +2928,8 @@ class BenchmarkRunnerApp(tk.Tk):
             fig.tight_layout(rect=(0.0, 0.08, 1.0, 1.0))
         else:
             fig.tight_layout()
+        setattr(fig, "_drilldown_pick_map", pick_map)
+        setattr(fig, "_drilldown_metric", metric)
         return fig
 
     def _build_3d_grid_for_variant(self, payload: dict, variant_id: str, metric: str, datapoints: list[dict]):
@@ -2416,6 +2992,8 @@ class BenchmarkRunnerApp(tk.Tk):
         style = self.plot3d_style_var.get().strip().lower()
         if style not in {"surface", "wireframe", "scatter"}:
             style = "surface"
+        use_log_x = bool(self.log_x_scale_var.get())
+        use_log_y = bool(self.log_y_scale_var.get())
 
         import numpy as np
 
@@ -2448,19 +3026,41 @@ class BenchmarkRunnerApp(tk.Tk):
         else:
             ax.set_zlabel("Peak Memory (KiB)")
             ax.set_title(f"Memory 3D ({config['selected_variant_labels'].get(variant_id, variant_id)})")
+        try:
+            if use_log_x and xs and min(xs) > 0:
+                ax.set_xscale("log")
+            if use_log_y and ys and min(ys) > 0:
+                ax.set_yscale("log")
+        except Exception:
+            pass
         ax.view_init(elev=30.0, azim=-60.0)
         fig.tight_layout()
         return fig
 
     def _render_plots(self, payload: dict):
+        self._clear_drilldown()
         datapoints = self._collect_payload_datapoints(payload)
         runtime_fig = self._make_metric_2d_figure(payload, metric="runtime", datapoints=datapoints)
         memory_fig = self._make_metric_2d_figure(payload, metric="memory", datapoints=datapoints)
         runtime_3d_fig = self._make_metric_3d_figure(payload, metric="runtime", datapoints=datapoints)
         memory_3d_fig = self._make_metric_3d_figure(payload, metric="memory", datapoints=datapoints)
 
-        self.runtime_canvas = self._render_figure_in_frame(self.runtime_frame, runtime_fig, self.runtime_canvas)
-        self.memory_canvas = self._render_figure_in_frame(self.memory_frame, memory_fig, self.memory_canvas)
+        self.runtime_canvas = self._render_figure_in_frame(
+            self.runtime_frame,
+            runtime_fig,
+            self.runtime_canvas,
+            motion_handler=lambda event: self._on_2d_motion(event, metric="runtime"),
+            click_handler=lambda event: self._on_2d_click(event, metric="runtime"),
+            leave_handler=lambda event: self._on_2d_leave(event, metric="runtime"),
+        )
+        self.memory_canvas = self._render_figure_in_frame(
+            self.memory_frame,
+            memory_fig,
+            self.memory_canvas,
+            motion_handler=lambda event: self._on_2d_motion(event, metric="memory"),
+            click_handler=lambda event: self._on_2d_click(event, metric="memory"),
+            leave_handler=lambda event: self._on_2d_leave(event, metric="memory"),
+        )
         self.runtime_3d_canvas = self._render_figure_in_frame(self.runtime_3d_frame, runtime_3d_fig, self.runtime_3d_canvas)
         self.memory_3d_canvas = self._render_figure_in_frame(self.memory_3d_frame, memory_3d_fig, self.memory_3d_canvas)
 
@@ -2474,6 +3074,144 @@ class BenchmarkRunnerApp(tk.Tk):
             return
         self._render_plots(self.last_plot_context)
 
+    def _locate_2d_row_from_event(self, event, metric: str):
+        if event is None or getattr(event, "inaxes", None) is None:
+            return None
+        fig = getattr(event, "canvas", None)
+        if fig is None:
+            return None
+        figure = getattr(fig, "figure", None)
+        pick_map = getattr(figure, "_drilldown_pick_map", {}) if figure is not None else {}
+        for artist, payload in pick_map.items():
+            try:
+                if getattr(artist, "axes", None) is not event.inaxes:
+                    continue
+                contains, info = artist.contains(event)
+            except Exception:
+                continue
+            if not contains:
+                continue
+            inds = list((info or {}).get("ind", []) or [])
+            if not inds:
+                continue
+            idx = int(inds[0])
+            rows = list(payload.get("rows", []))
+            xs = list(payload.get("xs", []))
+            ys = list(payload.get("ys", []))
+            if idx < 0 or idx >= len(rows):
+                continue
+            x_val = float(xs[idx]) if idx < len(xs) else float(rows[idx].get("x_value", 0.0))
+            y_val = float(ys[idx]) if idx < len(ys) else float(rows[idx].get("runtime_median_ms", 0.0))
+            return {
+                "metric": metric,
+                "row": rows[idx],
+                "x": x_val,
+                "y": y_val,
+                "ax": event.inaxes,
+                "canvas": event.canvas,
+            }
+        return None
+
+    def _drilldown_pointer_position(self, event):
+        gui_event = getattr(event, "guiEvent", None)
+        if gui_event is not None:
+            x_root = getattr(gui_event, "x_root", None)
+            y_root = getattr(gui_event, "y_root", None)
+            if x_root is not None and y_root is not None:
+                return int(x_root), int(y_root)
+        try:
+            return self.winfo_pointerx(), self.winfo_pointery()
+        except Exception:
+            return 100, 100
+
+    def _open_drilldown_popup(self, info: dict, mode: str, event):
+        row = info["row"]
+        metric = info["metric"]
+        key = self._drilldown_point_key(metric, row)
+        text = self._drilldown_text_for_row(row, metric)
+        x_root, y_root = self._drilldown_pointer_position(event)
+
+        if mode == "hover" and self.drilldown_popup_mode == "click":
+            return
+
+        if mode == "hover" and self.drilldown_popup_mode == "hover" and self.drilldown_popup_point_key == key and self.drilldown_popup is not None:
+            try:
+                self.drilldown_popup.geometry(f"+{x_root + 16}+{y_root + 16}")
+            except Exception:
+                pass
+            return
+
+        self._clear_drilldown()
+
+        if mode == "hover":
+            popup = tk.Toplevel(self)
+            popup.overrideredirect(True)
+            popup.attributes("-topmost", True)
+            label = tk.Label(
+                popup,
+                text=text,
+                justify=tk.LEFT,
+                anchor="w",
+                bg="#fffbe6",
+                fg="#222222",
+                relief="solid",
+                bd=1,
+                padx=8,
+                pady=6,
+                font=("Consolas", 9),
+            )
+            label.pack(fill=tk.BOTH, expand=True)
+            popup.geometry(f"+{x_root + 16}+{y_root + 16}")
+        else:
+            popup = tk.Toplevel(self)
+            popup.title("Datapoint Drilldown")
+            popup.attributes("-topmost", True)
+
+            def _close_click_popup():
+                self._clear_drilldown()
+
+            popup.protocol("WM_DELETE_WINDOW", _close_click_popup)
+            header = ttk.Frame(popup)
+            header.pack(fill=tk.X, padx=8, pady=(8, 4))
+            ttk.Label(header, text="Datapoint Drilldown", font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
+            ttk.Button(header, text="X", width=3, command=_close_click_popup).pack(side=tk.RIGHT)
+            body = ScrolledText(popup, height=16, wrap=tk.WORD)
+            body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+            body.insert("1.0", text)
+            body.configure(state=tk.DISABLED)
+            popup.geometry(f"+{x_root + 20}+{y_root + 20}")
+
+        self.drilldown_popup = popup
+        self.drilldown_popup_mode = mode
+        self.drilldown_popup_point_key = key
+        self._set_drilldown_highlight(info["ax"], info["canvas"], info["x"], info["y"])
+
+    def _on_2d_motion(self, event, metric: str):
+        if self.drilldown_popup_mode == "click":
+            return
+        info = self._locate_2d_row_from_event(event, metric)
+        if info is None:
+            if self.drilldown_popup_mode == "hover":
+                self._clear_drilldown()
+            return
+        self._open_drilldown_popup(info, mode="hover", event=event)
+
+    def _on_2d_leave(self, _event, metric: str):
+        if metric and self.drilldown_popup_mode == "hover":
+            self._clear_drilldown()
+
+    def _on_2d_click(self, event, metric: str):
+        if int(getattr(event, "button", 0) or 0) != 1:
+            return
+        info = self._locate_2d_row_from_event(event, metric)
+        if info is None:
+            return
+        key = self._drilldown_point_key(metric, info["row"])
+        if self.drilldown_popup_mode == "click" and self.drilldown_popup_point_key == key:
+            self._clear_drilldown()
+            return
+        self._open_drilldown_popup(info, mode="click", event=event)
+
     def _figure_for_tab(self, tab_key: str):
         mapping = {
             "runtime_2d": self.last_runtime_fig,
@@ -2482,6 +3220,58 @@ class BenchmarkRunnerApp(tk.Tk):
             "memory_3d": self.last_memory_3d_fig,
         }
         return mapping.get(tab_key)
+
+    def _build_figure_for_tab(self, tab_key: str, payload: dict, datapoints: list[dict]):
+        if tab_key == "runtime_2d":
+            return self._make_metric_2d_figure(payload, metric="runtime", datapoints=datapoints)
+        if tab_key == "memory_2d":
+            return self._make_metric_2d_figure(payload, metric="memory", datapoints=datapoints)
+        if tab_key == "runtime_3d":
+            return self._make_metric_3d_figure(payload, metric="runtime", datapoints=datapoints)
+        if tab_key == "memory_3d":
+            return self._make_metric_3d_figure(payload, metric="memory", datapoints=datapoints)
+        return None
+
+    def _open_graph_fullscreen(self, tab_key: str):
+        if not self.last_plot_context:
+            messagebox.showwarning(APP_TITLE, "No graph is available yet for this tab.")
+            return
+        payload = self.last_plot_context
+        datapoints = self._collect_payload_datapoints(payload)
+        fig = self._build_figure_for_tab(tab_key, payload, datapoints)
+        if fig is None:
+            messagebox.showwarning(APP_TITLE, "No graph is available yet for this tab.")
+            return
+
+        popup = tk.Toplevel(self)
+        popup.title("Graph Fullscreen")
+        popup.transient(self)
+        popup.configure(background="#111111")
+        def _close_popup(_evt=None):
+            try:
+                fig.clear()
+            except Exception:
+                pass
+            popup.destroy()
+
+        popup.bind("<Escape>", _close_popup)
+        popup.protocol("WM_DELETE_WINDOW", _close_popup)
+        try:
+            popup.attributes("-fullscreen", True)
+        except Exception:
+            try:
+                popup.state("zoomed")
+            except Exception:
+                pass
+
+        top_bar = ttk.Frame(popup)
+        top_bar.pack(fill=tk.X)
+        ttk.Label(top_bar, text="Press Esc to exit fullscreen view").pack(side=tk.LEFT, padx=8, pady=6)
+        ttk.Button(top_bar, text="Close", command=_close_popup).pack(side=tk.RIGHT, padx=8, pady=4)
+
+        canvas = FigureCanvasTkAgg(fig, master=popup)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def _save_graph_from_tab(self, tab_key: str):
         fig = self._figure_for_tab(tab_key)
@@ -2614,7 +3404,8 @@ class BenchmarkRunnerApp(tk.Tk):
             writer = csv.writer(fh)
             writer.writerow([
                 "variant_id", "variant_label", "x_value", "y_value", "runtime_median_ms", "runtime_stdev_ms", "runtime_samples_n",
-                "memory_median_kb", "memory_stdev_kb", "memory_samples_n", "completed_iterations", "requested_iterations", "seeds_json",
+                "memory_median_kb", "memory_stdev_kb", "memory_samples_n", "completed_iterations", "requested_iterations",
+                "runtime_samples_json", "memory_samples_json", "seeds_json",
             ])
             for row in self._iter_payload_datapoints(payload):
                 writer.writerow([
@@ -2630,6 +3421,8 @@ class BenchmarkRunnerApp(tk.Tk):
                     row["memory_samples_n"],
                     row["completed_iterations"],
                     row["requested_iterations"],
+                    json.dumps(row.get("runtime_samples_ms", [])),
+                    json.dumps(row.get("memory_samples_kb", [])),
                     json.dumps(row["seeds"]),
                 ])
 
