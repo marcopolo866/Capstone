@@ -75,9 +75,9 @@ need_cmd g++
 need_cmd make
 need_cmd cmake
 if command -v python3 >/dev/null 2>&1; then
-  PYTHON_BIN="python3"
+  PYTHON_BIN="$(command -v python3)"
 elif command -v python >/dev/null 2>&1; then
-  PYTHON_BIN="python"
+  PYTHON_BIN="$(command -v python)"
 else
   echo "Missing required command: python3 (or python)" >&2
   exit 1
@@ -104,7 +104,7 @@ run_step "Cleaning VF3 baseline outputs (fresh rebuild)" \
 run_step "Building VF3 baseline (vf3lib)" \
   make -C baselines/vf3lib vf3 CFLAGS="${vf3_cflags}"
 run_step "VF3 baseline smoke test (small generated subgraph case)" \
-  bash -lc '
+  env PYTHON_BIN="${PYTHON_BIN}" bash -c '
     set -euo pipefail
     # Resolve like desktop_runner/build_windows_exe.ps1: prefer .exe on Windows.
     vf3_bin="baselines/vf3lib/bin/vf3.exe"
@@ -117,7 +117,7 @@ run_step "VF3 baseline smoke test (small generated subgraph case)" \
     fi
     tmpdir="$(mktemp -d)"
     trap "rm -rf \"$tmpdir\"" EXIT
-    gen_out="$("'"$PYTHON_BIN"'" utilities/generate_graphs.py --algorithm subgraph --n 5 --k 2 --density 0.01 --seed 424242 --out-dir "$tmpdir")"
+    gen_out="$("$PYTHON_BIN" utilities/generate_graphs.py --algorithm subgraph --n 5 --k 2 --density 0.01 --seed 424242 --out-dir "$tmpdir")"
     last_line="$(printf "%s\n" "$gen_out" | tail -n1)"
     IFS="," read -r _lad_pattern _lad_target vf_pattern vf_target <<< "$last_line"
     if [[ -z "${vf_pattern:-}" || -z "${vf_target:-}" ]]; then

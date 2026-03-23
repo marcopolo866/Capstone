@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,70 @@ from pathlib import Path
 def run(cmd: list[str], env: dict[str, str], cwd: Path) -> int:
     completed = subprocess.run(cmd, env=env, cwd=str(cwd))
     return int(completed.returncode)
+
+
+def resolve_bash_executable(env: dict[str, str]) -> str:
+    if os.name != "nt":
+        return "bash"
+
+    # In Windows CI, "bash.exe" can resolve to the WSL shim in System32.
+    # Prefer MSYS2/Git Bash explicitly so backend=sh runs the intended script.
+    candidates: list[Path] = []
+
+    gpp_path = shutil.which("g++", path=env.get("PATH"))
+    if gpp_path:
+        gpp = Path(gpp_path)
+        # .../msys64/mingw64/bin/g++.exe -> .../msys64/usr/bin/bash.exe
+        if len(gpp.parents) >= 3:
+            candidates.append(gpp.parents[2] / "usr" / "bin" / "bash.exe")
+
+    candidates.extend(
+        [
+            Path(r"C:\msys64\usr\bin\bash.exe"),
+            Path(r"C:\Program Files\Git\bin\bash.exe"),
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    which_bash = shutil.which("bash", path=env.get("PATH"))
+    if which_bash:
+        return which_bash
+    return "bash"
+
+
+def prepend_path(env: dict[str, str], path_str: str) -> None:
+    if not path_str:
+        return
+    current = env.get("PATH", "")
+    parts = [p for p in current.split(os.pathsep) if p]
+    if any(p.lower() == path_str.lower() for p in parts):
+        return
+    env["PATH"] = os.pathsep.join([path_str, *parts])
+
+
+def prepare_windows_bash_env(env: dict[str, str], bash_exe: str) -> None:
+    if os.name != "nt":
+        return
+    try:
+        bash_path = Path(bash_exe).resolve()
+    except Exception:
+        return
+
+    # If this is an MSYS2 bash path, ensure both /usr/bin and mingw64/bin are
+    # at the front so coreutils + compiler toolchain commands are available.
+    # Example: C:\msys64\usr\bin\bash.exe
+    if bash_path.name.lower() == "bash.exe" and bash_path.parent.name.lower() == "bin":
+        usr_dir = bash_path.parent
+        if usr_dir.parent.name.lower() == "usr":
+            msys_root = usr_dir.parent.parent
+            mingw64_bin = msys_root / "mingw64" / "bin"
+            if mingw64_bin.is_dir():
+                prepend_path(env, str(mingw64_bin))
+            if usr_dir.is_dir():
+                prepend_path(env, str(usr_dir))
 
 
 def main() -> int:
@@ -41,6 +106,9 @@ def main() -> int:
         backend = "ps1" if os.name == "nt" else "sh"
 
     env = dict(os.environ)
+    python_dir = str(Path(sys.executable).resolve().parent)
+    prepend_path(env, python_dir)
+
     generator = str(args.cmake_generator or env.get("CMAKE_GENERATOR", "")).strip()
     if generator:
         env["CMAKE_GENERATOR"] = generator
@@ -63,7 +131,9 @@ def main() -> int:
         cmd.extend(passthrough)
         return run(cmd, env, repo_root)
 
-    cmd = ["bash", "scripts/build-local.sh"]
+    bash_exe = resolve_bash_executable(env)
+    prepare_windows_bash_env(env, bash_exe)
+    cmd = [bash_exe, "scripts/build-local.sh"]
     cmd.extend(passthrough)
     return run(cmd, env, repo_root)
 
