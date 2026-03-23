@@ -73,81 +73,97 @@ struct Graph {
 //   first line: n l (n nodes, labelled flag=l)
 //   then node lines: d nb1 nb2 ... [optional label at end or separate section]
 
+static vector<int> parseLineInts(const string& line) {
+    vector<int> vals;
+    istringstream iss(line);
+    int v = 0;
+    while (iss >> v) vals.push_back(v);
+    return vals;
+}
+
 static Graph parseLAD(const string& path, bool& isDirected) {
     ifstream f(path);
     if (!f) { cerr << "Cannot open: " << path << "\n"; exit(1); }
 
-    // Collect all tokens (skip # comments)
-    vector<int> nums;
+    // Parse first non-empty numeric line as n.
     string line;
-    bool hasNonNumeric = false;
+    int n = -1;
     while (getline(f, line)) {
         if (!line.empty() && line[0] == '#') continue;
-        istringstream ss(line);
-        string tok;
-        while (ss >> tok) {
-            // check if numeric (possibly negative)
-            bool isNum = !tok.empty();
-            size_t start = (tok[0]=='-'||tok[0]=='+') ? 1 : 0;
-            for (size_t k = start; k < tok.size(); k++)
-                if (!isdigit((unsigned char)tok[k])) { isNum = false; break; }
-            if (isNum) nums.push_back(stoi(tok));
-            else hasNonNumeric = true;
-        }
+        vector<int> vals = parseLineInts(line);
+        if (vals.empty()) continue;
+        n = vals[0];
+        break;
     }
-    (void)hasNonNumeric;
-
-    isDirected = false;
-    size_t pos = 0;
-    auto nextInt = [&]() -> int {
-        if (pos >= nums.size()) return -1;
-        return nums[pos++];
-    };
-    auto peekInt = [&]() -> int {
-        return pos < nums.size() ? nums[pos] : -1;
-    };
-
-    int n = nextInt();
     if (n <= 0) { cerr << "Bad node count in LAD file\n"; exit(1); }
 
-    // Check if second value looks like a "labelled" flag (0 or 1) vs node 0's degree
-    // Heuristic: if second token is 0 or 1 AND then we'd parse n adjacency lists consistently
-    // We just proceed: read n adjacency lines
-    Graph g; g.init(n, false);
-
-    // Try to detect directed flag: some LAD variants have "n directed" header
-    // If next value is 0 or 1 and overall token count suggests it:
-    if (peekInt() == 0 || peekInt() == 1) {
-        // could be directed flag - try both interpretations
-        // simple heuristic: if value is 0 or 1, treat as directed flag only if
-        // remaining tokens would be consistent with n adjacency lines
-        // For safety, just check if it's 0/1 and value seems too small to be a degree
-        int maybe = nextInt(); // consume
-        if (maybe == 1) isDirected = true;
-        g.directed = isDirected;
+    vector<vector<int>> rows;
+    rows.reserve(n);
+    while ((int)rows.size() < n && getline(f, line)) {
+        if (!line.empty() && line[0] == '#') continue;
+        vector<int> vals = parseLineInts(line);
+        if (vals.empty()) continue;
+        rows.push_back(move(vals));
     }
+    while ((int)rows.size() < n) rows.push_back({});
 
-    // Read adjacency lists
-    vector<pair<int,int>> edges;
-    for (int u = 0; u < n; u++) {
-        int d = nextInt();
-        if (d < 0) break;
-        for (int j = 0; j < d; j++) {
-            int v = nextInt();
-            if (v < 0 || v >= n) continue;
-            if (isDirected) {
-                edges.push_back({u, v});
-            } else {
-                if (u < v) edges.push_back({u, v}); // dedup undirected
+    // Distinguish standard LAD row shape from vertex-labelled LAD row shape.
+    int vertexVotes = 0;
+    int standardVotes = 0;
+    for (const auto& row : rows) {
+        if (row.empty()) continue;
+        bool stdShape = row[0] >= 0 && row[0] <= (int)row.size() - 1;
+        bool vtxShape = row.size() >= 2 && row[1] >= 0 && row[1] <= (int)row.size() - 2;
+        if (stdShape && !vtxShape) ++standardVotes;
+        else if (!stdShape && vtxShape) ++vertexVotes;
+        else if (stdShape && vtxShape) {
+            bool stdExact = (row[0] == (int)row.size() - 1);
+            bool vtxExact = (row[1] == (int)row.size() - 2);
+            if (stdExact && !vtxExact) ++standardVotes;
+            else if (!stdExact && vtxExact) ++vertexVotes;
+        }
+    }
+    bool vertexLabelled = vertexVotes > standardVotes;
+    if (vertexVotes == standardVotes) {
+        for (const auto& row : rows) {
+            if (!row.empty() && row[0] != (int)row.size() - 1) {
+                vertexLabelled = true;
+                break;
             }
         }
     }
-    for (auto [u,v] : edges) g.addEdge(u, v);
 
-    // Read optional vertex labels
-    // remaining tokens are labels (one per node) if count >= n
-    if ((int)(nums.size() - pos) >= n) {
-        for (int i = 0; i < n; i++) g.vlabel[i] = nextInt();
+    isDirected = false;
+    Graph g;
+    g.init(n, false);
+    vector<vector<unsigned char>> matrix(n, vector<unsigned char>(n, 0));
+    for (int u = 0; u < n; u++) {
+        const auto& row = rows[u];
+        if (row.empty()) continue;
+        int start = 1;
+        int d = row[0];
+        if (vertexLabelled) {
+            g.vlabel[u] = row[0];
+            d = (row.size() >= 2) ? row[1] : 0;
+            start = 2;
+        }
+        for (int j = 0; j < d; j++) {
+            int idx = start + j;
+            if (idx >= (int)row.size()) break;
+            int v = row[idx];
+            if (v < 0 || v >= n) continue;
+            if (v == u) continue;
+            matrix[u][v] = 1;
+            matrix[v][u] = 1;
+        }
+    }
+
+    for (int u = 0; u < n; u++) {
+        g.adj[u].clear();
+        for (int v = 0; v < n; v++) {
+            if (matrix[u][v]) g.adj[u].push_back(v);
+        }
+        g.deg[u] = (int)g.adj[u].size();
     }
 
     // detect uniform labels
@@ -238,8 +254,6 @@ struct Solver {
                             if (!found) { ok = false; break; }
                         }
                         if (!ok) {
-                            cands[p][w>>0] &= ~(1ULL << bit); // clear this candidate
-                            // w is already the word index, bit is the bit
                             cands[p][w] &= ~(1ULL << bit);
                             changed = true;
                             if (candCount(p) == 0) return false;
@@ -311,10 +325,16 @@ struct Solver {
     // Saves domains for restoration
     bool forwardCheck(int depth, int pNode, int tNode,
                       vector<pair<int,vector<uint64_t>>>& saved) {
+        vector<unsigned char> touched(Pn, 0);
+        auto saveDomain = [&](int p) {
+            if (touched[p]) return;
+            saved.push_back({p, cands[p]});
+            touched[p] = 1;
+        };
         for (int pNb : P.adj[pNode]) {
             if (mapping[pNb] >= 0) continue;
             // tNode must be in T-neighbourhood of candidates
-            auto old = cands[pNb];
+            saveDomain(pNb);
             // intersect cands[pNb] with T.adjBit[tNode]
             bool any = false;
             for (int w = 0; w < tWords; w++) {
@@ -323,18 +343,13 @@ struct Solver {
                 if ((w == (tNode>>6))) cands[pNb][w] &= ~(1ULL<<(tNode&63));
                 if (cands[pNb][w]) any = true;
             }
-            if (!any) {
-                // restore what we've changed so far
-                cands[pNb] = old;
-                return false;
-            }
-            saved.push_back({pNb, old});
+            if (!any) return false;
         }
         // remove tNode from ALL unassigned cands (injectivity)
         for (int p = 0; p < Pn; p++) {
             if (mapping[p] >= 0 || p == pNode) continue;
             if (!((cands[p][tNode>>6] >> (tNode&63)) & 1)) continue;
-            saved.push_back({p, cands[p]});
+            saveDomain(p);
             cands[p][tNode>>6] &= ~(1ULL<<(tNode&63));
             if (candCount(p) == 0) return false;
         }

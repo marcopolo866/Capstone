@@ -463,6 +463,11 @@ def main() -> int:
 
             for row in by_role:
                 command = make_command(row, inputs)
+                print(
+                    f"[dynamic] family={selected_family} iter={iter_idx + 1}/{iterations} "
+                    f"variant={row.variant_id} warmup={warmup}",
+                    flush=True,
+                )
                 if iter_idx == 0:
                     for _ in range(warmup):
                         dur_ms, peak_kb, stdout, stderr, rc = run_with_peak_rss(command)
