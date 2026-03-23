@@ -7,6 +7,8 @@ import json
 import os
 import random
 import re
+import shlex
+import signal
 import statistics
 import subprocess
 import sys
@@ -111,6 +113,46 @@ def normalize_dijkstra_output(text: str) -> str:
             continue
         cleaned.append(line)
     return "\n".join(cleaned).strip()
+
+
+def format_return_code(rc: int) -> str:
+    if rc >= 0:
+        return str(rc)
+    signum = -rc
+    try:
+        sig_name = signal.Signals(signum).name
+    except Exception:
+        sig_name = f"SIG{signum}"
+    return f"{rc} ({sig_name})"
+
+
+def truncate_text(value: str, max_chars: int = 1200) -> str:
+    text = str(value or "").replace("\r", "")
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n...[truncated]..."
+
+
+def build_process_error(prefix: str, row: SolverRow, command: list[str], rc: int, stdout: str, stderr: str) -> str:
+    lines: list[str] = []
+    lines.append(f"{prefix} for {row.variant_id}: code={format_return_code(rc)}")
+    if rc == -4:
+        lines.append(
+            "Hint: SIGILL often means unsupported CPU instructions in the binary "
+            "(for example binaries built with -march=native on a different machine)."
+        )
+    lines.append(f"command: {' '.join(shlex.quote(part) for part in command)}")
+    stderr_text = str(stderr or "").strip()
+    stdout_text = str(stdout or "").strip()
+    if stderr_text:
+        lines.append("stderr:")
+        lines.append(truncate_text(stderr_text))
+    elif stdout_text:
+        lines.append("stdout:")
+        lines.append(truncate_text(stdout_text))
+    else:
+        lines.append("stderr/stdout were empty.")
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -472,10 +514,28 @@ def main() -> int:
                     for _ in range(warmup):
                         dur_ms, peak_kb, stdout, stderr, rc = run_with_peak_rss(command)
                         if rc != 0:
-                            raise RuntimeError(f"Warmup failed for {row.variant_id}: code={rc} stderr={stderr[:300]}")
+                            raise RuntimeError(
+                                build_process_error(
+                                    "Warmup failed",
+                                    row=row,
+                                    command=command,
+                                    rc=rc,
+                                    stdout=stdout,
+                                    stderr=stderr,
+                                )
+                            )
                 dur_ms, peak_kb, stdout, stderr, rc = run_with_peak_rss(command)
                 if rc != 0:
-                    raise RuntimeError(f"{row.variant_id} failed: code={rc} stderr={stderr[:600]}")
+                    raise RuntimeError(
+                        build_process_error(
+                            "Run failed",
+                            row=row,
+                            command=command,
+                            rc=rc,
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+                    )
                 per_solver_times[row.variant_id].append(dur_ms)
                 per_solver_mem[row.variant_id].append(peak_kb)
                 per_solver_outputs[row.variant_id].append((stdout or "") + ("\n" + stderr if stderr else ""))

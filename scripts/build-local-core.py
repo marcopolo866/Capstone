@@ -325,22 +325,59 @@ def run_vf3_smoke_test(python_exe: str, env: dict[str, str]) -> None:
 
 
 def patch_glasgow_submodule() -> None:
-    path = REPO_ROOT / "baselines/glasgow-subgraph-solver/gss/sip_decomposer.cc"
-    text = path.read_text(encoding="utf-8")
-    updated = text
-    updated = updated.replace(
+    patched_any = False
+
+    sip_path = REPO_ROOT / "baselines/glasgow-subgraph-solver/gss/sip_decomposer.cc"
+    sip_text = sip_path.read_text(encoding="utf-8")
+    sip_updated = sip_text
+    sip_updated = sip_updated.replace(
         "n_choose_k<loooong>(unmapped_target_vertices, isolated_pattern_vertices.size());",
         "n_choose_k<loooong>(unmapped_target_vertices, static_cast<unsigned long>(isolated_pattern_vertices.size()));",
     )
-    updated = updated.replace(
+    sip_updated = sip_updated.replace(
         "factorial<loooong>(isolated_pattern_vertices.size());",
         "factorial<loooong>(static_cast<unsigned long>(isolated_pattern_vertices.size()));",
     )
-    if updated != text:
-        path.write_text(updated, encoding="utf-8")
-        print(f"Patched {path}")
+    if sip_updated != sip_text:
+        sip_path.write_text(sip_updated, encoding="utf-8")
+        print(f"Patched {sip_path}")
+        patched_any = True
     else:
-        print(f"No patch changes needed for {path}")
+        print(f"No patch changes needed for {sip_path}")
+
+    cmake_path = REPO_ROOT / "baselines/glasgow-subgraph-solver/CMakeLists.txt"
+    cmake_text = cmake_path.read_text(encoding="utf-8")
+    cmake_updated = cmake_text
+    old_march_block = (
+        "include(CheckCXXCompilerFlag)\n"
+        "unset(COMPILER_SUPPORTS_MARCH_NATIVE CACHE)\n"
+        "CHECK_CXX_COMPILER_FLAG(-march=native COMPILER_SUPPORTS_MARCH_NATIVE)\n"
+        "if (COMPILER_SUPPORTS_MARCH_NATIVE)\n"
+        "    add_compile_options(-march=native)\n"
+        "endif (COMPILER_SUPPORTS_MARCH_NATIVE)\n"
+    )
+    new_march_block = (
+        "include(CheckCXXCompilerFlag)\n"
+        "option(GCS_ENABLE_MARCH_NATIVE \"Enable -march=native optimizations\" ON)\n"
+        "if (GCS_ENABLE_MARCH_NATIVE)\n"
+        "    unset(COMPILER_SUPPORTS_MARCH_NATIVE CACHE)\n"
+        "    CHECK_CXX_COMPILER_FLAG(-march=native COMPILER_SUPPORTS_MARCH_NATIVE)\n"
+        "    if (COMPILER_SUPPORTS_MARCH_NATIVE)\n"
+        "        add_compile_options(-march=native)\n"
+        "    endif (COMPILER_SUPPORTS_MARCH_NATIVE)\n"
+        "endif (GCS_ENABLE_MARCH_NATIVE)\n"
+    )
+    if old_march_block in cmake_updated:
+        cmake_updated = cmake_updated.replace(old_march_block, new_march_block, 1)
+    if cmake_updated != cmake_text:
+        cmake_path.write_text(cmake_updated, encoding="utf-8")
+        print(f"Patched {cmake_path}")
+        patched_any = True
+    else:
+        print(f"No patch changes needed for {cmake_path}")
+
+    if not patched_any:
+        print("No Glasgow submodule patch changes were required.")
 
 
 def maybe_run_glasgow_parity_check(python_exe: str, env: dict[str, str]) -> None:
@@ -394,8 +431,17 @@ def main() -> int:
 
     python_exe = sys.executable
     fast_mode = bool(args.fast or env_truthy(env.get("BUILD_LOCAL_FAST", "")))
+    portable_mode = bool(
+        env_truthy(env.get("BUILD_LOCAL_PORTABLE", ""))
+        or (
+            env_truthy(env.get("GITHUB_ACTIONS", ""))
+            and not env_truthy(env.get("BUILD_LOCAL_ALLOW_NATIVE", ""))
+        )
+    )
     if fast_mode:
         print("BUILD_LOCAL_FAST enabled: skipping VF3 smoke + Glasgow parity checks")
+    if portable_mode:
+        print("BUILD_LOCAL_PORTABLE enabled: disabling Glasgow -march=native for portable binaries")
 
     run_step("Updating submodules", lambda: run_cmd(["git", "submodule", "update", "--init", "--recursive"], env=env))
 
@@ -458,6 +504,7 @@ def main() -> int:
         "baselines/glasgow-subgraph-solver/build",
         "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_CXX_FLAGS=-O3",
+        f"-DGCS_ENABLE_MARCH_NATIVE={'OFF' if portable_mode else 'ON'}",
     ]
     if generator:
         cmake_args.extend(["-G", generator])

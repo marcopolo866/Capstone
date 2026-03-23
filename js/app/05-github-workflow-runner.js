@@ -269,7 +269,25 @@
                 }
                 const message = error && error.message ? error.message : String(error);
                 const elapsedMs = nowMs() - endToEndStartMs;
-                outputDiv.textContent = `Failure: ${message}\n\nTotal end-to-end time: ${formatDurationMs(elapsedMs)}`;
+                const diagnostics = [];
+                if (runCtx && runCtx.requestId) {
+                    diagnostics.push(`Request id: ${runCtx.requestId}`);
+                }
+                if (runCtx && runCtx.mode !== 'local' && progressState.workflowRunId) {
+                    diagnostics.push(`Workflow run id: ${progressState.workflowRunId}`);
+                }
+                const stackText = (error && error.stack) ? String(error.stack) : '';
+                if (stackText && stackText.includes('\n') && stackText !== message) {
+                    const stackLines = stackText.split('\n').slice(1, 5).map(line => line.trim()).filter(Boolean);
+                    if (stackLines.length) {
+                        diagnostics.push('Stack (top):');
+                        diagnostics.push(...stackLines);
+                    }
+                }
+                const diagnosticsBlock = diagnostics.length
+                    ? `\n\nDiagnostics:\n${diagnostics.join('\n')}`
+                    : '';
+                outputDiv.textContent = `Failure: ${message}${diagnosticsBlock}\n\nTotal end-to-end time: ${formatDurationMs(elapsedMs)}`;
                 reportDebugError('runAlgorithm', error, {
                     algorithm: config.selectedAlgorithm,
                     files: config.selectedFiles.map(f => f.path).join(','),
@@ -281,8 +299,7 @@
                 if (!dispatched) {
                     progressClear();
                 } else {
-                    const phaseText = message.length > 120 ? message.slice(0, 117) + '...' : message;
-                    progressSetDeterminate(phaseText, progressState.completed, progressState.total);
+                    progressSetDeterminate('Run failed (see output window for details)', progressState.completed, progressState.total);
                 }
             } finally {
                 if (activeRun === runCtx) {
