@@ -11,12 +11,11 @@ Packaging inputs:
 
 ## Add More Solver Executables
 
-1. Add the binary output path to packager scripts:
-   - Windows: update `binarySpec` in `desktop_runner/build_windows_exe.ps1`
-   - Linux/macOS: update `binary_spec` in `desktop_runner/build_unix_bundle.py`
-2. Add the variant in `desktop_runner/app.py`:
-   - `SOLVER_VARIANTS`
-   - `build_binary_path_map()`
-   - command wiring in `_run_solver_variant()`
+1. Keep baselines hard-wired (`dijkstra_baseline`, `vf3_baseline`, `glasgow_baseline`).
+2. Add LLM source files under `src/` using the naming pattern:
+   - `[ShortestPath][LLM][csv].cpp`
+   - `[SubgraphIsomorphism][LLM][grf].cpp`
+   - `[SubgraphIsomorphism][LLM][lad].cpp`
+3. Build binaries (`scripts/build-local.py`) so each discovered variant has an executable at `src/<family>_<llm>`.
 
-The app then exposes the variant as an individual checkbox on its tab.
+The desktop runner auto-discovers LLM variants from `scripts/solver_discovery.py` (or bundled binaries as fallback) and shows them as individual checkboxes.

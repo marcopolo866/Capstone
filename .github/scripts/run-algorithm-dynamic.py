@@ -198,6 +198,13 @@ def resolve_binary(path_str: str) -> Path:
     raise FileNotFoundError(f"Missing solver binary: {path_str}")
 
 
+def try_resolve_binary(path_str: str) -> Path | None:
+    try:
+        return resolve_binary(path_str)
+    except FileNotFoundError:
+        return None
+
+
 def run_with_peak_rss(command: list[str]) -> tuple[float, int, str, str, int]:
     def read_rss_bytes(pid: int) -> int:
         status_path = Path(f"/proc/{pid}/status")
@@ -330,7 +337,11 @@ def build_variant_metric_key(row: SolverRow) -> str:
 
 
 def make_command(row: SolverRow, inputs: dict[str, Path]) -> list[str]:
-    binary = resolve_binary(row.binary_path)
+    binary_path = Path(row.binary_path)
+    if binary_path.is_absolute():
+        binary = binary_path
+    else:
+        binary = resolve_binary(row.binary_path)
     if row.family == "dijkstra":
         return [str(binary), str(inputs["dijkstra"])]
     if row.family == "vf3":
@@ -393,6 +404,42 @@ def main() -> int:
         baseline_row = next((row for row in by_role if row.role == "baseline"), None)
         if baseline_row is None:
             raise RuntimeError(f"No baseline solver for family '{selected_family}'.")
+
+        # Resolve binaries once up front:
+        # - baseline is mandatory
+        # - non-baseline LLM variants are optional and skipped if their binary is absent
+        available_rows: list[SolverRow] = []
+        skipped_rows: list[str] = []
+        for row in by_role:
+            resolved = try_resolve_binary(row.binary_path)
+            if resolved is None:
+                if row.role == "baseline":
+                    raise RuntimeError(
+                        "Missing baseline solver binary: "
+                        f"{row.binary_path}. Ensure 'Build Binaries' succeeded for this exact commit, "
+                        "then rerun 'Run Algorithm'."
+                    )
+                skipped_rows.append(f"{row.label} ({row.binary_path})")
+                continue
+            available_rows.append(
+                SolverRow(
+                    variant_id=row.variant_id,
+                    family=row.family,
+                    algorithm=row.algorithm,
+                    role=row.role,
+                    label=row.label,
+                    llm_key=row.llm_key,
+                    llm_label=row.llm_label,
+                    binary_path=str(resolved),
+                )
+            )
+
+        by_role = sorted(available_rows, key=lambda row: (row.role != "baseline", row.label.lower()))
+        baseline_row = next((row for row in by_role if row.role == "baseline"), None)
+        if baseline_row is None:
+            raise RuntimeError(
+                f"No runnable baseline solver for family '{selected_family}' after binary resolution."
+            )
 
         input_files_raw = str(os.environ.get("INPUT_FILES_INPUT", "") or "").strip()
         input_files = [part.strip() for part in input_files_raw.split(",") if part.strip()]
@@ -535,6 +582,10 @@ def main() -> int:
         output_lines.append(f"Iterations: {iterations}")
         output_lines.append(f"Warmup: {warmup}")
         output_lines.append(f"Seed used: {base_seed}")
+        if skipped_rows:
+            output_lines.append(f"Skipped optional variants: {len(skipped_rows)}")
+            for item in skipped_rows:
+                output_lines.append(f"  - {item}")
         output_lines.append("")
         for row in by_role:
             key = build_variant_metric_key(row)

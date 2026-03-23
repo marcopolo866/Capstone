@@ -159,6 +159,78 @@ def reset_glasgow_build_dir_if_needed(build_dir: Path, expected_generator: str) 
         shutil.rmtree(build_dir, ignore_errors=True)
 
 
+def _read_cmake_cache_value(cache_text: str, key: str) -> str:
+    prefix = f"{key}:"
+    for line in cache_text.splitlines():
+        if not line.startswith(prefix):
+            continue
+        _, _, value = line.partition("=")
+        return value.strip()
+    return ""
+
+
+def reset_glasgow_build_dir_for_compiler_mismatch(build_dir: Path, env: dict[str, str]) -> None:
+    cache_path = build_dir / "CMakeCache.txt"
+    if not cache_path.is_file():
+        return
+    try:
+        cache_text = cache_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+
+    cached_compiler = _read_cmake_cache_value(cache_text, "CMAKE_CXX_COMPILER")
+    if not cached_compiler:
+        return
+    current_compiler = shutil.which("g++", path=env.get("PATH")) or ""
+    if not current_compiler:
+        return
+
+    try:
+        cached_resolved = str(Path(cached_compiler).resolve())
+    except OSError:
+        cached_resolved = cached_compiler
+    try:
+        current_resolved = str(Path(current_compiler).resolve())
+    except OSError:
+        current_resolved = current_compiler
+
+    if cached_resolved.lower() == current_resolved.lower():
+        return
+
+    print(
+        "Cleaning stale Glasgow CMake build directory (compiler mismatch: "
+        f"'{cached_resolved}' vs '{current_resolved}')"
+    )
+    shutil.rmtree(build_dir, ignore_errors=True)
+
+
+def ensure_glasgow_compiler_runtime_on_path(build_dir: Path, env: dict[str, str]) -> None:
+    cache_path = build_dir / "CMakeCache.txt"
+    if not cache_path.is_file():
+        return
+    try:
+        cache_text = cache_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+
+    cached_compiler = _read_cmake_cache_value(cache_text, "CMAKE_CXX_COMPILER")
+    if not cached_compiler:
+        return
+    try:
+        compiler_bin = Path(cached_compiler).resolve().parent
+    except OSError:
+        return
+    if compiler_bin.is_dir():
+        prepend_path(env, str(compiler_bin))
+
+    # If using MSYS2 MinGW, cc1plus lives under lib/gcc and needs mingw/bin on PATH.
+    compiler_path_lower = str(compiler_bin).lower().replace("\\", "/")
+    if "/msys64/mingw64/bin" in compiler_path_lower:
+        msys_usr = compiler_bin.parent.parent / "usr" / "bin"
+        if msys_usr.is_dir():
+            prepend_path(env, str(msys_usr))
+
+
 def compile_discovered_variants_for_family(catalog: dict, family: str, env: dict[str, str]) -> None:
     rows = [
         row
@@ -392,8 +464,10 @@ def main() -> int:
 
     build_dir = REPO_ROOT / "baselines/glasgow-subgraph-solver/build"
     reset_glasgow_build_dir_if_needed(build_dir, generator)
+    reset_glasgow_build_dir_for_compiler_mismatch(build_dir, env)
 
     run_step("Configuring Glasgow baseline", lambda: run_cmd(cmake_args, env=env))
+    ensure_glasgow_compiler_runtime_on_path(build_dir, env)
     run_step(
         "Building Glasgow baseline",
         lambda: run_cmd(

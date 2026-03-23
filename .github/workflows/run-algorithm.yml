@@ -328,6 +328,18 @@ jobs:
           fi
           exit 0
 
+      - name: Require prebuilt binaries artifact
+        if: ${{ steps.binaries.outputs.READY != '1' }}
+        run: |
+          echo "Required binaries artifact is not available for this commit." >&2
+          echo "Run the 'Build Binaries' workflow on this exact commit, then retry 'Run Algorithm'." >&2
+          if [ -f outputs/binaries_download_error.txt ]; then
+            echo "" >&2
+            echo "Download diagnostics:" >&2
+            cat outputs/binaries_download_error.txt >&2
+          fi
+          exit 1
+
       - name: Run algorithm
         id: run
         if: ${{ env.ALGORITHM_INPUT != 'subgraph' }}

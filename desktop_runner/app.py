@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import concurrent.futures
 import datetime as dt
+import importlib.util
 import json
 import math
 import os
@@ -264,44 +265,60 @@ class DatapointStats:
     seeds: list[int]
 
 
-def _default_solver_rows() -> list[dict]:
+SUPPORTED_FAMILIES = {"dijkstra", "vf3", "glasgow"}
+FAMILY_LABELS = {
+    "dijkstra": "Dijkstra",
+    "vf3": "VF3",
+    "glasgow": "Glasgow",
+}
+
+
+def _baseline_solver_rows() -> list[dict]:
     return [
         {"variant_id": "vf3_baseline", "label": "VF3 Baseline", "family": "vf3", "role": "baseline"},
+        {"variant_id": "glasgow_baseline", "label": "Glasgow Baseline", "family": "glasgow", "role": "baseline"},
+        {"variant_id": "dijkstra_baseline", "label": "Dijkstra Baseline", "family": "dijkstra", "role": "baseline"},
+    ]
+
+
+def _legacy_llm_solver_rows() -> list[dict]:
+    return [
         {"variant_id": "vf3_chatgpt", "label": "VF3 Chatgpt", "family": "vf3", "role": "variant", "llm_key": "chatgpt", "llm_label": "Chatgpt"},
         {"variant_id": "vf3_gemini", "label": "VF3 Gemini", "family": "vf3", "role": "variant", "llm_key": "gemini", "llm_label": "Gemini"},
-        {"variant_id": "glasgow_baseline", "label": "Glasgow Baseline", "family": "glasgow", "role": "baseline"},
         {"variant_id": "glasgow_chatgpt", "label": "Glasgow Chatgpt", "family": "glasgow", "role": "variant", "llm_key": "chatgpt", "llm_label": "Chatgpt"},
         {"variant_id": "glasgow_gemini", "label": "Glasgow Gemini", "family": "glasgow", "role": "variant", "llm_key": "gemini", "llm_label": "Gemini"},
-        {"variant_id": "dijkstra_baseline", "label": "Dijkstra Baseline", "family": "dijkstra", "role": "baseline"},
         {"variant_id": "dijkstra_chatgpt", "label": "Dijkstra Chatgpt", "family": "dijkstra", "role": "variant", "llm_key": "chatgpt", "llm_label": "Chatgpt"},
         {"variant_id": "dijkstra_gemini", "label": "Dijkstra Gemini", "family": "dijkstra", "role": "variant", "llm_key": "gemini", "llm_label": "Gemini"},
     ]
 
 
-def _load_solver_rows_from_manifest() -> list[dict]:
-    manifest_path = resource_root() / "binaries" / "solver_variants.json"
-    if not manifest_path.is_file():
-        return _default_solver_rows()
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _default_solver_rows()
-    rows = payload.get("solvers")
-    if not isinstance(rows, list):
-        return _default_solver_rows()
+def _title_llm_token(token: str) -> str:
+    token = str(token or "").strip().lower()
+    if token == "chatgpt":
+        return "ChatGPT"
+    if token == "claude":
+        return "Claude"
+    if token == "gemini":
+        return "Gemini"
+    parts = [part for part in token.split("_") if part]
+    if not parts:
+        return "Unknown"
+    return " ".join(part[:1].upper() + part[1:] for part in parts)
+
+
+def _normalize_solver_rows(rows: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        variant_id = str(row.get("variant_id") or "").strip()
+        variant_id = str(row.get("variant_id") or "").strip().lower()
         family = str(row.get("family") or "").strip().lower()
-        label = str(row.get("label") or "").strip()
-        if not variant_id or family not in {"dijkstra", "vf3", "glasgow"}:
+        if not variant_id or family not in SUPPORTED_FAMILIES:
             continue
         normalized.append(
             {
                 "variant_id": variant_id,
-                "label": label or variant_id,
+                "label": str(row.get("label") or variant_id).strip() or variant_id,
                 "family": family,
                 "role": str(row.get("role") or "").strip().lower() or "variant",
                 "llm_key": str(row.get("llm_key") or "").strip().lower() or None,
@@ -309,28 +326,212 @@ def _load_solver_rows_from_manifest() -> list[dict]:
                 "binary_name": str(row.get("binary_name") or "").strip() or variant_id,
             }
         )
-    if not normalized:
-        return _default_solver_rows()
     return normalized
+
+
+def _repo_root_candidates() -> list[Path]:
+    seen: set[str] = set()
+    candidates: list[Path] = []
+    base = adjacent_output_base()
+    for root in [Path(__file__).resolve().parent.parent, base, base.parent, Path.cwd().resolve()]:
+        key = str(root).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(root)
+    return candidates
+
+
+def _discover_llm_rows_from_repo() -> list[dict]:
+    for repo_root in _repo_root_candidates():
+        module_path = repo_root / "scripts" / "solver_discovery.py"
+        if not module_path.is_file():
+            continue
+        try:
+            module_name = f"desktop_solver_discovery_{abs(hash(str(module_path)))}"
+            spec = importlib.util.spec_from_file_location(module_name, module_path)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            catalog = module.build_catalog(repo_root)
+        except Exception:
+            continue
+
+        rows: list[dict] = []
+        for row in list(catalog.get("variants") or []):
+            if not isinstance(row, dict):
+                continue
+            family = str(row.get("family") or "").strip().lower()
+            variant_id = str(row.get("variant_id") or "").strip().lower()
+            if family not in SUPPORTED_FAMILIES or not variant_id:
+                continue
+            rows.append(
+                {
+                    "variant_id": variant_id,
+                    "family": family,
+                    "label": str(row.get("label") or variant_id).strip() or variant_id,
+                    "role": "variant",
+                    "llm_key": str(row.get("llm_key") or "").strip().lower() or None,
+                    "llm_label": str(row.get("llm_label") or "").strip() or None,
+                    "binary_name": variant_id,
+                }
+            )
+        normalized = _normalize_solver_rows(rows)
+        if normalized:
+            return normalized
+    return []
+
+
+def _discover_llm_rows_from_binaries() -> list[dict]:
+    binaries_dir = resource_root() / "binaries"
+    if not binaries_dir.is_dir():
+        return []
+    rows: list[dict] = []
+    for entry in binaries_dir.iterdir():
+        if not entry.is_file():
+            continue
+        binary_name = entry.stem.lower() if entry.suffix.lower() == ".exe" else entry.name.lower()
+        match = re.fullmatch(r"(dijkstra|vf3|glasgow)_([a-z0-9_]+)", binary_name)
+        if not match:
+            continue
+        family, llm_key = match.group(1), match.group(2)
+        if llm_key == "baseline":
+            continue
+        family_label = FAMILY_LABELS.get(family, family.upper())
+        llm_label = _title_llm_token(llm_key)
+        rows.append(
+            {
+                "variant_id": f"{family}_{llm_key}",
+                "family": family,
+                "label": f"{family_label} {llm_label}",
+                "role": "variant",
+                "llm_key": llm_key,
+                "llm_label": llm_label,
+                "binary_name": f"{family}_{llm_key}",
+            }
+        )
+    return _normalize_solver_rows(rows)
+
+
+def _default_solver_rows() -> list[dict]:
+    rows = list(_baseline_solver_rows())
+    discovered_llms = _discover_llm_rows_from_repo() or _discover_llm_rows_from_binaries()
+    if discovered_llms:
+        rows.extend(discovered_llms)
+    else:
+        rows.extend(_legacy_llm_solver_rows())
+    return _normalize_solver_rows(rows)
+
+
+def _load_solver_rows_from_manifest() -> list[dict] | None:
+    manifest_path = resource_root() / "binaries" / "solver_variants.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    rows = payload.get("solvers")
+    if not isinstance(rows, list):
+        return None
+    normalized = _normalize_solver_rows(rows)
+    if not normalized:
+        return None
+    return normalized
+
+
+def _load_solver_rows() -> list[dict]:
+    merged: dict[str, dict] = {}
+    for row in _baseline_solver_rows():
+        normalized = _normalize_solver_rows([row])
+        if normalized:
+            merged[normalized[0]["variant_id"]] = normalized[0]
+
+    manifest_rows = _load_solver_rows_from_manifest()
+    if manifest_rows:
+        for row in manifest_rows:
+            merged[row["variant_id"]] = row
+
+    # Auto-discover LLM variants from repo sources first, then bundled binaries.
+    discovered_llm_rows = _discover_llm_rows_from_repo() or _discover_llm_rows_from_binaries()
+    if discovered_llm_rows:
+        for row in discovered_llm_rows:
+            merged[row["variant_id"]] = row
+
+    if len(merged) == len(_baseline_solver_rows()):
+        for row in _legacy_llm_solver_rows():
+            normalized = _normalize_solver_rows([row])
+            if normalized:
+                merged[normalized[0]["variant_id"]] = normalized[0]
+
+    rows = list(merged.values())
+    rows.sort(key=lambda row: (str(row.get("family") or ""), str(row.get("role") or "") != "baseline", str(row.get("label") or "").lower()))
+    return rows
+
+
+def _resolve_binary_for_variant(root: Path, variant_id: str, binary_name: str) -> Path:
+    exe_suffix = ".exe" if sys.platform.startswith("win") else ""
+    candidates: list[Path] = [root / "binaries" / f"{binary_name}{exe_suffix}"]
+
+    # Source-tree fallback for local development runs without a packaged binaries folder.
+    if variant_id == "dijkstra_baseline":
+        candidates.extend([root / "baselines" / "dijkstra", root / "baselines" / "dijkstra.exe"])
+    elif variant_id == "vf3_baseline":
+        candidates.extend([root / "baselines" / "vf3lib" / "bin" / "vf3", root / "baselines" / "vf3lib" / "bin" / "vf3.exe"])
+    elif variant_id == "glasgow_baseline":
+        candidates.extend(
+            [
+                root / "baselines" / "glasgow-subgraph-solver" / "build" / "glasgow_subgraph_solver",
+                root / "baselines" / "glasgow-subgraph-solver" / "build" / "glasgow_subgraph_solver.exe",
+                root / "baselines" / "glasgow-subgraph-solver" / "build" / "Release" / "glasgow_subgraph_solver",
+                root / "baselines" / "glasgow-subgraph-solver" / "build" / "Release" / "glasgow_subgraph_solver.exe",
+                root / "baselines" / "glasgow-subgraph-solver" / "build" / "src" / "glasgow_subgraph_solver",
+                root / "baselines" / "glasgow-subgraph-solver" / "build" / "src" / "glasgow_subgraph_solver.exe",
+                root / "baselines" / "glasgow-subgraph-solver" / "build" / "src" / "Release" / "glasgow_subgraph_solver",
+                root / "baselines" / "glasgow-subgraph-solver" / "build" / "src" / "Release" / "glasgow_subgraph_solver.exe",
+            ]
+        )
+    else:
+        candidates.extend([root / "src" / binary_name, root / "src" / f"{binary_name}.exe"])
+        legacy_aliases = {
+            "dijkstra_chatgpt": ["dijkstra_llm"],
+            "vf3_chatgpt": ["chatvf3"],
+            "vf3_gemini": ["vf3"],
+        }
+        for alias in legacy_aliases.get(variant_id, []):
+            candidates.extend([root / "src" / alias, root / "src" / f"{alias}.exe"])
+
+    seen: set[str] = set()
+    deduped: list[Path] = []
+    for path in candidates:
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    for path in deduped:
+        if path.is_file():
+            return path
+    return deduped[0]
 
 
 def _build_solver_variants_and_binary_map() -> tuple[list[SolverVariant], dict[str, Path]]:
     root = resource_root()
-    binaries_dir = root / "binaries"
-    exe_suffix = ".exe" if sys.platform.startswith("win") else ""
-    rows = _load_solver_rows_from_manifest()
+    rows = _load_solver_rows()
     variants: list[SolverVariant] = []
     binary_map: dict[str, Path] = {}
     for row in rows:
         variant_id = str(row.get("variant_id") or "").strip()
         family = str(row.get("family") or "").strip().lower()
-        if not variant_id or family not in {"dijkstra", "vf3", "glasgow"}:
+        if not variant_id or family not in SUPPORTED_FAMILIES:
             continue
         tab_id = "shortest_path" if family == "dijkstra" else "subgraph"
         label = str(row.get("label") or variant_id)
         variants.append(SolverVariant(variant_id, label, tab_id, family))
         binary_name = str(row.get("binary_name") or variant_id).strip() or variant_id
-        binary_map[variant_id] = binaries_dir / f"{binary_name}{exe_suffix}"
+        binary_map[variant_id] = _resolve_binary_for_variant(root, variant_id, binary_name)
     variants.sort(key=lambda item: (item.tab_id, item.family, item.variant_id != f"{item.family}_baseline", item.label.lower()))
     return variants, binary_map
 
