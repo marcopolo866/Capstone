@@ -593,13 +593,40 @@ def main() -> int:
                 metric_key = key
                 ms = timings_ms.get(metric_key)
                 kb = memory_kb.get(metric_key)
+                ms_stdev = timings_ms_stdev.get(metric_key)
+                kb_stdev = memory_kb_stdev.get(metric_key)
             else:
                 metric_prefix = key
                 if algorithm_input == "subgraph":
                     metric_prefix = f"{selected_family}_{metric_prefix}"
                 ms = timings_ms.get(f"{metric_prefix}_all")
                 kb = memory_kb.get(f"{metric_prefix}_all")
+                ms_stdev = timings_ms_stdev.get(f"{metric_prefix}_all")
+                kb_stdev = memory_kb_stdev.get(f"{metric_prefix}_all")
             output_lines.append(f"[{row.label}] runtime_ms={ms if ms is not None else 'n/a'} peak_rss_kb={kb if kb is not None else 'n/a'}")
+            output_lines.append(f"{row.label} stats:")
+            output_lines.append(
+                f"  runtime_median_ms={ms if ms is not None else 'n/a'} "
+                f"runtime_stdev_ms={ms_stdev if ms_stdev is not None else 'n/a'}"
+            )
+            output_lines.append(
+                f"  peak_rss_median_kb={kb if kb is not None else 'n/a'} "
+                f"peak_rss_stdev_kb={kb_stdev if kb_stdev is not None else 'n/a'}"
+            )
+            output_lines.append(f"  samples={len(per_solver_times.get(row.variant_id, []))}")
+            if row.role != "baseline":
+                match_key = row.llm_key or row.variant_id
+                if algorithm_input == "subgraph":
+                    match_key = row.variant_id
+                match_row = match_counts.get(match_key)
+                if isinstance(match_row, dict):
+                    output_lines.append(
+                        "  equivalence: "
+                        f"matches={match_row.get('matches', 'n/a')} "
+                        f"total={match_row.get('total', 'n/a')} "
+                        f"mismatches={match_row.get('mismatches', 'n/a')}"
+                    )
+            output_lines.append("")
 
     except Exception as exc:
         exit_code = 1
