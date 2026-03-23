@@ -4,8 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import shutil
+import sys
 from pathlib import Path
+
+
+def load_solver_discovery(repo_root: Path):
+    module_path = repo_root / "scripts" / "solver_discovery.py"
+    spec = importlib.util.spec_from_file_location("solver_discovery", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load solver discovery module: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def remove_path(path: Path) -> bool:
@@ -28,32 +41,41 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent
-    paths = [
-        # Native solver outputs
-        repo_root / "baselines/dijkstra",
-        repo_root / "baselines/dijkstra.exe",
-        repo_root / "src/dijkstra_llm",
-        repo_root / "src/dijkstra_llm.exe",
-        repo_root / "src/dijkstra_gemini",
-        repo_root / "src/dijkstra_gemini.exe",
-        repo_root / "src/vf3",
-        repo_root / "src/vf3.exe",
-        repo_root / "src/chatvf3",
-        repo_root / "src/chatvf3.exe",
-        repo_root / "src/glasgow_chatgpt",
-        repo_root / "src/glasgow_chatgpt.exe",
-        repo_root / "src/glasgow_gemini",
-        repo_root / "src/glasgow_gemini.exe",
-        repo_root / "baselines/vf3lib/bin/vf3",
-        repo_root / "baselines/vf3lib/bin/vf3.exe",
-        repo_root / "baselines/glasgow-subgraph-solver/build",
-        # Desktop runner packaging outputs
-        repo_root / "desktop_runner/.staging",
-        # Remove full dist/ to also clean benchmark_output_* folders written
-        # next to packaged runner binaries.
-        repo_root / "dist",
-        repo_root / "build/capstone-benchmark-runner",
-    ]
+    solver_discovery = load_solver_discovery(repo_root)
+    catalog = solver_discovery.build_catalog(repo_root)
+
+    paths = []
+    binary_rel_paths = set()
+    for rel in solver_discovery.iter_binary_paths(catalog, include_baselines=True):
+        binary_rel_paths.add(rel)
+
+    # Legacy binary names kept for cleanup compatibility with older builds.
+    binary_rel_paths.update(
+        {
+            "src/dijkstra_llm",
+            "src/chatvf3",
+            "src/vf3",
+        }
+    )
+
+    for rel in sorted(binary_rel_paths):
+        base = repo_root / rel
+        paths.append(base)
+        paths.append(base.with_suffix(base.suffix + ".exe"))
+
+    paths.extend(
+        [
+            # Glasgow CMake build directory
+            repo_root / "baselines/glasgow-subgraph-solver/build",
+            # Desktop runner packaging outputs
+            repo_root / "desktop_runner/.staging",
+            # Remove full dist/ to also clean benchmark_output_* folders written
+            # next to packaged runner binaries.
+            repo_root / "dist",
+            repo_root / "build/capstone-benchmark-runner",
+            repo_root / "outputs/solver_variants.json",
+        ]
+    )
 
     removed = []
     for path in paths:

@@ -8,12 +8,9 @@ build/
 *.dll
 
 # Local native binaries built into src/ (extensionless on Unix/MSYS)
-src/dijkstra_llm
-src/dijkstra_gemini
-src/chatvf3
-src/vf3
-src/glasgow_chatgpt
-src/glasgow_gemini
+src/dijkstra_*
+src/vf3_*
+src/glasgow_*
 
 # Python cache files
 __pycache__/

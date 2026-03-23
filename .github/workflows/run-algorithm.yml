@@ -260,18 +260,6 @@ jobs:
           with zipfile.ZipFile(zip_path, "r") as zf:
               zf.extractall(".")
 
-          expected = [
-              "baselines/dijkstra",
-              "src/dijkstra_llm",
-              "src/dijkstra_gemini",
-              "src/vf3",
-              "src/chatvf3",
-              "src/glasgow_chatgpt",
-              "src/glasgow_gemini",
-              "baselines/vf3lib/bin/vf3",
-              "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver",
-          ]
-
           def sha256(path: Path) -> str:
               digest = hashlib.sha256()
               with path.open("rb") as handle:
@@ -281,20 +269,6 @@ jobs:
                           break
                       digest.update(block)
               return digest.hexdigest()
-
-          missing = []
-          for rel in expected:
-              p = Path(rel)
-              if not p.exists():
-                  missing.append(rel)
-                  continue
-              mode = p.stat().st_mode
-              p.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-          if missing:
-              raise SystemExit(
-                  f"Missing expected binaries after extraction: {', '.join(missing)}"
-              )
 
           manifest_path = Path("outputs/binaries_manifest.json")
           if not manifest_path.is_file():
@@ -308,26 +282,34 @@ jobs:
               )
 
           source_checks = manifest.get("sources") or {}
-          for rel in ("src/[SubgraphIsomorphism][CHATGPT][lad].cpp", "src/[SubgraphIsomorphism][GEMINI][lad].cpp"):
-              expected_sha = str(source_checks.get(rel) or "").strip()
-              if not expected_sha:
-                  raise SystemExit(f"Manifest missing source hash for: {rel}")
-              actual_sha = sha256(Path(rel))
-              if actual_sha != expected_sha:
+          for rel, expected_sha in source_checks.items():
+              p = Path(rel)
+              if not p.is_file():
+                  raise SystemExit(f"Manifest references missing source: {rel}")
+              actual_sha = sha256(p)
+              if actual_sha != str(expected_sha):
                   raise SystemExit(
                       f"Source hash mismatch for {rel}: expected={expected_sha} actual={actual_sha}"
                   )
 
           binary_checks = manifest.get("binaries") or {}
+          missing = []
           for rel, expected_sha in binary_checks.items():
               p = Path(rel)
               if not p.is_file():
-                  raise SystemExit(f"Manifest references missing binary: {rel}")
+                  missing.append(rel)
+                  continue
+              mode = p.stat().st_mode
+              p.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
               actual_sha = sha256(p)
               if actual_sha != str(expected_sha):
                   raise SystemExit(
                       f"Binary hash mismatch for {rel}: expected={expected_sha} actual={actual_sha}"
                   )
+          if missing:
+              raise SystemExit(
+                  "Missing expected binaries after extraction: " + ", ".join(missing)
+              )
 
           print(
               "Downloaded binaries artifact from "
@@ -352,7 +334,7 @@ jobs:
         env:
           BINARIES_READY: ${{ steps.binaries.outputs.READY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: &run_algorithm_script bash --noprofile --norc -eo pipefail .github/scripts/run-algorithm-step.sh
+        run: &run_algorithm_script python3 .github/scripts/run-algorithm-dynamic.py
       - name: Run subgraph phase 1 (VF3)
         id: run_subgraph_vf3
         if: ${{ env.ALGORITHM_INPUT == 'subgraph' }}
@@ -448,7 +430,7 @@ jobs:
           VF3_GEMINI_TOTAL: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_TOTAL }}
           VF3_GEMINI_MISMATCH: ${{ steps.run_subgraph_vf3.outputs.VF3_GEMINI_MISMATCH }}
 
-        run: &create_result_json_script bash --noprofile --norc -eo pipefail .github/scripts/create-result-json-step.sh
+        run: &create_result_json_script python3 .github/scripts/create-result-json-step.py
       - name: Upload algorithm result (VF3 phase)
         if: ${{ always() && env.ALGORITHM_INPUT == 'subgraph' }}
         uses: actions/upload-artifact@v4

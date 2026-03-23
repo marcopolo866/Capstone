@@ -10,12 +10,7 @@ on:
       - 'baselines/**'
       - 'wasm/allocator_telemetry.cpp'
       - 'wasm/vf3_baseline_main.cpp'
-      - 'src/\[ShortestPath\]\[CHATGPT\]\[csv\].cpp'
-      - 'src/\[ShortestPath\]\[GEMINI\]\[csv\].cpp'
-      - 'src/\[SubgraphIsomorphism\]\[CHATGPT\]\[grf\].cpp'
-      - 'src/\[SubgraphIsomorphism\]\[GEMINI\]\[grf\].cpp'
-      - 'src/\[SubgraphIsomorphism\]\[CHATGPT\]\[lad\].cpp'
-      - 'src/\[SubgraphIsomorphism\]\[GEMINI\]\[lad\].cpp'
+      - 'src/*.cpp'
 
 jobs:
   build-wasm:
@@ -167,26 +162,6 @@ jobs:
             -s EXPORT_NAME=createVf3BaselineModule \
             -o "wasm/vf3_baseline.js"
 
-          echo "Building VF3 Gemini..."
-          em++ -std=c++17 \
-            "${common_flags[@]}" \
-            "${telemetry_flags[@]}" \
-            -fexceptions \
-            -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[SubgraphIsomorphism][GEMINI][grf].cpp" \
-            -s EXPORT_NAME=createVf3GeminiModule \
-            -o "wasm/vf3_gemini.js"
-
-          echo "Building VF3 ChatGPT..."
-          em++ -std=c++17 \
-            "${common_flags[@]}" \
-            "${telemetry_flags[@]}" \
-            -fexceptions \
-            -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[SubgraphIsomorphism][CHATGPT][grf].cpp" \
-            -s EXPORT_NAME=createVf3ChatgptModule \
-            -o "wasm/vf3_chatgpt.js"
-
           echo "Building Dijkstra baseline..."
           em++ -std=c++17 \
             "${common_flags[@]}" \
@@ -198,45 +173,36 @@ jobs:
             -s EXPORT_NAME=createDijkstraBaselineModule \
             -o "wasm/dijkstra_baseline.js"
 
-          echo "Building Dijkstra ChatGPT..."
-          em++ -std=c++17 \
-            "${common_flags[@]}" \
-            "${telemetry_flags[@]}" \
-            -fexceptions \
-            -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[ShortestPath][CHATGPT][csv].cpp" \
-            -s EXPORT_NAME=createDijkstraLlmModule \
-            -o "wasm/dijkstra_llm.js"
+          echo "Building discovered solver variants..."
+          while IFS='|' read -r label source script_out export_name; do
+            if [ -z "${source:-}" ] || [ -z "${script_out:-}" ] || [ -z "${export_name:-}" ]; then
+              continue
+            fi
+            echo "Building ${label}..."
+            em++ -std=c++17 \
+              "${common_flags[@]}" \
+              "${telemetry_flags[@]}" \
+              -fexceptions \
+              -s DISABLE_EXCEPTION_CATCHING=0 \
+              "$source" \
+              -s EXPORT_NAME="$export_name" \
+              -o "$script_out"
+          done < <(python3 - <<'PY'
+          from pathlib import Path
+          import scripts.solver_discovery as sd
 
-          echo "Building Dijkstra Gemini..."
-          em++ -std=c++17 \
-            "${common_flags[@]}" \
-            "${telemetry_flags[@]}" \
-            -fexceptions \
-            -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[ShortestPath][GEMINI][csv].cpp" \
-            -s EXPORT_NAME=createDijkstraGeminiModule \
-            -o "wasm/dijkstra_gemini.js"
-
-          echo "Building Glasgow ChatGPT..."
-          em++ -std=c++17 \
-            "${common_flags[@]}" \
-            "${telemetry_flags[@]}" \
-            -fexceptions \
-            -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[SubgraphIsomorphism][CHATGPT][lad].cpp" \
-            -s EXPORT_NAME=createGlasgowChatgptModule \
-            -o "wasm/glasgow_chatgpt.js"
-
-          echo "Building Glasgow Gemini..."
-          em++ -std=c++17 \
-            "${common_flags[@]}" \
-            "${telemetry_flags[@]}" \
-            -fexceptions \
-            -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[SubgraphIsomorphism][GEMINI][lad].cpp" \
-            -s EXPORT_NAME=createGlasgowGeminiModule \
-            -o "wasm/glasgow_gemini.js"
+          catalog = sd.build_catalog(Path(".").resolve())
+          variants = list(catalog.get("variants", []))
+          variants.sort(key=lambda row: (str(row.get("family", "")), str(row.get("llm_label", "")).lower()))
+          for row in variants:
+              label = str(row.get("label") or row.get("variant_id") or "variant")
+              source = str(row.get("source_path") or "").strip()
+              script_out = str(row.get("wasm_script_path") or "").strip()
+              export_name = str(row.get("wasm_factory_name") or "").strip()
+              if source and script_out and export_name:
+                  print(f"{label}|{source}|{script_out}|{export_name}")
+          PY
+          )
 
       - name: Attempt experimental baseline Glasgow WASM build
         continue-on-error: true
@@ -398,18 +364,22 @@ jobs:
           import json
           import os
           from pathlib import Path
+          import scripts.solver_discovery as solver_discovery
 
+          repo_root = Path(".").resolve()
+          catalog = solver_discovery.build_catalog(repo_root)
           candidates = {
               "dijkstra_baseline": ("wasm/dijkstra_baseline.js", "wasm/dijkstra_baseline.wasm", "createDijkstraBaselineModule"),
-              "dijkstra_llm": ("wasm/dijkstra_llm.js", "wasm/dijkstra_llm.wasm", "createDijkstraLlmModule"),
-              "dijkstra_gemini": ("wasm/dijkstra_gemini.js", "wasm/dijkstra_gemini.wasm", "createDijkstraGeminiModule"),
               "vf3_baseline": ("wasm/vf3_baseline.js", "wasm/vf3_baseline.wasm", "createVf3BaselineModule"),
-              "vf3_gemini": ("wasm/vf3_gemini.js", "wasm/vf3_gemini.wasm", "createVf3GeminiModule"),
-              "vf3_chatgpt": ("wasm/vf3_chatgpt.js", "wasm/vf3_chatgpt.wasm", "createVf3ChatgptModule"),
-              "glasgow_chatgpt": ("wasm/glasgow_chatgpt.js", "wasm/glasgow_chatgpt.wasm", "createGlasgowChatgptModule"),
-              "glasgow_gemini": ("wasm/glasgow_gemini.js", "wasm/glasgow_gemini.wasm", "createGlasgowGeminiModule"),
-              "glasgow_baseline": ("wasm/glasgow_baseline.js", "wasm/glasgow_baseline.wasm", "createGlasgowBaselineModule"),
           }
+          for row in catalog.get("variants", []):
+              module_id = str(row.get("wasm_module_id") or "").strip()
+              script_path = str(row.get("wasm_script_path") or "").strip()
+              wasm_path = str(row.get("wasm_wasm_path") or "").strip()
+              factory_name = str(row.get("wasm_factory_name") or "").strip()
+              if module_id and script_path and wasm_path and factory_name:
+                  candidates[module_id] = (script_path, wasm_path, factory_name)
+          candidates["glasgow_baseline"] = ("wasm/glasgow_baseline.js", "wasm/glasgow_baseline.wasm", "createGlasgowBaselineModule")
           modules = {}
           for module_id, (script_path, wasm_path, factory_name) in candidates.items():
               if not Path(script_path).exists() or not Path(wasm_path).exists():
@@ -428,6 +398,7 @@ jobs:
               "git_sha": os.environ.get("GITHUB_SHA", ""),
               "git_ref_name": os.environ.get("GITHUB_REF_NAME", ""),
               "modules": modules,
+              "solver_variants": catalog.get("solvers", []),
           }
 
           Path("wasm").mkdir(parents=True, exist_ok=True)

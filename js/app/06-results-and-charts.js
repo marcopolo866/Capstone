@@ -121,6 +121,65 @@
             return { runtime, memory: mem };
         }
 
+        function buildDynamicVariantRows(result) {
+            if (!result || typeof result !== 'object') return [];
+            const variantMeta = Array.isArray(result.variant_metadata) ? result.variant_metadata : null;
+            if (!variantMeta || !variantMeta.length) return [];
+            const timings = result && result.timings_ms ? result.timings_ms : {};
+            const timingsStdev = result && result.timings_ms_stdev ? result.timings_ms_stdev : {};
+            const memory = result && result.memory_kb ? result.memory_kb : {};
+            const memoryStdev = result && result.memory_kb_stdev ? result.memory_kb_stdev : {};
+
+            const toNum = (raw) => {
+                if (raw === null || raw === undefined || raw === '') return null;
+                const num = Number(raw);
+                return Number.isFinite(num) ? num : null;
+            };
+            const pick = (obj, key) => {
+                if (!obj || !key || !Object.prototype.hasOwnProperty.call(obj, key)) return null;
+                return toNum(obj[key]);
+            };
+            const rows = [];
+            for (const raw of variantMeta) {
+                const entry = (raw && typeof raw === 'object') ? raw : null;
+                if (!entry) continue;
+                const label = String(entry.label || entry.variant_id || '').trim();
+                if (!label) continue;
+
+                const timingKeys = (entry.timing_keys && typeof entry.timing_keys === 'object') ? entry.timing_keys : null;
+                const memoryKeys = (entry.memory_keys && typeof entry.memory_keys === 'object') ? entry.memory_keys : null;
+                const timingKeySingle = String(entry.timing_key || '').trim();
+                const memoryKeySingle = String(entry.memory_key || '').trim();
+
+                const tFirstKey = timingKeys ? String(timingKeys.first || '').trim() : '';
+                const tAllKey = timingKeys ? String(timingKeys.all || '').trim() : '';
+                const mFirstKey = memoryKeys ? String(memoryKeys.first || '').trim() : '';
+                const mAllKey = memoryKeys ? String(memoryKeys.all || '').trim() : '';
+
+                const runtimeFirst = pick(timings, tFirstKey);
+                const runtimeFirstStdev = pick(timingsStdev, tFirstKey);
+                const runtimeAll = pick(timings, tAllKey) ?? pick(timings, timingKeySingle);
+                const runtimeAllStdev = pick(timingsStdev, tAllKey) ?? pick(timingsStdev, timingKeySingle);
+                const memoryFirst = pick(memory, mFirstKey);
+                const memoryFirstStdev = pick(memoryStdev, mFirstKey);
+                const memoryAll = pick(memory, mAllKey) ?? pick(memory, memoryKeySingle);
+                const memoryAllStdev = pick(memoryStdev, mAllKey) ?? pick(memoryStdev, memoryKeySingle);
+
+                rows.push({
+                    label,
+                    runtimeFirst,
+                    runtimeFirstStdev,
+                    runtimeAll,
+                    runtimeAllStdev,
+                    memoryFirst,
+                    memoryFirstStdev,
+                    memoryAll,
+                    memoryAllStdev
+                });
+            }
+            return rows;
+        }
+
         let runtimeChartInstance = null;
         let memoryChartInstance = null;
         let lastResult = null; // stored for export
@@ -549,6 +608,75 @@
             const memoryTitle = (result && typeof result.memory_metric_label === 'string' && result.memory_metric_label.trim())
                 ? result.memory_metric_label.trim()
                 : 'Memory';
+
+            const dynamicRows = buildDynamicVariantRows(result);
+            if (dynamicRows.length) {
+                const hasRuntimeFirst = dynamicRows.some(row => Number.isFinite(Number(row.runtimeFirst)));
+                const runtimeLabels = dynamicRows.map(row => row.label);
+                const runtimeSingle = dynamicRows.map(row => ({
+                    label: row.label,
+                    value: Number.isFinite(Number(row.runtimeAll)) ? Number(row.runtimeAll) : row.runtimeFirst,
+                    stdev: Number.isFinite(Number(row.runtimeAll)) ? row.runtimeAllStdev : row.runtimeFirstStdev
+                })).filter(item => Number.isFinite(Number(item.value)));
+                const runtimeFirstVals = dynamicRows.map(row => (Number.isFinite(Number(row.runtimeFirst)) ? Number(row.runtimeFirst) : null));
+                const runtimeFirstErrs = dynamicRows.map(row => {
+                    const value = Number.isFinite(Number(row.runtimeFirst)) ? Number(row.runtimeFirst) : null;
+                    if (!Number.isFinite(value)) return null;
+                    return Number.isFinite(Number(row.runtimeFirstStdev)) ? Number(row.runtimeFirstStdev) : 0;
+                });
+                const runtimeAllVals = dynamicRows.map(row => {
+                    if (Number.isFinite(Number(row.runtimeAll))) return Number(row.runtimeAll);
+                    if (Number.isFinite(Number(row.runtimeFirst))) return Number(row.runtimeFirst);
+                    return null;
+                });
+                const runtimeAllErrs = dynamicRows.map(row => {
+                    const v = Number.isFinite(Number(row.runtimeAll)) ? Number(row.runtimeAll) : row.runtimeFirst;
+                    if (!Number.isFinite(Number(v))) return null;
+                    if (Number.isFinite(Number(row.runtimeAllStdev))) return Number(row.runtimeAllStdev);
+                    if (Number.isFinite(Number(row.runtimeFirstStdev))) return Number(row.runtimeFirstStdev);
+                    return 0;
+                });
+
+                const memoryData = dynamicRows.map(row => {
+                    const value = Number.isFinite(Number(row.memoryAll)) ? Number(row.memoryAll) : row.memoryFirst;
+                    const stdev = Number.isFinite(Number(row.memoryAllStdev)) ? Number(row.memoryAllStdev) : row.memoryFirstStdev;
+                    return { label: row.label, value, stdev };
+                }).filter(item => Number.isFinite(Number(item.value)));
+
+                if (runtimeChartInstance) runtimeChartInstance.destroy();
+                if (memoryChartInstance) memoryChartInstance.destroy();
+
+                if (hasRuntimeFirst) {
+                    runtimeChartInstance = renderGroupedBarChart('runtime-chart', runtimeLabels, [
+                        {
+                            label: 'First',
+                            values: runtimeFirstVals,
+                            errors: runtimeFirstErrs,
+                            backgroundColor: '#7aa6c2',
+                            borderColor: '#5e869f'
+                        },
+                        {
+                            label: 'All',
+                            values: runtimeAllVals,
+                            errors: runtimeAllErrs,
+                            backgroundColor: '#e5a06a',
+                            borderColor: '#c98453'
+                        }
+                    ], 'ms');
+                } else {
+                    runtimeChartInstance = runtimeSingle.length
+                        ? renderBarChart('runtime-chart', runtimeSingle, 'ms', 'Runtime')
+                        : null;
+                }
+
+                memoryChartInstance = memoryData.length
+                    ? renderBarChart('memory-chart', memoryData, memoryUnit, memoryTitle)
+                    : null;
+                lastResult = result;
+                charts.hidden = false;
+                renderExportButtons(result);
+                return;
+            }
 
             if (result && result.algorithm === 'subgraph') {
                 const timings = result.timings_ms || {};

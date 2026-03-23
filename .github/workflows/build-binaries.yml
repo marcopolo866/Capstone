@@ -34,6 +34,7 @@ jobs:
           import json
           import os
           from pathlib import Path
+          import scripts.solver_discovery as solver_discovery
 
           def sha256(path: Path) -> str:
               h = hashlib.sha256()
@@ -45,23 +46,17 @@ jobs:
                       h.update(block)
               return h.hexdigest()
 
-          source_paths = [
-              "src/[SubgraphIsomorphism][CHATGPT][lad].cpp",
-              "src/[SubgraphIsomorphism][GEMINI][lad].cpp",
-          ]
-          binary_paths = [
-              "src/glasgow_chatgpt",
-              "src/glasgow_gemini",
-              "baselines/vf3lib/bin/vf3",
-              "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver",
-              "src/chatvf3",
-              "src/vf3",
-          ]
+          repo_root = Path(".").resolve()
+          catalog = solver_discovery.build_catalog(repo_root)
+          source_paths = [str(row["source_path"]) for row in catalog.get("variants", [])]
+          binary_paths = list(solver_discovery.iter_binary_paths(catalog, include_baselines=True))
 
           manifest = {
               "commit_sha": os.environ.get("GITHUB_SHA", ""),
               "sources": {},
               "binaries": {},
+              "solver_catalog_schema_version": catalog.get("schema_version", 1),
+              "solver_variants": catalog.get("solvers", []),
           }
           for rel in source_paths:
               path = Path(rel)
@@ -77,6 +72,16 @@ jobs:
           out = Path("outputs/binaries_manifest.json")
           out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           print(f"Wrote {out}")
+          Path("outputs/solver_variants.json").write_text(
+              json.dumps(
+                  {
+                      "schema_version": catalog.get("schema_version", 1),
+                      "solvers": catalog.get("solvers", []),
+                  },
+                  indent=2,
+              ) + "\n",
+              encoding="utf-8",
+          )
           PY
 
       - name: Upload binaries
@@ -85,14 +90,12 @@ jobs:
           name: algorithm-binaries-linux
           path: |
             baselines/dijkstra
-            src/dijkstra_llm
-            src/dijkstra_gemini
-            src/vf3
-            src/chatvf3
-            src/glasgow_chatgpt
-            src/glasgow_gemini
+            src/dijkstra_*
+            src/vf3_*
+            src/glasgow_*
             baselines/vf3lib/bin/vf3
             baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver
             outputs/binaries_manifest.json
+            outputs/solver_variants.json
           if-no-files-found: error
           retention-days: 90

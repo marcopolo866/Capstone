@@ -79,7 +79,10 @@ function Invoke-StagedVf3SmokeTest {
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$StagingBin
     )
-    $vf3Path = Join-Path $StagingBin "vf3.exe"
+    $vf3Path = Join-Path $StagingBin "vf3_baseline.exe"
+    if (-not (Test-Path -LiteralPath $vf3Path -PathType Leaf)) {
+        $vf3Path = Join-Path $StagingBin "vf3.exe"
+    }
     if (-not (Test-Path -LiteralPath $vf3Path -PathType Leaf)) {
         throw "Staged VF3 baseline binary missing: $vf3Path"
     }
@@ -169,22 +172,55 @@ sys.exit(0)
     }
 }
 
-$binarySpec = @(
-    @{ Out = "dijkstra.exe"; Candidates = @("baselines/dijkstra") },
-    @{ Out = "dijkstra_llm.exe"; Candidates = @("src/dijkstra_llm") },
-    @{ Out = "dijkstra_gemini.exe"; Candidates = @("src/dijkstra_gemini") },
-    @{ Out = "vf3.exe"; Candidates = @("baselines/vf3lib/bin/vf3") },
-    @{ Out = "chatvf3.exe"; Candidates = @("src/chatvf3") },
-    @{ Out = "vf3_gemini.exe"; Candidates = @("src/vf3") },
-    @{ Out = "glasgow_subgraph_solver.exe"; Candidates = @(
-        "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver",
-        "baselines/glasgow-subgraph-solver/build/Release/glasgow_subgraph_solver",
-        "baselines/glasgow-subgraph-solver/build/src/glasgow_subgraph_solver",
-        "baselines/glasgow-subgraph-solver/build/src/Release/glasgow_subgraph_solver"
-    ) },
-    @{ Out = "glasgow_chatgpt.exe"; Candidates = @("src/glasgow_chatgpt") },
-    @{ Out = "glasgow_gemini.exe"; Candidates = @("src/glasgow_gemini") }
-)
+$discoveryRaw = & python "scripts/solver_discovery.py"
+if (-not $?) {
+    throw "Failed to discover solver variants from scripts/solver_discovery.py"
+}
+$discoveryJson = ($discoveryRaw -join "`n")
+try {
+    $convertFromJson = Get-Command ConvertFrom-Json -ErrorAction Stop
+    if ($convertFromJson.Parameters.ContainsKey("Depth")) {
+        $discovery = $discoveryJson | ConvertFrom-Json -Depth 16
+    } else {
+        # Windows PowerShell 5.1 does not support ConvertFrom-Json -Depth.
+        $discovery = $discoveryJson | ConvertFrom-Json
+    }
+} catch {
+    throw "Failed to parse solver discovery JSON: $($_.Exception.Message)"
+}
+
+$binarySpec = @()
+foreach ($row in @($discovery.solvers)) {
+    if (-not $row) { continue }
+    $variantId = [string]$row.variant_id
+    $binaryPath = [string]$row.binary_path
+    if (-not $variantId -or -not $binaryPath) { continue }
+    $candidates = @($binaryPath)
+    if ($variantId -eq "glasgow_baseline") {
+        $candidates += @(
+            "baselines/glasgow-subgraph-solver/build/Release/glasgow_subgraph_solver",
+            "baselines/glasgow-subgraph-solver/build/src/glasgow_subgraph_solver",
+            "baselines/glasgow-subgraph-solver/build/src/Release/glasgow_subgraph_solver"
+        )
+    } elseif ($variantId -eq "dijkstra_chatgpt") {
+        $candidates += @("src/dijkstra_llm")
+    } elseif ($variantId -eq "vf3_chatgpt") {
+        $candidates += @("src/chatvf3")
+    } elseif ($variantId -eq "vf3_gemini") {
+        $candidates += @("src/vf3")
+    }
+    $binarySpec += @{
+        Out = "$variantId.exe"
+        VariantId = $variantId
+        Candidates = $candidates
+        Family = [string]$row.family
+        Algorithm = [string]$row.algorithm
+        Role = [string]$row.role
+        Label = [string]$row.label
+        LlmKey = if ($null -ne $row.llm_key) { [string]$row.llm_key } else { $null }
+        LlmLabel = if ($null -ne $row.llm_label) { [string]$row.llm_label } else { $null }
+    }
+}
 
 $stagingRoot = Join-Path $repoRoot "desktop_runner/.staging"
 $stagingBin = Join-Path $stagingRoot "binaries"
@@ -204,6 +240,25 @@ foreach ($spec in $binarySpec) {
     Write-Host ("Using binary {0}: {1}" -f $spec.Out, $resolved)
     Copy-Item -LiteralPath $resolved -Destination (Join-Path $stagingBin $spec.Out) -Force
 }
+
+$solverManifest = @{
+    schema_version = 1
+    solvers = @()
+}
+foreach ($spec in $binarySpec) {
+    $solverManifest.solvers += @{
+        variant_id = $spec.VariantId
+        family = $spec.Family
+        algorithm = $spec.Algorithm
+        role = $spec.Role
+        label = $spec.Label
+        llm_key = $spec.LlmKey
+        llm_label = $spec.LlmLabel
+        binary_name = $spec.VariantId
+    }
+}
+$manifestPath = Join-Path $stagingBin "solver_variants.json"
+$solverManifest | ConvertTo-Json -Depth 16 | Out-File -FilePath $manifestPath -Encoding utf8
 
 $mingwRoot = Resolve-MingwRoot
 Write-Host "Using MinGW runtime root: $mingwRoot"

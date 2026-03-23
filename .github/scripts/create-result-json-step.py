@@ -31,6 +31,16 @@ def load_merged_env():
 
 env = load_merged_env()
 
+
+def parse_json_env(name: str):
+    raw = env.get(name, "")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
 algorithm = env.get("ALGORITHM_INPUT", "")
 exit_code = env.get("EXIT_CODE", "")
 request_id = env.get("REQUEST_ID_INPUT", "")
@@ -134,6 +144,9 @@ if seed_used:
         inputs["seed"] = seed_used
 if inputs:
     data["inputs"] = inputs
+variant_metadata = parse_json_env("VARIANT_METADATA_JSON")
+if isinstance(variant_metadata, list):
+    data["variant_metadata"] = variant_metadata
 iterations = env.get("ITERATIONS", "").strip()
 if iterations:
     try:
@@ -152,8 +165,10 @@ if duration_ms:
         data["run_duration_ms"] = float(duration_ms)
     except ValueError:
         pass
-timings_ms = {}
-if algorithm == "dijkstra":
+timings_ms = parse_json_env("TIMINGS_MS_JSON")
+if not isinstance(timings_ms, dict):
+    timings_ms = {}
+if not timings_ms and algorithm == "dijkstra":
     baseline = env.get("DIJKSTRA_BASELINE_MS", "")
     llm = env.get("DIJKSTRA_LLM_MS", "")
     gemini = env.get("DIJKSTRA_GEMINI_MS", "")
@@ -164,7 +179,7 @@ if algorithm == "dijkstra":
         timings_ms["chatgpt"] = float(llm)
     if gemini:
         timings_ms["gemini"] = float(gemini)
-elif algorithm == "glasgow":
+elif not timings_ms and algorithm == "glasgow":
     first = env.get("GLASGOW_FIRST_MS", "")
     all_ms = env.get("GLASGOW_ALL_MS", "")
     if first:
@@ -183,7 +198,7 @@ elif algorithm == "glasgow":
         timings_ms["chatgpt_first"] = float(chatgpt_first)
     if chatgpt_all:
         timings_ms["chatgpt_all"] = float(chatgpt_all)
-elif algorithm == "vf3":
+elif not timings_ms and algorithm == "vf3":
     def maybe_add(name: str, key: str) -> None:
         value = env.get(key, "")
         if value:
@@ -195,7 +210,7 @@ elif algorithm == "vf3":
     maybe_add("gemini_all", "VF3_GEMINI_ALL_MS")
     maybe_add("chatgpt_first", "VF3_CHATGPT_FIRST_MS")
     maybe_add("chatgpt_all", "VF3_CHATGPT_ALL_MS")
-elif algorithm == "subgraph":
+elif not timings_ms and algorithm == "subgraph":
     def maybe_add(name: str, key: str) -> None:
         value = env.get(key, "")
         if value:
@@ -219,8 +234,10 @@ if algorithm == "subgraph":
 if timings_ms:
     data["timings_ms"] = timings_ms
 
-timings_ms_stdev = {}
-if algorithm == "dijkstra":
+timings_ms_stdev = parse_json_env("TIMINGS_MS_STDEV_JSON")
+if not isinstance(timings_ms_stdev, dict):
+    timings_ms_stdev = {}
+if not timings_ms_stdev and algorithm == "dijkstra":
     baseline = env.get("DIJKSTRA_BASELINE_MS_STDEV", "")
     llm = env.get("DIJKSTRA_LLM_MS_STDEV", "")
     gemini = env.get("DIJKSTRA_GEMINI_MS_STDEV", "")
@@ -231,7 +248,7 @@ if algorithm == "dijkstra":
         timings_ms_stdev["chatgpt"] = float(llm)
     if gemini:
         timings_ms_stdev["gemini"] = float(gemini)
-elif algorithm == "glasgow":
+elif not timings_ms_stdev and algorithm == "glasgow":
     first = env.get("GLASGOW_FIRST_MS_STDEV", "")
     all_ms = env.get("GLASGOW_ALL_MS_STDEV", "")
     if first:
@@ -250,7 +267,7 @@ elif algorithm == "glasgow":
         timings_ms_stdev["chatgpt_first"] = float(chatgpt_first)
     if chatgpt_all:
         timings_ms_stdev["chatgpt_all"] = float(chatgpt_all)
-elif algorithm == "vf3":
+elif not timings_ms_stdev and algorithm == "vf3":
     def maybe_add_stdev(name: str, key: str) -> None:
         value = env.get(key, "")
         if value:
@@ -262,7 +279,7 @@ elif algorithm == "vf3":
     maybe_add_stdev("gemini_all", "VF3_GEMINI_ALL_MS_STDEV")
     maybe_add_stdev("chatgpt_first", "VF3_CHATGPT_FIRST_MS_STDEV")
     maybe_add_stdev("chatgpt_all", "VF3_CHATGPT_ALL_MS_STDEV")
-elif algorithm == "subgraph":
+elif not timings_ms_stdev and algorithm == "subgraph":
     def maybe_add_stdev(name: str, key: str) -> None:
         value = env.get(key, "")
         if value:
@@ -283,8 +300,10 @@ elif algorithm == "subgraph":
 if timings_ms_stdev:
     data["timings_ms_stdev"] = timings_ms_stdev
 
-memory_kb = {}
-if algorithm == "dijkstra":
+memory_kb = parse_json_env("MEMORY_KB_JSON")
+if not isinstance(memory_kb, dict):
+    memory_kb = {}
+if not memory_kb and algorithm == "dijkstra":
     baseline = env.get("DIJKSTRA_BASELINE_RSS_KB", "")
     llm = env.get("DIJKSTRA_LLM_RSS_KB", "")
     gemini = env.get("DIJKSTRA_GEMINI_RSS_KB", "")
@@ -304,7 +323,7 @@ if algorithm == "dijkstra":
             memory_kb["gemini"] = int(gemini)
         except ValueError:
             pass
-elif algorithm == "glasgow":
+elif not memory_kb and algorithm == "glasgow":
     first = env.get("GLASGOW_FIRST_RSS_KB", "")
     all_kb = env.get("GLASGOW_ALL_RSS_KB", "")
     if first:
@@ -332,7 +351,7 @@ elif algorithm == "glasgow":
                 memory_kb[key] = int(value)
             except ValueError:
                 pass
-elif algorithm == "vf3":
+elif not memory_kb and algorithm == "vf3":
     def maybe_add_int(name: str, key: str) -> None:
         value = env.get(key, "")
         if not value:
@@ -348,7 +367,7 @@ elif algorithm == "vf3":
     maybe_add_int("gemini_all", "VF3_GEMINI_ALL_RSS_KB")
     maybe_add_int("chatgpt_first", "VF3_CHATGPT_FIRST_RSS_KB")
     maybe_add_int("chatgpt_all", "VF3_CHATGPT_ALL_RSS_KB")
-elif algorithm == "subgraph":
+elif not memory_kb and algorithm == "subgraph":
     def maybe_add_int(name: str, key: str) -> None:
         value = env.get(key, "")
         if not value:
@@ -374,8 +393,10 @@ elif algorithm == "subgraph":
 if memory_kb:
     data["memory_kb"] = memory_kb
 
-memory_kb_stdev = {}
-if algorithm == "dijkstra":
+memory_kb_stdev = parse_json_env("MEMORY_KB_STDEV_JSON")
+if not isinstance(memory_kb_stdev, dict):
+    memory_kb_stdev = {}
+if not memory_kb_stdev and algorithm == "dijkstra":
     baseline = env.get("DIJKSTRA_BASELINE_RSS_KB_STDEV", "")
     llm = env.get("DIJKSTRA_LLM_RSS_KB_STDEV", "")
     gemini = env.get("DIJKSTRA_GEMINI_RSS_KB_STDEV", "")
@@ -395,7 +416,7 @@ if algorithm == "dijkstra":
             memory_kb_stdev["gemini"] = int(gemini)
         except ValueError:
             pass
-elif algorithm == "glasgow":
+elif not memory_kb_stdev and algorithm == "glasgow":
     first = env.get("GLASGOW_FIRST_RSS_KB_STDEV", "")
     all_kb = env.get("GLASGOW_ALL_RSS_KB_STDEV", "")
     if first:
@@ -423,7 +444,7 @@ elif algorithm == "glasgow":
                 memory_kb_stdev[key] = int(value)
             except ValueError:
                 pass
-elif algorithm == "vf3":
+elif not memory_kb_stdev and algorithm == "vf3":
     def maybe_add_int_stdev(name: str, key: str) -> None:
         value = env.get(key, "")
         if not value:
@@ -439,7 +460,7 @@ elif algorithm == "vf3":
     maybe_add_int_stdev("gemini_all", "VF3_GEMINI_ALL_RSS_KB_STDEV")
     maybe_add_int_stdev("chatgpt_first", "VF3_CHATGPT_FIRST_RSS_KB_STDEV")
     maybe_add_int_stdev("chatgpt_all", "VF3_CHATGPT_ALL_RSS_KB_STDEV")
-elif algorithm == "subgraph":
+elif not memory_kb_stdev and algorithm == "subgraph":
     def maybe_add_int_stdev(name: str, key: str) -> None:
         value = env.get(key, "")
         if not value:
@@ -474,7 +495,11 @@ def maybe_int_env(key: str):
     except ValueError:
         return None
 
-if algorithm == "dijkstra":
+dynamic_match_counts = parse_json_env("MATCH_COUNTS_JSON")
+if isinstance(dynamic_match_counts, dict):
+    data["match_counts"] = dynamic_match_counts
+
+if not isinstance(dynamic_match_counts, dict) and algorithm == "dijkstra":
     chat_match = maybe_int_env("DIJKSTRA_CHATGPT_MATCH")
     chat_total = maybe_int_env("DIJKSTRA_CHATGPT_TOTAL")
     chat_mismatch = maybe_int_env("DIJKSTRA_CHATGPT_MISMATCH")
@@ -499,7 +524,7 @@ if algorithm == "dijkstra":
             },
         }
 
-if algorithm == "glasgow":
+if not isinstance(dynamic_match_counts, dict) and algorithm == "glasgow":
     baseline_success = maybe_int_env("GLASGOW_BASELINE_SUCCESS")
     baseline_failed = maybe_int_env("GLASGOW_BASELINE_FAILED")
     chat_match = maybe_int_env("GLASGOW_CHATGPT_MATCH")
@@ -538,7 +563,7 @@ if algorithm == "glasgow":
             },
         }
 
-if algorithm == "vf3":
+if not isinstance(dynamic_match_counts, dict) and algorithm == "vf3":
     baseline_success = maybe_int_env("VF3_BASELINE_SUCCESS")
     baseline_failed = maybe_int_env("VF3_BASELINE_FAILED")
     chat_match = maybe_int_env("VF3_CHATGPT_MATCH")
@@ -576,7 +601,7 @@ if algorithm == "vf3":
                 "mismatches": gem_mismatch,
             },
         }
-if algorithm == "subgraph":
+if not isinstance(dynamic_match_counts, dict) and algorithm == "subgraph":
     vf3_success = maybe_int_env("VF3_BASELINE_SUCCESS")
     vf3_failed = maybe_int_env("VF3_BASELINE_FAILED")
     vf3_chat_match = maybe_int_env("VF3_CHATGPT_MATCH")
@@ -686,6 +711,21 @@ if algorithm == "subgraph" and env.get("SUBGRAPH_PHASE", "").strip().lower() == 
                     merged = dict(previous.get(key, {}))
                     merged.update(data.get(key, {}))
                     data[key] = merged
+            if isinstance(previous.get("variant_metadata"), list) or isinstance(data.get("variant_metadata"), list):
+                merged_meta = []
+                seen_variant_ids = set()
+                for row in list(previous.get("variant_metadata") or []) + list(data.get("variant_metadata") or []):
+                    if not isinstance(row, dict):
+                        continue
+                    variant_id = str(row.get("variant_id") or "").strip()
+                    if not variant_id:
+                        continue
+                    if variant_id in seen_variant_ids:
+                        continue
+                    seen_variant_ids.add(variant_id)
+                    merged_meta.append(row)
+                if merged_meta:
+                    data["variant_metadata"] = merged_meta
             if "equivalence_check" in previous and "equivalence_check" not in data:
                 data["equivalence_check"] = previous.get("equivalence_check")
             elif "equivalence_check" in previous and "equivalence_check" in data:

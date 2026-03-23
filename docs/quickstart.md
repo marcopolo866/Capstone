@@ -90,8 +90,7 @@ node --check js/app/07-visualization-api-bootstrap.js
 Workflow script syntax:
 
 ```bash
-bash --noprofile --norc -n .github/scripts/run-algorithm-step.sh
-bash --noprofile --norc -n .github/scripts/create-result-json-step.sh
+python -m py_compile .github/scripts/run-algorithm-dynamic.py
 python -m py_compile .github/scripts/create-result-json-step.py
 ```
 

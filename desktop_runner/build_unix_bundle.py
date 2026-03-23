@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import os
 import shutil
 import stat
@@ -16,6 +18,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 STAGING_ROOT = REPO_ROOT / "desktop_runner" / ".staging"
 STAGING_BIN = STAGING_ROOT / "binaries"
 DIST_DIR = REPO_ROOT / "dist"
+
+
+def load_solver_discovery():
+    module_path = REPO_ROOT / "scripts" / "solver_discovery.py"
+    spec = importlib.util.spec_from_file_location("solver_discovery", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load solver discovery module: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def run_step(label: str, cmd: list[str], cwd: Path | None = None) -> None:
@@ -104,40 +117,67 @@ def run_staged_vf3_smoke_test(vf3_path: Path) -> None:
 
 
 def stage_binaries() -> list[Path]:
-    binary_spec = [
-        ("dijkstra", ["baselines/dijkstra"]),
-        ("dijkstra_llm", ["src/dijkstra_llm"]),
-        ("dijkstra_gemini", ["src/dijkstra_gemini"]),
-        ("vf3", ["baselines/vf3lib/bin/vf3"]),
-        ("chatvf3", ["src/chatvf3"]),
-        ("vf3_gemini", ["src/vf3"]),
-        (
-            "glasgow_subgraph_solver",
-            [
-                "baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver",
-                "baselines/glasgow-subgraph-solver/build/Release/glasgow_subgraph_solver",
-                "baselines/glasgow-subgraph-solver/build/src/glasgow_subgraph_solver",
-                "baselines/glasgow-subgraph-solver/build/src/Release/glasgow_subgraph_solver",
-            ],
-        ),
-        ("glasgow_chatgpt", ["src/glasgow_chatgpt"]),
-        ("glasgow_gemini", ["src/glasgow_gemini"]),
-    ]
+    solver_discovery = load_solver_discovery()
+    catalog = solver_discovery.build_catalog(REPO_ROOT)
+    binary_spec: list[tuple[str, list[str], dict]] = []
+    for row in catalog.get("solvers", []):
+        if not isinstance(row, dict):
+            continue
+        variant_id = str(row.get("variant_id") or "").strip()
+        binary_path = str(row.get("binary_path") or "").strip()
+        if not variant_id or not binary_path:
+            continue
+        candidates = [binary_path]
+        if variant_id == "glasgow_baseline":
+            candidates.extend(
+                [
+                    "baselines/glasgow-subgraph-solver/build/Release/glasgow_subgraph_solver",
+                    "baselines/glasgow-subgraph-solver/build/src/glasgow_subgraph_solver",
+                    "baselines/glasgow-subgraph-solver/build/src/Release/glasgow_subgraph_solver",
+                ]
+            )
+        elif variant_id == "dijkstra_chatgpt":
+            candidates.append("src/dijkstra_llm")
+        elif variant_id == "vf3_chatgpt":
+            candidates.append("src/chatvf3")
+        elif variant_id == "vf3_gemini":
+            candidates.append("src/vf3")
+        binary_spec.append((variant_id, candidates, row))
 
     if STAGING_ROOT.exists():
         shutil.rmtree(STAGING_ROOT)
     STAGING_BIN.mkdir(parents=True, exist_ok=True)
 
     staged: list[Path] = []
-    for out_name, candidates in binary_spec:
+    staged_rows: list[dict] = []
+    for out_name, candidates, row in binary_spec:
         resolved = resolve_binary(candidates)
         target = STAGING_BIN / out_name
         shutil.copy2(resolved, target)
         ensure_executable(target)
         staged.append(target)
         print(f"Using binary {out_name}: {resolved}")
+        staged_rows.append(
+            {
+                "variant_id": out_name,
+                "family": str(row.get("family") or ""),
+                "algorithm": str(row.get("algorithm") or ""),
+                "role": str(row.get("role") or ""),
+                "label": str(row.get("label") or out_name),
+                "llm_key": row.get("llm_key"),
+                "llm_label": row.get("llm_label"),
+                "binary_name": out_name,
+            }
+        )
 
-    run_staged_vf3_smoke_test(STAGING_BIN / "vf3")
+    manifest_path = STAGING_BIN / "solver_variants.json"
+    manifest_path.write_text(
+        json.dumps({"schema_version": 1, "solvers": staged_rows}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    staged.append(manifest_path)
+
+    run_staged_vf3_smoke_test(STAGING_BIN / "vf3_baseline")
     return staged
 
 

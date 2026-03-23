@@ -264,34 +264,82 @@ class DatapointStats:
     seeds: list[int]
 
 
-SOLVER_VARIANTS = [
-    SolverVariant("vf3_baseline", "VF3 baseline", "subgraph", "vf3"),
-    SolverVariant("vf3_chatgpt", "VF3 ChatGPT", "subgraph", "vf3"),
-    SolverVariant("vf3_gemini", "VF3 Gemini", "subgraph", "vf3"),
-    SolverVariant("glasgow_baseline", "Glasgow baseline", "subgraph", "glasgow"),
-    SolverVariant("glasgow_chatgpt", "Glasgow ChatGPT", "subgraph", "glasgow"),
-    SolverVariant("glasgow_gemini", "Glasgow Gemini", "subgraph", "glasgow"),
-    SolverVariant("dijkstra_baseline", "Dijkstra baseline", "shortest_path", "dijkstra"),
-    SolverVariant("dijkstra_chatgpt", "Dijkstra ChatGPT", "shortest_path", "dijkstra"),
-    SolverVariant("dijkstra_gemini", "Dijkstra Gemini", "shortest_path", "dijkstra"),
-]
+def _default_solver_rows() -> list[dict]:
+    return [
+        {"variant_id": "vf3_baseline", "label": "VF3 Baseline", "family": "vf3", "role": "baseline"},
+        {"variant_id": "vf3_chatgpt", "label": "VF3 Chatgpt", "family": "vf3", "role": "variant", "llm_key": "chatgpt", "llm_label": "Chatgpt"},
+        {"variant_id": "vf3_gemini", "label": "VF3 Gemini", "family": "vf3", "role": "variant", "llm_key": "gemini", "llm_label": "Gemini"},
+        {"variant_id": "glasgow_baseline", "label": "Glasgow Baseline", "family": "glasgow", "role": "baseline"},
+        {"variant_id": "glasgow_chatgpt", "label": "Glasgow Chatgpt", "family": "glasgow", "role": "variant", "llm_key": "chatgpt", "llm_label": "Chatgpt"},
+        {"variant_id": "glasgow_gemini", "label": "Glasgow Gemini", "family": "glasgow", "role": "variant", "llm_key": "gemini", "llm_label": "Gemini"},
+        {"variant_id": "dijkstra_baseline", "label": "Dijkstra Baseline", "family": "dijkstra", "role": "baseline"},
+        {"variant_id": "dijkstra_chatgpt", "label": "Dijkstra Chatgpt", "family": "dijkstra", "role": "variant", "llm_key": "chatgpt", "llm_label": "Chatgpt"},
+        {"variant_id": "dijkstra_gemini", "label": "Dijkstra Gemini", "family": "dijkstra", "role": "variant", "llm_key": "gemini", "llm_label": "Gemini"},
+    ]
 
 
-def build_binary_path_map() -> dict[str, Path]:
+def _load_solver_rows_from_manifest() -> list[dict]:
+    manifest_path = resource_root() / "binaries" / "solver_variants.json"
+    if not manifest_path.is_file():
+        return _default_solver_rows()
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _default_solver_rows()
+    rows = payload.get("solvers")
+    if not isinstance(rows, list):
+        return _default_solver_rows()
+    normalized: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        variant_id = str(row.get("variant_id") or "").strip()
+        family = str(row.get("family") or "").strip().lower()
+        label = str(row.get("label") or "").strip()
+        if not variant_id or family not in {"dijkstra", "vf3", "glasgow"}:
+            continue
+        normalized.append(
+            {
+                "variant_id": variant_id,
+                "label": label or variant_id,
+                "family": family,
+                "role": str(row.get("role") or "").strip().lower() or "variant",
+                "llm_key": str(row.get("llm_key") or "").strip().lower() or None,
+                "llm_label": str(row.get("llm_label") or "").strip() or None,
+                "binary_name": str(row.get("binary_name") or "").strip() or variant_id,
+            }
+        )
+    if not normalized:
+        return _default_solver_rows()
+    return normalized
+
+
+def _build_solver_variants_and_binary_map() -> tuple[list[SolverVariant], dict[str, Path]]:
     root = resource_root()
     binaries_dir = root / "binaries"
     exe_suffix = ".exe" if sys.platform.startswith("win") else ""
-    return {
-        "dijkstra_baseline": binaries_dir / f"dijkstra{exe_suffix}",
-        "dijkstra_chatgpt": binaries_dir / f"dijkstra_llm{exe_suffix}",
-        "dijkstra_gemini": binaries_dir / f"dijkstra_gemini{exe_suffix}",
-        "vf3_baseline": binaries_dir / f"vf3{exe_suffix}",
-        "vf3_chatgpt": binaries_dir / f"chatvf3{exe_suffix}",
-        "vf3_gemini": binaries_dir / f"vf3_gemini{exe_suffix}",
-        "glasgow_baseline": binaries_dir / f"glasgow_subgraph_solver{exe_suffix}",
-        "glasgow_chatgpt": binaries_dir / f"glasgow_chatgpt{exe_suffix}",
-        "glasgow_gemini": binaries_dir / f"glasgow_gemini{exe_suffix}",
-    }
+    rows = _load_solver_rows_from_manifest()
+    variants: list[SolverVariant] = []
+    binary_map: dict[str, Path] = {}
+    for row in rows:
+        variant_id = str(row.get("variant_id") or "").strip()
+        family = str(row.get("family") or "").strip().lower()
+        if not variant_id or family not in {"dijkstra", "vf3", "glasgow"}:
+            continue
+        tab_id = "shortest_path" if family == "dijkstra" else "subgraph"
+        label = str(row.get("label") or variant_id)
+        variants.append(SolverVariant(variant_id, label, tab_id, family))
+        binary_name = str(row.get("binary_name") or variant_id).strip() or variant_id
+        binary_map[variant_id] = binaries_dir / f"{binary_name}{exe_suffix}"
+    variants.sort(key=lambda item: (item.tab_id, item.family, item.variant_id != f"{item.family}_baseline", item.label.lower()))
+    return variants, binary_map
+
+
+SOLVER_VARIANTS, _DEFAULT_BINARY_PATH_MAP = _build_solver_variants_and_binary_map()
+
+
+def build_binary_path_map() -> dict[str, Path]:
+    return dict(_DEFAULT_BINARY_PATH_MAP)
 
 
 def generate_directed_edges(n: int, rng: random.Random, density: float):
