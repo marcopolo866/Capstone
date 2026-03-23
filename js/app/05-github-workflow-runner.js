@@ -344,6 +344,7 @@
                 if (data && Array.isArray(data.workflows)) {
                     const match = data.workflows.find(wf =>
                         wf.path === '.github/workflows/build-benchmark-runner-windows.yml' ||
+                        wf.path === '.github/workflows/build-benchmark-runner.yml' ||
                         (wf.name && wf.name.toLowerCase().includes('benchmark runner'))
                     );
                     if (match && match.id) {
@@ -562,6 +563,51 @@
             URL.revokeObjectURL(url);
         }
 
+        function detectClientRunnerOs() {
+            const nav = (typeof navigator !== 'undefined' && navigator) ? navigator : {};
+            const platform = String(nav.platform || '').toLowerCase();
+            const userAgent = String(nav.userAgent || '').toLowerCase();
+            if (platform.includes('win') || userAgent.includes('windows')) return 'windows';
+            if (platform.includes('mac') || userAgent.includes('mac os')) return 'macos';
+            if (platform.includes('linux') || userAgent.includes('linux')) return 'linux';
+            return 'unknown';
+        }
+
+        function getRunnerArtifactCandidatesForOs(osTag) {
+            const tag = String(osTag || '').toLowerCase();
+            if (tag === 'windows') return ['benchmark-runner-windows', 'benchmark-runner-windows-exe'];
+            if (tag === 'macos') return ['benchmark-runner-macos', 'benchmark-runner-mac'];
+            if (tag === 'linux') return ['benchmark-runner-linux'];
+            return [];
+        }
+
+        function chooseDesktopRunnerArtifact(artifacts, osTag) {
+            const list = Array.isArray(artifacts) ? artifacts.filter(Boolean) : [];
+            if (!list.length) return null;
+            const primary = list.filter(item => {
+                const name = String((item && item.name) || '').toLowerCase();
+                return !name.includes('build-logs');
+            });
+            const pool = primary.length ? primary : list;
+
+            const preferredNames = getRunnerArtifactCandidatesForOs(osTag);
+            for (const name of preferredNames) {
+                const exact = pool.find(item => item && item.name === name);
+                if (exact) return exact;
+            }
+
+            const lowers = preferredNames.map(name => String(name).toLowerCase());
+            for (const needle of lowers) {
+                const partial = pool.find(item => item && typeof item.name === 'string' && item.name.toLowerCase().includes(needle));
+                if (partial) return partial;
+            }
+
+            const generic = pool.find(item => item && typeof item.name === 'string' && item.name.toLowerCase().includes('benchmark-runner'));
+            if (generic) return generic;
+
+            return pool[0] || null;
+        }
+
         async function downloadDesktopRunner() {
             const btn = document.getElementById('download-runner-btn');
             const prevText = btn ? btn.textContent : '';
@@ -572,9 +618,6 @@
                 }
                 if (!config.token) {
                     throw new Error('A GitHub token is required to download workflow artifacts.');
-                }
-                if (!window.JSZip) {
-                    throw new Error('JSZip is required to extract the executable from the artifact zip.');
                 }
                 if (btn) {
                     btn.disabled = true;
@@ -604,34 +647,25 @@
                     throw new Error('No non-expired artifacts were found for the latest successful runner build.');
                 }
 
-                const artifact = artifacts.find(item => item && item.name === 'benchmark-runner-windows-exe') ||
-                    artifacts.find(item => item && typeof item.name === 'string' && item.name.toLowerCase().includes('benchmark-runner')) ||
-                    artifacts[0];
+                const clientOs = detectClientRunnerOs();
+                const artifact = chooseDesktopRunnerArtifact(artifacts, clientOs);
                 if (!artifact) {
                     throw new Error('Could not determine which runner artifact to download.');
                 }
 
                 const buffer = await downloadArtifactZip(artifact);
-                const zip = await window.JSZip.loadAsync(buffer);
-                let exeFile = zip.file('capstone-benchmark-runner.exe') || null;
-                if (!exeFile) {
-                    const matches = zip.file(/\.exe$/i);
-                    if (matches && matches.length) exeFile = matches[0];
-                }
-                if (!exeFile) {
-                    throw new Error('The runner artifact zip did not include a Windows .exe file.');
-                }
-                const blob = await exeFile.async('blob');
-                const downloadName = exeFile.name ? String(exeFile.name).split('/').pop() : 'capstone-benchmark-runner.exe';
-                triggerBinaryDownload(downloadName || 'capstone-benchmark-runner.exe', blob);
-                showStatus('Benchmark runner download started.', 'success');
+                const blob = new Blob([buffer], { type: 'application/zip' });
+                const rawName = artifact && artifact.name ? String(artifact.name).trim() : 'benchmark-runner';
+                const zipName = rawName.toLowerCase().endsWith('.zip') ? rawName : `${rawName}.zip`;
+                triggerBinaryDownload(zipName, blob);
+                showStatus('Benchmark runner artifact download started. Extract the zip and run the packaged app for your OS.', 'success');
             } catch (error) {
                 const msg = (error && error.message) ? error.message : String(error);
                 showStatus(`Runner download failed: ${msg}`, 'error');
             } finally {
                 if (btn) {
                     btn.disabled = false;
-                    btn.textContent = prevText || 'Download Benchmark Runner (.exe)';
+                    btn.textContent = prevText || 'Download Benchmark Runner';
                 }
             }
         }

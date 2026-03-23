@@ -1,5 +1,5 @@
 ﻿#!/usr/bin/env python3
-"""Capstone desktop benchmark runner (Windows-focused, one-file packaged app)."""
+"""Capstone desktop benchmark runner (cross-platform, one-file packaged app)."""
 
 from __future__ import annotations
 
@@ -33,6 +33,9 @@ APP_TITLE = "Capstone Benchmark Runner"
 DEFAULT_WIDTH = 1500
 DEFAULT_HEIGHT = 980
 DEFAULT_DISCARDED_WARMUP_TRIALS = 5
+DEFAULT_3D_ELEV = 30.0
+# Keep x=min and y=min corner toward the viewer in the default isometric view.
+DEFAULT_3D_AZIM = -135.0
 
 
 def resource_root() -> Path:
@@ -277,16 +280,17 @@ SOLVER_VARIANTS = [
 def build_binary_path_map() -> dict[str, Path]:
     root = resource_root()
     binaries_dir = root / "binaries"
+    exe_suffix = ".exe" if sys.platform.startswith("win") else ""
     return {
-        "dijkstra_baseline": binaries_dir / "dijkstra.exe",
-        "dijkstra_chatgpt": binaries_dir / "dijkstra_llm.exe",
-        "dijkstra_gemini": binaries_dir / "dijkstra_gemini.exe",
-        "vf3_baseline": binaries_dir / "vf3.exe",
-        "vf3_chatgpt": binaries_dir / "chatvf3.exe",
-        "vf3_gemini": binaries_dir / "vf3_gemini.exe",
-        "glasgow_baseline": binaries_dir / "glasgow_subgraph_solver.exe",
-        "glasgow_chatgpt": binaries_dir / "glasgow_chatgpt.exe",
-        "glasgow_gemini": binaries_dir / "glasgow_gemini.exe",
+        "dijkstra_baseline": binaries_dir / f"dijkstra{exe_suffix}",
+        "dijkstra_chatgpt": binaries_dir / f"dijkstra_llm{exe_suffix}",
+        "dijkstra_gemini": binaries_dir / f"dijkstra_gemini{exe_suffix}",
+        "vf3_baseline": binaries_dir / f"vf3{exe_suffix}",
+        "vf3_chatgpt": binaries_dir / f"chatvf3{exe_suffix}",
+        "vf3_gemini": binaries_dir / f"vf3_gemini{exe_suffix}",
+        "glasgow_baseline": binaries_dir / f"glasgow_subgraph_solver{exe_suffix}",
+        "glasgow_chatgpt": binaries_dir / f"glasgow_chatgpt{exe_suffix}",
+        "glasgow_gemini": binaries_dir / f"glasgow_gemini{exe_suffix}",
     }
 
 
@@ -1317,7 +1321,13 @@ class BenchmarkRunnerApp(tk.Tk):
         if not self.session_output_dir:
             return
         try:
-            os.startfile(str(self.session_output_dir))  # type: ignore[attr-defined]
+            target = str(self.session_output_dir)
+            if sys.platform.startswith("win"):
+                os.startfile(target)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.run(["open", target], check=True)
+            else:
+                subprocess.run(["xdg-open", target], check=True)
         except Exception as exc:
             messagebox.showerror(APP_TITLE, f"Failed to open folder:\n{exc}")
 
@@ -3033,7 +3043,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 ax.set_yscale("log")
         except Exception:
             pass
-        ax.view_init(elev=30.0, azim=-60.0)
+        ax.view_init(elev=DEFAULT_3D_ELEV, azim=DEFAULT_3D_AZIM)
         fig.tight_layout()
         return fig
 
@@ -3332,7 +3342,7 @@ class BenchmarkRunnerApp(tk.Tk):
         ax = fig.axes[0]
         if not hasattr(ax, "view_init"):
             return
-        ax.view_init(elev=30.0, azim=-60.0)
+        ax.view_init(elev=DEFAULT_3D_ELEV, azim=DEFAULT_3D_AZIM)
         canvas.draw_idle()
 
     def _resolve_3d_variant_id(self, payload: dict):

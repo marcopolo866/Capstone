@@ -13,7 +13,7 @@ The project provides:
 - Native build scripts for baseline + LLM binaries
 - Workflow-driven benchmark execution and artifact generation
 - Visualization and result export (`outputs/result.json`, `outputs/visualization.json`)
-- Downloadable Windows desktop benchmark runner artifact (`capstone-benchmark-runner.exe`)
+- Downloadable desktop benchmark runner artifacts for Windows, macOS, and Linux
 
 ## Quick Start
 
@@ -26,8 +26,8 @@ The project provides:
 5. Run:
    - `Standard Run (GitHub Actions)` for remote benchmark artifacts.
    - `Run Locally (WebAssembly)` for browser-local execution.
-6. (Optional) Download the Windows desktop benchmark runner from the UI button:
-   - `Download Benchmark Runner (.exe)` (latest successful workflow artifact)
+6. (Optional) Download the desktop benchmark runner from the UI button:
+   - `Download Benchmark Runner` (latest successful artifact for your OS)
 
 For detailed setup/run instructions, see [docs/quickstart.md](docs/quickstart.md).
 
