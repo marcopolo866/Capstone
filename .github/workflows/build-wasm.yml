@@ -10,12 +10,12 @@ on:
       - 'baselines/**'
       - 'wasm/allocator_telemetry.cpp'
       - 'wasm/vf3_baseline_main.cpp'
-      - 'src/\[CHATGPT\] Shortest Path.cpp'
-      - 'src/\[GEMINI\] Shortest Path.cpp'
-      - 'src/\[CHATGPT\] Subgraph Isomorphism.cpp'
-      - 'src/\[GEMINI\] Subgraph Isomorphism.cpp'
-      - 'src/\[CHATGPT\] Glasgow.cpp'
-      - 'src/\[GEMINI\] Glasgow.cpp'
+      - 'src/\[ShortestPath\]\[CHATGPT\]\[csv\].cpp'
+      - 'src/\[ShortestPath\]\[GEMINI\]\[csv\].cpp'
+      - 'src/\[SubgraphIsomorphism\]\[CHATGPT\]\[grf\].cpp'
+      - 'src/\[SubgraphIsomorphism\]\[GEMINI\]\[grf\].cpp'
+      - 'src/\[SubgraphIsomorphism\]\[CHATGPT\]\[lad\].cpp'
+      - 'src/\[SubgraphIsomorphism\]\[GEMINI\]\[lad\].cpp'
 
 jobs:
   build-wasm:
@@ -173,7 +173,7 @@ jobs:
             "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[GEMINI] Subgraph Isomorphism.cpp" \
+            "src/[SubgraphIsomorphism][GEMINI][grf].cpp" \
             -s EXPORT_NAME=createVf3GeminiModule \
             -o "wasm/vf3_gemini.js"
 
@@ -183,7 +183,7 @@ jobs:
             "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[CHATGPT] Subgraph Isomorphism.cpp" \
+            "src/[SubgraphIsomorphism][CHATGPT][grf].cpp" \
             -s EXPORT_NAME=createVf3ChatgptModule \
             -o "wasm/vf3_chatgpt.js"
 
@@ -204,7 +204,7 @@ jobs:
             "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[CHATGPT] Shortest Path.cpp" \
+            "src/[ShortestPath][CHATGPT][csv].cpp" \
             -s EXPORT_NAME=createDijkstraLlmModule \
             -o "wasm/dijkstra_llm.js"
 
@@ -214,7 +214,7 @@ jobs:
             "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[GEMINI] Shortest Path.cpp" \
+            "src/[ShortestPath][GEMINI][csv].cpp" \
             -s EXPORT_NAME=createDijkstraGeminiModule \
             -o "wasm/dijkstra_gemini.js"
 
@@ -224,7 +224,7 @@ jobs:
             "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[CHATGPT] Glasgow.cpp" \
+            "src/[SubgraphIsomorphism][CHATGPT][lad].cpp" \
             -s EXPORT_NAME=createGlasgowChatgptModule \
             -o "wasm/glasgow_chatgpt.js"
 
@@ -234,7 +234,7 @@ jobs:
             "${telemetry_flags[@]}" \
             -fexceptions \
             -s DISABLE_EXCEPTION_CATCHING=0 \
-            "src/[GEMINI] Glasgow.cpp" \
+            "src/[SubgraphIsomorphism][GEMINI][lad].cpp" \
             -s EXPORT_NAME=createGlasgowGeminiModule \
             -o "wasm/glasgow_gemini.js"
 

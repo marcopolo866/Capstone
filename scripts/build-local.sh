@@ -88,9 +88,9 @@ run_step "Updating submodules" git submodule update --init --recursive
 run_step "Building Dijkstra baseline" \
   g++ -std=c++17 -O3 -Wall -Wextra -I "baselines/nyaan-library" "baselines/dijkstra_main.cpp" -o "baselines/dijkstra"
 run_step "Building Dijkstra ChatGPT" \
-  g++ -std=c++17 -O3 -Wall -Wextra "src/[CHATGPT] Shortest Path.cpp" -o "src/dijkstra_llm"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[ShortestPath][CHATGPT][csv].cpp" -o "src/dijkstra_llm"
 run_step "Building Dijkstra Gemini" \
-  g++ -std=c++17 -O3 -Wall -Wextra "src/[GEMINI] Shortest Path.cpp" -o "src/dijkstra_gemini"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[ShortestPath][GEMINI][csv].cpp" -o "src/dijkstra_gemini"
 
 # Keep VF3 baseline on safer optimization flags; -O3 has produced unstable binaries
 # on some toolchains (observed as access violations on small generated cases).
@@ -127,14 +127,14 @@ run_step "VF3 baseline smoke test (small generated subgraph case)" \
     "$vf3_bin" -u -r 0 -e "$vf_pattern" "$vf_target" >/dev/null 2>&1
   '
 run_step "Building VF3 Gemini" \
-  g++ -std=c++17 -O3 -Wall -Wextra "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[SubgraphIsomorphism][GEMINI][grf].cpp" -o "src/vf3"
 run_step "Building VF3 ChatGPT" \
-  g++ -std=c++17 -O3 -Wall -Wextra "src/[CHATGPT] Subgraph Isomorphism.cpp" -o "src/chatvf3"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[SubgraphIsomorphism][CHATGPT][grf].cpp" -o "src/chatvf3"
 
 run_step "Building Glasgow ChatGPT" \
-  g++ -std=c++17 -O3 -Wall -Wextra "src/[CHATGPT] Glasgow.cpp" -o "src/glasgow_chatgpt"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[SubgraphIsomorphism][CHATGPT][lad].cpp" -o "src/glasgow_chatgpt"
 run_step "Building Glasgow Gemini" \
-  g++ -std=c++17 -O3 -Wall -Wextra "src/[GEMINI] Glasgow.cpp" -o "src/glasgow_gemini"
+  g++ -std=c++17 -O3 -Wall -Wextra "src/[SubgraphIsomorphism][GEMINI][lad].cpp" -o "src/glasgow_gemini"
 
 run_step "Patching Glasgow submodule for MinGW loooong/size_t ambiguity" \
   "$PYTHON_BIN" - <<'PY'

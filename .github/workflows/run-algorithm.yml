@@ -308,7 +308,7 @@ jobs:
               )
 
           source_checks = manifest.get("sources") or {}
-          for rel in ("src/[CHATGPT] Glasgow.cpp", "src/[GEMINI] Glasgow.cpp"):
+          for rel in ("src/[SubgraphIsomorphism][CHATGPT][lad].cpp", "src/[SubgraphIsomorphism][GEMINI][lad].cpp"):
               expected_sha = str(source_checks.get(rel) or "").strip()
               if not expected_sha:
                   raise SystemExit(f"Manifest missing source hash for: {rel}")

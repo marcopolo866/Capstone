@@ -46,8 +46,8 @@ jobs:
               return h.hexdigest()
 
           source_paths = [
-              "src/[CHATGPT] Glasgow.cpp",
-              "src/[GEMINI] Glasgow.cpp",
+              "src/[SubgraphIsomorphism][CHATGPT][lad].cpp",
+              "src/[SubgraphIsomorphism][GEMINI][lad].cpp",
           ]
           binary_paths = [
               "src/glasgow_chatgpt",

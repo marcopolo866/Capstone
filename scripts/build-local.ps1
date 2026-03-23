@@ -166,10 +166,10 @@ Invoke-Step "Building Dijkstra baseline" {
     g++ -std=c++17 -O3 -I "baselines/nyaan-library" "baselines/dijkstra_main.cpp" -o "baselines/dijkstra"
 }
 Invoke-Step "Building Dijkstra ChatGPT" {
-    g++ -std=c++17 -O3 "src/[CHATGPT] Shortest Path.cpp" -o "src/dijkstra_llm"
+    g++ -std=c++17 -O3 "src/[ShortestPath][CHATGPT][csv].cpp" -o "src/dijkstra_llm"
 }
 Invoke-Step "Building Dijkstra Gemini" {
-    g++ -std=c++17 -O3 "src/[GEMINI] Shortest Path.cpp" -o "src/dijkstra_gemini"
+    g++ -std=c++17 -O3 "src/[ShortestPath][GEMINI][csv].cpp" -o "src/dijkstra_gemini"
 }
 
 # Keep VF3 baseline on safer optimization flags; -O3 has produced unstable binaries
@@ -231,17 +231,17 @@ Invoke-Step "VF3 baseline smoke test (small generated subgraph case)" {
     }
 }
 Invoke-Step "Building VF3 Gemini" {
-    g++ -std=c++17 -O3 "src/[GEMINI] Subgraph Isomorphism.cpp" -o "src/vf3"
+    g++ -std=c++17 -O3 "src/[SubgraphIsomorphism][GEMINI][grf].cpp" -o "src/vf3"
 }
 Invoke-Step "Building VF3 ChatGPT" {
-    g++ -std=c++17 -O3 "src/[CHATGPT] Subgraph Isomorphism.cpp" -o "src/chatvf3"
+    g++ -std=c++17 -O3 "src/[SubgraphIsomorphism][CHATGPT][grf].cpp" -o "src/chatvf3"
 }
 
 Invoke-Step "Building Glasgow ChatGPT" {
-    g++ -std=c++17 -O3 "src/[CHATGPT] Glasgow.cpp" -o "src/glasgow_chatgpt"
+    g++ -std=c++17 -O3 "src/[SubgraphIsomorphism][CHATGPT][lad].cpp" -o "src/glasgow_chatgpt"
 }
 Invoke-Step "Building Glasgow Gemini" {
-    g++ -std=c++17 -O3 "src/[GEMINI] Glasgow.cpp" -o "src/glasgow_gemini"
+    g++ -std=c++17 -O3 "src/[SubgraphIsomorphism][GEMINI][lad].cpp" -o "src/glasgow_gemini"
 }
 Invoke-Step "Patching Glasgow submodule for MinGW loooong/size_t ambiguity" {
     @'
