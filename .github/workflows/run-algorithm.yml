@@ -148,11 +148,10 @@ jobs:
                   "Run the 'Build Binaries' workflow first."
               )
 
-          selected = None
+          selected_exact = None
+          selected_fallback = None
           for run in workflow_runs:
               run_sha = (run.get("head_sha") or "").strip()
-              if current_sha and run_sha != current_sha:
-                  continue
               run_id = run.get("id")
               if not run_id:
                   continue
@@ -167,18 +166,24 @@ jobs:
               artifact_id = artifact.get("id")
               if not artifact_id:
                   continue
-              selected = (run_id, artifact_id, run_sha)
-              break
+              candidate = (run_id, artifact_id, run_sha)
+              if selected_fallback is None:
+                  selected_fallback = candidate
+              if current_sha and run_sha == current_sha:
+                  selected_exact = candidate
+                  break
 
+          selected = selected_exact or selected_fallback
           if not selected:
               raise SystemExit(
                   "No successful 'build-binaries.yml' run with a non-expired "
-                  f"'{artifact_name}' artifact was found for commit '{current_sha}' on branch '{branch}'. "
-                  "Run 'Build Binaries' on this exact commit, then rerun 'Run Algorithm'."
+                  f"'{artifact_name}' artifact was found on branch '{branch}'. "
+                  "Run the 'Build Binaries' workflow, then rerun 'Run Algorithm'."
               )
 
           run_id, artifact_id, run_sha = selected
-          print(f"{run_id} {artifact_id} {run_sha}")
+          exact_match = 1 if (selected_exact is not None and selected == selected_exact) else 0
+          print(f"{run_id} {artifact_id} {run_sha} {exact_match}")
           PY
           )"
           status=$?
@@ -187,14 +192,17 @@ jobs:
             run_id="$(echo "$output" | awk '{print $1}')"
             artifact_id="$(echo "$output" | awk '{print $2}')"
             run_sha="$(echo "$output" | awk '{print $3}')"
+            exact_match="$(echo "$output" | awk '{print $4}')"
             echo "RUN_ID=$run_id" >> "$GITHUB_OUTPUT"
             echo "ARTIFACT_ID=$artifact_id" >> "$GITHUB_OUTPUT"
             echo "HEAD_SHA=$run_sha" >> "$GITHUB_OUTPUT"
+            echo "EXACT_MATCH=$exact_match" >> "$GITHUB_OUTPUT"
           else
             echo "$output"
             echo "RUN_ID=" >> "$GITHUB_OUTPUT"
             echo "ARTIFACT_ID=" >> "$GITHUB_OUTPUT"
             echo "HEAD_SHA=" >> "$GITHUB_OUTPUT"
+            echo "EXACT_MATCH=0" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Download prebuilt binaries
@@ -207,6 +215,7 @@ jobs:
           BINARIES_RUN_ID: ${{ steps.binaries_meta.outputs.RUN_ID }}
           BINARIES_ARTIFACT_ID: ${{ steps.binaries_meta.outputs.ARTIFACT_ID }}
           BINARIES_HEAD_SHA: ${{ steps.binaries_meta.outputs.HEAD_SHA }}
+          BINARIES_EXACT_MATCH: ${{ steps.binaries_meta.outputs.EXACT_MATCH }}
         run: |
           mkdir -p outputs
           : > outputs/binaries_download_error.txt
@@ -225,6 +234,7 @@ jobs:
           artifact_id = os.environ.get("BINARIES_ARTIFACT_ID")
           run_id = os.environ.get("BINARIES_RUN_ID")
           run_sha = os.environ.get("BINARIES_HEAD_SHA") or ""
+          exact_match = str(os.environ.get("BINARIES_EXACT_MATCH") or "0").strip() == "1"
           current_sha = os.environ.get("CURRENT_SHA") or ""
 
           if not repo:
@@ -233,11 +243,6 @@ jobs:
               raise SystemExit("GITHUB_TOKEN env var is missing")
           if not run_id or not artifact_id:
               raise SystemExit("Missing artifact metadata (run_id/artifact_id).")
-          if current_sha and run_sha and current_sha != run_sha:
-              raise SystemExit(
-                  "Resolved binaries artifact was built from a different commit. "
-                  f"current_sha={current_sha} artifact_head_sha={run_sha}"
-              )
 
           api_base = f"https://api.github.com/repos/{repo}"
           zip_path = Path("binaries.zip")
@@ -275,22 +280,28 @@ jobs:
               raise SystemExit("Missing outputs/binaries_manifest.json in binaries artifact.")
           manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
           manifest_commit = str(manifest.get("commit_sha") or "").strip()
-          if current_sha and manifest_commit and current_sha != manifest_commit:
+          if exact_match and current_sha and manifest_commit and current_sha != manifest_commit:
               raise SystemExit(
                   "Binary manifest commit does not match current workflow commit. "
                   f"current_sha={current_sha} manifest_commit={manifest_commit}"
               )
 
-          source_checks = manifest.get("sources") or {}
-          for rel, expected_sha in source_checks.items():
-              p = Path(rel)
-              if not p.is_file():
-                  raise SystemExit(f"Manifest references missing source: {rel}")
-              actual_sha = sha256(p)
-              if actual_sha != str(expected_sha):
-                  raise SystemExit(
-                      f"Source hash mismatch for {rel}: expected={expected_sha} actual={actual_sha}"
-                  )
+          if exact_match:
+              source_checks = manifest.get("sources") or {}
+              for rel, expected_sha in source_checks.items():
+                  p = Path(rel)
+                  if not p.is_file():
+                      raise SystemExit(f"Manifest references missing source: {rel}")
+                  actual_sha = sha256(p)
+                  if actual_sha != str(expected_sha):
+                      raise SystemExit(
+                          f"Source hash mismatch for {rel}: expected={expected_sha} actual={actual_sha}"
+                      )
+          else:
+              print(
+                  "Warning: using fallback binaries artifact from a different commit. "
+                  f"current_sha={current_sha} artifact_head_sha={run_sha} manifest_commit={manifest_commit}"
+              )
 
           binary_checks = manifest.get("binaries") or {}
           missing = []
@@ -313,7 +324,8 @@ jobs:
 
           print(
               "Downloaded binaries artifact from "
-              f"run {run_id} (artifact_id={artifact_id}, head_sha={run_sha}, manifest_commit={manifest_commit})."
+              f"run {run_id} (artifact_id={artifact_id}, head_sha={run_sha}, "
+              f"manifest_commit={manifest_commit}, exact_match={exact_match})."
           )
           PY
           )"
@@ -331,8 +343,8 @@ jobs:
       - name: Require prebuilt binaries artifact
         if: ${{ steps.binaries.outputs.READY != '1' }}
         run: |
-          echo "Required binaries artifact is not available for this commit." >&2
-          echo "Run the 'Build Binaries' workflow on this exact commit, then retry 'Run Algorithm'." >&2
+          echo "Required binaries artifact is not available for this branch." >&2
+          echo "Run the 'Build Binaries' workflow, then retry 'Run Algorithm'." >&2
           if [ -f outputs/binaries_download_error.txt ]; then
             echo "" >&2
             echo "Download diagnostics:" >&2
