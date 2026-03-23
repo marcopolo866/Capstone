@@ -71,15 +71,35 @@ jobs:
         if: matrix.os_tag == 'linux'
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y build-essential make cmake libgmp-dev
+          missing=()
+          for pkg in build-essential make cmake libgmp-dev; do
+            if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+              missing+=("$pkg")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            sudo apt-get update
+            sudo apt-get install -y "${missing[@]}"
+          else
+            echo "All Linux system dependencies already installed"
+          fi
 
       - name: Install system build dependencies (macOS)
         if: matrix.os_tag == 'macos'
         run: |
           set -euo pipefail
-          brew update
-          brew install gmp cmake
+          missing=()
+          if ! brew list --versions gmp >/dev/null 2>&1; then
+            missing+=("gmp")
+          fi
+          if ! command -v cmake >/dev/null 2>&1; then
+            missing+=("cmake")
+          fi
+          if (( ${#missing[@]} > 0 )); then
+            brew install "${missing[@]}"
+          else
+            echo "All macOS system dependencies already installed"
+          fi
 
       - name: Install Python dependencies
         run: |
@@ -99,13 +119,13 @@ jobs:
           mingw_root_win="$(cygpath -w "$(dirname "$(dirname "$(which g++)")")")"
           echo "Resolved MinGW root: ${mingw_root_win}"
           echo "MINGW_ROOT=${mingw_root_win}" >> "$GITHUB_ENV"
-          python scripts/build-local.py --backend sh --cmake-generator "MinGW Makefiles" 2>&1 | tee logs/build-local-msys2.log
+          python scripts/build-local.py --backend sh --cmake-generator "MinGW Makefiles" --fast 2>&1 | tee logs/build-local-msys2.log
 
       - name: Build native benchmark binaries (Linux/macOS)
         if: matrix.os_tag != 'windows'
         run: |
           set -euo pipefail
-          python scripts/build-local.py --backend sh 2>&1 | tee "logs/build-local-${{ matrix.os_tag }}.log"
+          python scripts/build-local.py --backend sh --fast 2>&1 | tee "logs/build-local-${{ matrix.os_tag }}.log"
 
       - name: Package desktop benchmark runner (Windows)
         if: matrix.os_tag == 'windows'

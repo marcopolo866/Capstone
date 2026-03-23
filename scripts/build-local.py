@@ -95,6 +95,11 @@ def main() -> int:
         help="Optional CMake generator override.",
     )
     parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Skip expensive validation checks (VF3 smoke + Glasgow parity).",
+    )
+    parser.add_argument(
         "passthrough",
         nargs=argparse.REMAINDER,
         help="Additional arguments passed to the backend script.",
@@ -112,6 +117,9 @@ def main() -> int:
     generator = str(args.cmake_generator or env.get("CMAKE_GENERATOR", "")).strip()
     if generator:
         env["CMAKE_GENERATOR"] = generator
+
+    if args.fast:
+        env["BUILD_LOCAL_FAST"] = "1"
 
     passthrough = list(args.passthrough or [])
     if passthrough and passthrough[0] == "--":

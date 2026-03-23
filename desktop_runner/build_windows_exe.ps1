@@ -230,8 +230,6 @@ $pyArgs = @(
     "--onefile",
     "--windowed",
     "--name", "capstone-benchmark-runner",
-    "--collect-all", "numpy",
-    "--collect-all", "matplotlib",
     "--hidden-import", "matplotlib.backends.backend_tkagg",
     "--hidden-import", "matplotlib.backends.backend_agg",
     "desktop_runner/app.py"

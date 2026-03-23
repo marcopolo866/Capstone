@@ -160,6 +160,20 @@ if (-not $PythonCommand) {
 }
 $PythonExe = $PythonCommand.Source
 
+$FastBuild = $false
+$fastRaw = [string]$env:BUILD_LOCAL_FAST
+if ($fastRaw) {
+    switch ($fastRaw.Trim().ToLowerInvariant()) {
+        "1" { $FastBuild = $true }
+        "true" { $FastBuild = $true }
+        "yes" { $FastBuild = $true }
+        "on" { $FastBuild = $true }
+    }
+}
+if ($FastBuild) {
+    Write-Host "BUILD_LOCAL_FAST enabled: skipping VF3 smoke + Glasgow parity checks"
+}
+
 Invoke-Step "Updating submodules" { git submodule update --init --recursive }
 
 Invoke-Step "Building Dijkstra baseline" {
@@ -189,46 +203,51 @@ Invoke-Step "Cleaning VF3 baseline outputs (fresh rebuild)" {
 Invoke-Step "Building VF3 baseline (vf3lib)" {
     make -C baselines/vf3lib vf3 "CFLAGS=$vf3CFlags"
 }
-Invoke-Step "VF3 baseline smoke test (small generated subgraph case)" {
-    $vf3Binary = Resolve-BinaryPathForWindowsPackaging -BasePath "baselines/vf3lib/bin/vf3"
-    if (-not $vf3Binary -or -not (Test-Path -LiteralPath $vf3Binary -PathType Leaf)) {
-        throw "Missing VF3 baseline binary for smoke test: $vf3Binary"
-    }
-    Write-Host "VF3 smoke test binary: $vf3Binary"
+if (-not $FastBuild) {
+    Invoke-Step "VF3 baseline smoke test (small generated subgraph case)" {
+        $vf3Binary = Resolve-BinaryPathForWindowsPackaging -BasePath "baselines/vf3lib/bin/vf3"
+        if (-not $vf3Binary -or -not (Test-Path -LiteralPath $vf3Binary -PathType Leaf)) {
+            throw "Missing VF3 baseline binary for smoke test: $vf3Binary"
+        }
+        Write-Host "VF3 smoke test binary: $vf3Binary"
 
-    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vf3_smoke_" + [System.Guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $tmpDir | Out-Null
-    try {
-        $genOut = & $PythonExe "utilities/generate_graphs.py" --algorithm subgraph --n 5 --k 2 --density 0.01 --seed 424242 --out-dir $tmpDir
-        if (-not $?) {
-            throw "Generator failed for VF3 smoke test."
-        }
-        $genLines = @($genOut)
-        if ($genLines.Count -lt 1) {
-            throw "Generator produced no output for VF3 smoke test."
-        }
-        $lastLine = ($genLines | Select-Object -Last 1).ToString().Trim()
-        $parts = $lastLine.Split(",")
-        if ($parts.Count -lt 4) {
-            throw "Failed to parse generated VF paths from output: $lastLine"
-        }
-        $vfPattern = $parts[2].Trim()
-        $vfTarget = $parts[3].Trim()
-        if (-not (Test-Path -LiteralPath $vfPattern -PathType Leaf)) {
-            throw "Generated VF pattern missing: $vfPattern"
-        }
-        if (-not (Test-Path -LiteralPath $vfTarget -PathType Leaf)) {
-            throw "Generated VF target missing: $vfTarget"
-        }
-        & $vf3Binary -u -r 0 -e $vfPattern $vfTarget | Out-Null
-        if (-not $?) {
-            throw "VF3 baseline smoke test command failed."
-        }
-    } finally {
-        if (Test-Path -LiteralPath $tmpDir) {
-            Remove-Item -LiteralPath $tmpDir -Recurse -Force
+        $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vf3_smoke_" + [System.Guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $tmpDir | Out-Null
+        try {
+            $genOut = & $PythonExe "utilities/generate_graphs.py" --algorithm subgraph --n 5 --k 2 --density 0.01 --seed 424242 --out-dir $tmpDir
+            if (-not $?) {
+                throw "Generator failed for VF3 smoke test."
+            }
+            $genLines = @($genOut)
+            if ($genLines.Count -lt 1) {
+                throw "Generator produced no output for VF3 smoke test."
+            }
+            $lastLine = ($genLines | Select-Object -Last 1).ToString().Trim()
+            $parts = $lastLine.Split(",")
+            if ($parts.Count -lt 4) {
+                throw "Failed to parse generated VF paths from output: $lastLine"
+            }
+            $vfPattern = $parts[2].Trim()
+            $vfTarget = $parts[3].Trim()
+            if (-not (Test-Path -LiteralPath $vfPattern -PathType Leaf)) {
+                throw "Generated VF pattern missing: $vfPattern"
+            }
+            if (-not (Test-Path -LiteralPath $vfTarget -PathType Leaf)) {
+                throw "Generated VF target missing: $vfTarget"
+            }
+            & $vf3Binary -u -r 0 -e $vfPattern $vfTarget | Out-Null
+            if (-not $?) {
+                throw "VF3 baseline smoke test command failed."
+            }
+        } finally {
+            if (Test-Path -LiteralPath $tmpDir) {
+                Remove-Item -LiteralPath $tmpDir -Recurse -Force
+            }
         }
     }
+} else {
+    Write-Host ""
+    Write-Host "==> Skipping VF3 baseline smoke test (BUILD_LOCAL_FAST=1)"
 }
 Invoke-Step "Building VF3 Gemini" {
     g++ -std=c++17 -O3 "src/[SubgraphIsomorphism][GEMINI][grf].cpp" -o "src/vf3"
@@ -285,8 +304,13 @@ Invoke-Step "Configuring Glasgow baseline" {
 Invoke-Step "Building Glasgow baseline" {
     cmake --build "baselines/glasgow-subgraph-solver/build" --config Release --parallel
 }
-Invoke-Step "Checking Glasgow parity" {
-    & $PythonExe "scripts/check-glasgow-parity.py"
+if (-not $FastBuild) {
+    Invoke-Step "Checking Glasgow parity" {
+        & $PythonExe "scripts/check-glasgow-parity.py"
+    }
+} else {
+    Write-Host ""
+    Write-Host "==> Skipping Glasgow parity check (BUILD_LOCAL_FAST=1)"
 }
 
 $expectedOutputs = @(

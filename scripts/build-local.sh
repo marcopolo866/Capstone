@@ -14,6 +14,7 @@ Builds the local/native binaries used by the benchmark workflows:
 Environment:
 - CMAKE_GENERATOR: optional CMake generator override
   Example (Windows Git Bash/MSYS2): CMAKE_GENERATOR="MinGW Makefiles"
+- BUILD_LOCAL_FAST: when truthy (1/true/yes/on), skips VF3 smoke and Glasgow parity checks
 EOF
   exit 0
 fi
@@ -31,6 +32,14 @@ run_step() {
   echo
   echo "==> $label"
   "$@"
+}
+
+is_truthy() {
+  local value="${1:-}"
+  case "${value,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 output_exists() {
@@ -83,6 +92,12 @@ else
   exit 1
 fi
 
+BUILD_LOCAL_FAST_MODE=0
+if is_truthy "${BUILD_LOCAL_FAST:-0}"; then
+  BUILD_LOCAL_FAST_MODE=1
+  echo "BUILD_LOCAL_FAST enabled: skipping VF3 smoke + Glasgow parity checks"
+fi
+
 run_step "Updating submodules" git submodule update --init --recursive
 
 run_step "Building Dijkstra baseline" \
@@ -103,29 +118,34 @@ run_step "Cleaning VF3 baseline outputs (fresh rebuild)" \
   rm -f baselines/vf3lib/bin/vf3 baselines/vf3lib/bin/vf3.exe
 run_step "Building VF3 baseline (vf3lib)" \
   make -C baselines/vf3lib vf3 CFLAGS="${vf3_cflags}"
-run_step "VF3 baseline smoke test (small generated subgraph case)" \
-  env PYTHON_BIN="${PYTHON_BIN}" bash -c '
-    set -euo pipefail
-    # Resolve like desktop_runner/build_windows_exe.ps1: prefer .exe on Windows.
-    vf3_bin="baselines/vf3lib/bin/vf3.exe"
-    if [[ ! -f "$vf3_bin" ]]; then
-      vf3_bin="baselines/vf3lib/bin/vf3"
-    fi
-    if [[ ! -f "$vf3_bin" ]]; then
-      echo "Missing VF3 baseline binary for smoke test" >&2
-      exit 1
-    fi
-    tmpdir="$(mktemp -d)"
-    trap "rm -rf \"$tmpdir\"" EXIT
-    gen_out="$("$PYTHON_BIN" utilities/generate_graphs.py --algorithm subgraph --n 5 --k 2 --density 0.01 --seed 424242 --out-dir "$tmpdir")"
-    last_line="$(printf "%s\n" "$gen_out" | tail -n1)"
-    IFS="," read -r _lad_pattern _lad_target vf_pattern vf_target <<< "$last_line"
-    if [[ -z "${vf_pattern:-}" || -z "${vf_target:-}" ]]; then
-      echo "Failed to parse generated VF paths from: $last_line" >&2
-      exit 1
-    fi
-    "$vf3_bin" -u -r 0 -e "$vf_pattern" "$vf_target" >/dev/null 2>&1
-  '
+if [[ "$BUILD_LOCAL_FAST_MODE" -eq 0 ]]; then
+  run_step "VF3 baseline smoke test (small generated subgraph case)" \
+    env PYTHON_BIN="${PYTHON_BIN}" bash -c '
+      set -euo pipefail
+      # Resolve like desktop_runner/build_windows_exe.ps1: prefer .exe on Windows.
+      vf3_bin="baselines/vf3lib/bin/vf3.exe"
+      if [[ ! -f "$vf3_bin" ]]; then
+        vf3_bin="baselines/vf3lib/bin/vf3"
+      fi
+      if [[ ! -f "$vf3_bin" ]]; then
+        echo "Missing VF3 baseline binary for smoke test" >&2
+        exit 1
+      fi
+      tmpdir="$(mktemp -d)"
+      trap "rm -rf \"$tmpdir\"" EXIT
+      gen_out="$("$PYTHON_BIN" utilities/generate_graphs.py --algorithm subgraph --n 5 --k 2 --density 0.01 --seed 424242 --out-dir "$tmpdir")"
+      last_line="$(printf "%s\n" "$gen_out" | tail -n1)"
+      IFS="," read -r _lad_pattern _lad_target vf_pattern vf_target <<< "$last_line"
+      if [[ -z "${vf_pattern:-}" || -z "${vf_target:-}" ]]; then
+        echo "Failed to parse generated VF paths from: $last_line" >&2
+        exit 1
+      fi
+      "$vf3_bin" -u -r 0 -e "$vf_pattern" "$vf_target" >/dev/null 2>&1
+    '
+else
+  echo
+  echo "==> Skipping VF3 baseline smoke test (BUILD_LOCAL_FAST=1)"
+fi
 run_step "Building VF3 Gemini" \
   g++ -std=c++17 -O3 -Wall -Wextra "src/[SubgraphIsomorphism][GEMINI][grf].cpp" -o "src/vf3"
 run_step "Building VF3 ChatGPT" \
@@ -184,8 +204,13 @@ reset_glasgow_build_dir_if_needed "$expected_generator"
 run_step "Configuring Glasgow baseline" cmake "${cmake_args[@]}"
 run_step "Building Glasgow baseline" \
   cmake --build "baselines/glasgow-subgraph-solver/build" --config Release --parallel
-run_step "Checking Glasgow parity" \
-  "$PYTHON_BIN" "scripts/check-glasgow-parity.py"
+if [[ "$BUILD_LOCAL_FAST_MODE" -eq 0 ]]; then
+  run_step "Checking Glasgow parity" \
+    "$PYTHON_BIN" "scripts/check-glasgow-parity.py"
+else
+  echo
+  echo "==> Skipping Glasgow parity check (BUILD_LOCAL_FAST=1)"
+fi
 
 expected_outputs=(
   "baselines/dijkstra"
