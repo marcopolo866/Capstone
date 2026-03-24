@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUTS_DIR = REPO_ROOT / "outputs"
 RESULT_TEXT_PATH = OUTPUTS_DIR / "result.txt"
 METRICS_PATH = OUTPUTS_DIR / "run_metrics.json"
+VISUALIZATION_SOLUTION_CAP = 2000
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -692,7 +693,7 @@ def mapping_from_pattern_nodes_hint(
     return mapping
 
 
-def extract_mappings_from_text(text: str, limit: int = 1000) -> list[dict[int, int]]:
+def extract_mappings_from_text(text: str, limit: int = VISUALIZATION_SOLUTION_CAP) -> list[dict[int, int]]:
     src = str(text or "")
     if not src:
         return []
@@ -759,7 +760,12 @@ def extract_mappings_from_text(text: str, limit: int = 1000) -> list[dict[int, i
     return out[:max_items]
 
 
-def normalize_mappings(mappings: list[dict[int, int]], pattern_n: int, target_n: int, limit: int = 1000) -> list[dict[int, int]]:
+def normalize_mappings(
+    mappings: list[dict[int, int]],
+    pattern_n: int,
+    target_n: int,
+    limit: int = VISUALIZATION_SOLUTION_CAP,
+) -> list[dict[int, int]]:
     out: list[dict[int, int]] = []
     seen: set[str] = set()
     max_items = max(1, int(limit))
@@ -998,12 +1004,21 @@ def build_visualization_iteration(
     nodes = [{"data": {"id": str(i), "label": str(i)}} for i in range(min(target_n, max_nodes))]
     edges = [{"data": {"id": f"{a}-{b}", "source": str(a), "target": str(b)}} for a, b in limited_edges]
 
+    expected_solution_count: int | None = None
     parsed_mappings: list[dict[int, int]] = []
     for source in mapping_sources:
-        parsed_mappings.extend(extract_mappings_from_text(source, limit=1000))
-        if len(parsed_mappings) >= 1000:
+        c = parse_solution_count(source)
+        if c is not None and c >= 0:
+            expected_solution_count = c if expected_solution_count is None else max(expected_solution_count, c)
+        parsed_mappings.extend(extract_mappings_from_text(source, limit=VISUALIZATION_SOLUTION_CAP))
+        if len(parsed_mappings) >= VISUALIZATION_SOLUTION_CAP:
             break
-    normalized = normalize_mappings(parsed_mappings, pattern_n, target_n, limit=1000)
+    normalized = normalize_mappings(
+        parsed_mappings,
+        pattern_n,
+        target_n,
+        limit=VISUALIZATION_SOLUTION_CAP,
+    )
     if not normalized:
         hinted = mapping_from_pattern_nodes_hint(
             pattern_nodes_hint,
@@ -1013,15 +1028,29 @@ def build_visualization_iteration(
             target_edge_set,
         )
         if hinted:
-            normalized = normalize_mappings([hinted], pattern_n, target_n, limit=1000)
-    if not normalized:
+            normalized = normalize_mappings(
+                [hinted],
+                pattern_n,
+                target_n,
+                limit=VISUALIZATION_SOLUTION_CAP,
+            )
+    # If outputs did not carry full mappings, discover additional mappings for visualization.
+    needed = VISUALIZATION_SOLUTION_CAP
+    if expected_solution_count is not None and expected_solution_count > 0:
+        needed = min(VISUALIZATION_SOLUTION_CAP, int(expected_solution_count))
+    if len(normalized) < needed:
         discovered = find_subgraph_mappings(
             pattern_adj,
             target_adj,
-            limit=256,
-            time_budget_ms=1200,
+            limit=needed,
+            time_budget_ms=5000,
         )
-        normalized = normalize_mappings(discovered, pattern_n, target_n, limit=1000)
+        normalized = normalize_mappings(
+            list(normalized) + list(discovered),
+            pattern_n,
+            target_n,
+            limit=VISUALIZATION_SOLUTION_CAP,
+        )
 
     solutions = []
     for mapping in normalized:
@@ -1048,10 +1077,13 @@ def build_visualization_iteration(
                 "highlight_edges": highlight_edges,
             }
         )
-        if len(solutions) >= 1000:
+        if len(solutions) >= VISUALIZATION_SOLUTION_CAP:
             break
 
     first = solutions[0] if solutions else None
+    cap_reached = len(solutions) >= VISUALIZATION_SOLUTION_CAP
+    if expected_solution_count is not None and expected_solution_count > VISUALIZATION_SOLUTION_CAP:
+        cap_reached = True
     payload = {
         "algorithm": str(algorithm or "").strip().lower(),
         "seed": seed,
@@ -1066,6 +1098,7 @@ def build_visualization_iteration(
         "pattern_nodes": (first.get("mapping") if first else []),
         "pattern_edges": [[a, b] for a, b in pattern_edges],
         "solutions": solutions,
+        "solution_cap_reached": bool(cap_reached),
         "no_solutions": len(solutions) == 0,
         "truncated": bool(truncated),
     }
@@ -1079,6 +1112,7 @@ def maybe_write_visualization(
     per_iteration_inputs: list[dict[str, Path]],
     baseline_first_outputs: list[str],
     baseline_all_outputs: list[str],
+    baseline_binary_path: str | None = None,
 ) -> None:
     if selected_family not in {"vf3", "glasgow"}:
         return
@@ -1104,6 +1138,25 @@ def maybe_write_visualization(
             target_adj = parse_lad_graph(Path(inputs["lad_target"]))
         first_out = baseline_first_outputs[idx] if idx < len(baseline_first_outputs) else ""
         all_out = baseline_all_outputs[idx] if idx < len(baseline_all_outputs) else ""
+        mapping_sources = [first_out, all_out]
+        if selected_family == "vf3" and baseline_binary_path:
+            preview = extract_mappings_from_text("\n".join(mapping_sources), limit=2)
+            if not preview:
+                vis_cmd = [
+                    str(baseline_binary_path),
+                    "-u",
+                    "-s",
+                    "-r",
+                    "0",
+                    "-e",
+                    str(inputs["vf_pattern"]),
+                    str(inputs["vf_target"]),
+                ]
+                _, _, vout, verr, vrc = run_with_peak_rss(vis_cmd)
+                if vrc == 0:
+                    vis_text = (vout or "") + ("\n" + verr if verr else "")
+                    if vis_text.strip():
+                        mapping_sources.insert(0, vis_text)
         vis_algorithm = "subgraph" if algorithm_input == "subgraph" else selected_family
         pattern_nodes_hint = parse_pattern_nodes_hint(inputs, selected_family)
         payloads.append(
@@ -1111,7 +1164,7 @@ def maybe_write_visualization(
                 algorithm=vis_algorithm,
                 pattern_adj=pattern_adj,
                 target_adj=target_adj,
-                mapping_sources=[first_out, all_out],
+                mapping_sources=mapping_sources,
                 pattern_nodes_hint=pattern_nodes_hint,
                 iteration=idx + 1,
                 seed=seed_val,
@@ -1468,6 +1521,7 @@ def main() -> int:
                     per_iteration_inputs=per_iteration_inputs,
                     baseline_first_outputs=per_solver_outputs.get((baseline_row.variant_id, "first"), []),
                     baseline_all_outputs=per_solver_outputs.get((baseline_row.variant_id, "all"), []),
+                    baseline_binary_path=baseline_row.binary_path,
                 )
             except Exception as vis_exc:
                 output_lines.append(f"[visualization warning] {vis_exc}")

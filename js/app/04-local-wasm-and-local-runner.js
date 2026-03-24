@@ -2712,7 +2712,7 @@ def capstone_run_local_generator(args, out_dir):
             }
             patternEdges.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
 
-            const solutionLimit = 1000;
+            const solutionLimit = 2000;
             const normalizeMappings = (rawMappings) => {
                 const inList = Array.isArray(rawMappings) ? rawMappings : [];
                 const out = [];
@@ -5123,7 +5123,7 @@ def capstone_run_local_generator(args, out_dir):
                                 baselineFormatFlag,
                                 '--print-all-solutions',
                                 '--solution-limit',
-                                '1000',
+                                '2000',
                                 patternFsPath,
                                 targetFsPath
                             ],

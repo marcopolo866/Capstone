@@ -1,5 +1,5 @@
         let visSolutionCapReached = false;
-        const VISUALIZER_SOLUTION_CAP = 1000;
+        const VISUALIZER_SOLUTION_CAP = 2000;
         let visParsedCountSections = [];
         // Tracks the graph structure that graphInstance was built for.
         // If the next iteration has an identical structure we skip the expensive
