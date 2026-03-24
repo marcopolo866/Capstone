@@ -86,103 +86,151 @@ static void skipWS(istream& s) {
 //   Line 1: <num_nodes>
 //   For each node: node_id [label]
 //   Then edges: <u> <v> [edge_label]
-// Real-world files are sometimes messy; we do a two-pass approach.
+// Real-world files are sometimes messy; we parse line-structured input first.
 
 static Graph parseGRF(const string& path) {
     ifstream f(path);
     if (!f) { cerr << "Cannot open: " << path << "\n"; exit(1); }
 
-    // Slurp all tokens
-    vector<string> tokens;
-    string tok;
-    while (f >> tok) {
-        if (tok[0] == '#') { string line; getline(f,line); continue; }
-        tokens.push_back(tok);
+    auto parseLineInts = [](const string& line) -> vector<int> {
+        vector<int> vals;
+        istringstream iss(line);
+        int x = 0;
+        while (iss >> x) vals.push_back(x);
+        return vals;
+    };
+
+    vector<string> lines;
+    string line;
+    while (getline(f, line)) {
+        string s = line;
+        auto hash_pos = s.find('#');
+        if (hash_pos != string::npos) s = s.substr(0, hash_pos);
+        bool only_space = true;
+        for (char c : s) {
+            if (!isspace((unsigned char)c)) { only_space = false; break; }
+        }
+        if (only_space) continue;
+        lines.push_back(s);
     }
+    if (lines.empty()) { cerr << "Empty graph file: " << path << "\n"; exit(1); }
 
     size_t pos = 0;
-    auto nextInt = [&]() -> int {
-        if (pos >= tokens.size()) return -1;
-        return stoi(tokens[pos++]);
-    };
-    auto peekStr = [&]() -> string {
-        return pos < tokens.size() ? tokens[pos] : "";
-    };
-    auto isNum = [](const string& s) -> bool {
-        if (s.empty()) return false;
-        size_t i = (s[0]=='-'||s[0]=='+') ? 1 : 0;
-        for (; i<s.size(); i++) if (!isdigit((unsigned char)s[i])) return false;
-        return true;
-    };
-
-    int n = nextInt();
+    vector<int> hdr = parseLineInts(lines[pos++]);
+    if (hdr.empty()) { cerr << "Bad node count header in: " << path << "\n"; exit(1); }
+    int n = hdr[0];
     if (n <= 0) { cerr << "Bad node count\n"; exit(1); }
     Graph g; g.init(n);
 
-    // read node labels (optional: if next token is non-numeric it might be a label)
+    // Node section: n lines of "id [label]".
+    // Keep an id->index map so edges can use explicit ids.
+    unordered_map<int, int> id2idx;
+    id2idx.reserve((size_t)n * 2);
     for (int i = 0; i < n; i++) {
-        if (isNum(peekStr())) {
-            int id = nextInt();
-            (void)id;
-            // optional label after id
-            if (!isNum(peekStr()) && !peekStr().empty()) {
-                g.vlabel[i] = (NodeLabel)hash<string>{}(tokens[pos++]);
-            } else if (isNum(peekStr())) {
-                // could be label as integer
-                // heuristic: if value looks like a label (not a node id), store it
-                g.vlabel[i] = nextInt();
-            }
-        } else {
-            // label only
-            g.vlabel[i] = (NodeLabel)hash<string>{}(tokens[pos++]);
-        }
+        if (pos >= lines.size()) { cerr << "Unexpected EOF in node section: " << path << "\n"; exit(1); }
+        vector<int> vals = parseLineInts(lines[pos++]);
+        if (vals.empty()) { i--; continue; }
+        int id = vals[0];
+        id2idx[id] = i;
+        if ((int)vals.size() >= 2) g.vlabel[i] = vals[1];
+        else g.vlabel[i] = id;
     }
 
-    // read edge count if present
-    int eCount = -1;
-    if (isNum(peekStr())) {
-        // might be edge count or first edge u
-        // peek further: if we see a pair of node ids, no separate edge count
-        // We'll just try to parse edge-count then edges
-        size_t saved = pos;
-        int maybe = nextInt();
-        if (isNum(peekStr())) {
-            int nxt = stoi(tokens[pos]);
-            if (nxt >= 0 && nxt < n) {
-                // looks like first edge already
-                pos = saved;
-                eCount = -1;
+    auto mapNodeId = [&](int id) -> int {
+        auto it = id2idx.find(id);
+        if (it != id2idx.end()) return it->second;
+        if (0 <= id && id < n) return id;
+        return -1;
+    };
+
+    // Try canonical VF/GRF block format first:
+    // for each node: line with edge count m, then m edge lines.
+    size_t saved_pos = pos;
+    bool parsed_block_format = true;
+    vector<tuple<int, int, EdgeLabel>> pending_edges;
+    pending_edges.reserve(1024);
+
+    for (int node_ord = 0; node_ord < n; node_ord++) {
+        if (pos >= lines.size()) { parsed_block_format = false; break; }
+        vector<int> count_vals = parseLineInts(lines[pos++]);
+        if (count_vals.empty()) { parsed_block_format = false; break; }
+        int m = count_vals[0];
+        if (m < 0) { parsed_block_format = false; break; }
+
+        for (int e = 0; e < m; e++) {
+            if (pos >= lines.size()) { parsed_block_format = false; break; }
+            vector<int> ev = parseLineInts(lines[pos++]);
+            if (ev.empty()) { parsed_block_format = false; break; }
+
+            int u_id = -1;
+            int v_id = -1;
+            EdgeLabel el = 0;
+
+            if ((int)ev.size() >= 2) {
+                int a = ev[0], b = ev[1];
+                // "u v [label]" is preferred.
+                if (mapNodeId(a) >= 0 && mapNodeId(b) >= 0) {
+                    u_id = a; v_id = b;
+                    if ((int)ev.size() >= 3) el = ev[2];
+                } else {
+                    // "v [label]" style within a node block.
+                    u_id = node_ord;
+                    v_id = a;
+                    el = b;
+                }
             } else {
-                eCount = maybe;
+                // Single value: treat as destination id, source is current node.
+                u_id = node_ord;
+                v_id = ev[0];
             }
-        } else {
-            pos = saved;
+
+            int u = mapNodeId(u_id);
+            int v = mapNodeId(v_id);
+            if (u < 0 || v < 0 || u == v) continue;
+            pending_edges.emplace_back(u, v, el);
+        }
+        if (!parsed_block_format) break;
+    }
+
+    if (!parsed_block_format) {
+        // Fallback: parse remaining lines as loose edge list "u v [label]".
+        pending_edges.clear();
+        pos = saved_pos;
+        while (pos < lines.size()) {
+            vector<int> ev = parseLineInts(lines[pos++]);
+            if ((int)ev.size() < 2) continue;
+            int u = mapNodeId(ev[0]);
+            int v = mapNodeId(ev[1]);
+            if (u < 0 || v < 0 || u == v) continue;
+            EdgeLabel el = ((int)ev.size() >= 3) ? ev[2] : 0;
+            pending_edges.emplace_back(u, v, el);
         }
     }
 
-    // read edges
-    int edgesRead = 0;
-    while (pos < tokens.size()) {
-        if (!isNum(tokens[pos])) { pos++; continue; }
-        int u = nextInt();
-        if (pos >= tokens.size() || !isNum(tokens[pos])) break;
-        int v = nextInt();
-        if (u < 0 || u >= n || v < 0 || v >= n) break;
-        EdgeLabel el = 0;
-        if (isNum(peekStr())) el = nextInt();
+    for (auto [u, v, el] : pending_edges) {
         g.addEdge(u, v, el);
-        edgesRead++;
-        if (eCount > 0 && edgesRead >= eCount) break;
     }
 
     // detect uniform labels
     g.allSameVLabel = true;
     for (int i = 1; i < n; i++)
         if (g.vlabel[i] != g.vlabel[0]) { g.allSameVLabel = false; break; }
+
     g.allSameELabel = true;
-    for (int u = 0; u < n && g.allSameELabel; u++)
-        for (auto [v,el] : g.out[u])
-            if (el != g.out[0].empty() ? 0 : el) { g.allSameELabel = false; break; }
+    bool have_any_edge = false;
+    EdgeLabel first_el = 0;
+    for (int u = 0; u < n && g.allSameELabel; u++) {
+        for (auto [v, el] : g.out[u]) {
+            (void)v;
+            if (!have_any_edge) {
+                have_any_edge = true;
+                first_el = el;
+            } else if (el != first_el) {
+                g.allSameELabel = false;
+                break;
+            }
+        }
+    }
 
     g.buildBits();
     return g;
