@@ -85,6 +85,7 @@ def parse_solution_count(text: str) -> int | None:
     if not src:
         return None
     patterns = [
+        r"(?im)\bsolution[_\s-]*count\s*[:=]\s*(-?\d+)\b",
         r"(?im)\bsolutions?\s*(?:count|found|total)?\s*[:=]\s*(-?\d+)\b",
         r"(?im)\bcount\s*[:=]\s*(-?\d+)\b",
         r"(?im)\b(-?\d+)\s+solutions?\b",
@@ -100,7 +101,134 @@ def parse_solution_count(text: str) -> int | None:
     lines = [line.strip() for line in src.splitlines() if line.strip()]
     if len(lines) == 1 and re.fullmatch(r"-?\d+", lines[0]):
         return int(lines[0])
+
+    # VF3-style compact output: "<solutions> <first_time> <all_time>"
+    compact_three = re.compile(
+        r"^\s*(-?\d+)\s+[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+        r"(?:\s+[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?){1,}\s*$"
+    )
+    for line in lines:
+        m = compact_three.match(line)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                pass
+
+    # Fallback: count mapping lines when explicit count is not present.
+    mapping_lines = 0
+    for line in lines:
+        if re.search(r"(?i)\bmapping\s*[:=]", line) and re.search(r"\d+\s*->\s*\d+", line):
+            mapping_lines += 1
+    if mapping_lines > 0:
+        return mapping_lines
+
+    pair_lines = 0
+    for line in lines:
+        if re.search(r"\(\s*\d+\s*->\s*\d+\s*\)", line):
+            pair_lines += 1
+    if pair_lines > 0:
+        return pair_lines
+
+    # Last-resort numeric line (skip obvious timing/resource lines).
+    noise_words = ("runtime", "time", "ms", "rss", "memory", "peak", "loaded", "finished")
+    for line in lines:
+        low = line.lower()
+        if any(word in low for word in noise_words):
+            continue
+        m = re.match(r"^\s*(-?\d+)\b", line)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                continue
     return None
+
+
+def parse_solution_count_sections(output_text: str) -> dict[str, list[str]]:
+    lines = [str(line or "").strip() for line in str(output_text or "").replace("\r", "").split("\n")]
+    sections: dict[str, list[str]] = {}
+    current = ""
+    i = 0
+    while i < len(lines):
+        trimmed = lines[i]
+        if not trimmed:
+            i += 1
+            continue
+        section_match = re.match(r"^\[([^\]]+)\](?:\s*(.*))?$", trimmed)
+        if section_match:
+            section_name = str(section_match.group(1) or "").strip()
+            suffix = str(section_match.group(2) or "").strip()
+            current = f"{section_name} {suffix}".strip() if suffix else section_name
+            i += 1
+            continue
+        if re.match(r"^Solution counts:\s*", trimmed, flags=re.IGNORECASE):
+            block = re.sub(r"^Solution counts:\s*", "", trimmed, flags=re.IGNORECASE).strip()
+            while "]" not in block and (i + 1) < len(lines):
+                next_line = str(lines[i + 1] or "").strip()
+                if next_line and re.match(r"^\[.+\]$", next_line):
+                    break
+                i += 1
+                if next_line:
+                    block += (" " if block else "") + next_line
+                if "]" in next_line:
+                    break
+            open_idx = block.find("[")
+            close_idx = block.rfind("]")
+            if open_idx >= 0 and close_idx > open_idx:
+                inner = block[open_idx + 1 : close_idx]
+                counts = [item.strip() for item in inner.split(",") if item.strip()]
+                if counts:
+                    sections[current or "unknown"] = counts
+        i += 1
+    return sections
+
+
+def parse_count_token(value: str) -> int | None:
+    token = str(value or "").strip()
+    if not token or token.upper() == "NA":
+        return None
+    if re.fullmatch(r"-?\d+", token):
+        return int(token)
+    m = re.search(r"-?\d+", token)
+    if not m:
+        return None
+    try:
+        return int(m.group(0))
+    except ValueError:
+        return None
+
+
+def load_previous_vf3_baseline_counts(iterations: int) -> list[int | None] | None:
+    result_path = OUTPUTS_DIR / "result.json"
+    if not result_path.is_file():
+        return None
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    output_text = str(payload.get("output") or "")
+    if not output_text:
+        return None
+    sections = parse_solution_count_sections(output_text)
+    if not sections:
+        return None
+
+    selected: list[str] | None = None
+    for section, counts in sections.items():
+        key = section.strip().lower()
+        if "vf3 baseline" in key or "subgraph vf3 baseline" in key:
+            selected = counts
+            break
+    if not selected:
+        return None
+
+    parsed = [parse_count_token(item) for item in selected]
+    if len(parsed) < iterations:
+        parsed.extend([None] * (iterations - len(parsed)))
+    return parsed[:iterations]
 
 
 def normalize_dijkstra_output(text: str) -> str:
@@ -507,6 +635,63 @@ def edge_key(u: int, v: int) -> tuple[int, int] | None:
     return (u, v) if u < v else (v, u)
 
 
+def parse_pattern_nodes_hint(inputs: dict[str, Path], selected_family: str) -> list[int] | None:
+    try:
+        if selected_family == "vf3":
+            pattern_path = Path(inputs["vf_pattern"])
+        else:
+            pattern_path = Path(inputs["lad_pattern"])
+    except Exception:
+        return None
+    metadata_path = pattern_path.parent / "metadata.json"
+    if not metadata_path.is_file():
+        return None
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    values = payload.get("pattern_nodes")
+    if not isinstance(values, list) or not values:
+        return None
+    parsed: list[int] = []
+    for raw in values:
+        try:
+            parsed.append(int(raw))
+        except (TypeError, ValueError):
+            return None
+    return parsed
+
+
+def mapping_from_pattern_nodes_hint(
+    hint_nodes: list[int] | None,
+    pattern_n: int,
+    target_n: int,
+    pattern_edges: list[tuple[int, int]],
+    target_edge_set: set[tuple[int, int]],
+) -> dict[int, int] | None:
+    if not hint_nodes or pattern_n <= 0:
+        return None
+    if len(hint_nodes) < pattern_n:
+        return None
+    mapping: dict[int, int] = {}
+    used: set[int] = set()
+    for p in range(pattern_n):
+        t = int(hint_nodes[p])
+        if t < 0 or t >= target_n or t in used:
+            return None
+        used.add(t)
+        mapping[p] = t
+    for a, b in pattern_edges:
+        ta = mapping.get(a)
+        tb = mapping.get(b)
+        if ta is None or tb is None:
+            return None
+        ek = edge_key(ta, tb)
+        if ek is None or ek not in target_edge_set:
+            return None
+    return mapping
+
+
 def extract_mappings_from_text(text: str, limit: int = 1000) -> list[dict[int, int]]:
     src = str(text or "")
     if not src:
@@ -632,12 +817,152 @@ def normalize_mappings(mappings: list[dict[int, int]], pattern_n: int, target_n:
     return out
 
 
+def find_subgraph_mappings(
+    pattern_adj: list[list[int]],
+    target_adj: list[list[int]],
+    *,
+    limit: int = 64,
+    time_budget_ms: int = 800,
+) -> list[dict[int, int]]:
+    p_n = len(pattern_adj)
+    t_n = len(target_adj)
+    if p_n == 0 or t_n == 0 or p_n > t_n:
+        return []
+
+    p_sets = [set(int(v) for v in row if isinstance(v, int)) for row in pattern_adj]
+    t_sets = [set(int(v) for v in row if isinstance(v, int)) for row in target_adj]
+    p_deg = [len(s) for s in p_sets]
+    t_deg = [len(s) for s in t_sets]
+
+    candidates: list[list[int]] = []
+    for p in range(p_n):
+        cand = [t for t in range(t_n) if t_deg[t] >= p_deg[p]]
+        if not cand:
+            return []
+        candidates.append(cand)
+
+    order = list(range(p_n))
+    order.sort(key=lambda p: (len(candidates[p]), -p_deg[p]))
+    mapping = [-1] * p_n
+    used = [False] * t_n
+    results: list[dict[int, int]] = []
+    started = time.perf_counter()
+    budget_sec = max(0.05, float(time_budget_ms) / 1000.0)
+
+    def timed_out() -> bool:
+        return (time.perf_counter() - started) > budget_sec
+
+    def consistent(p: int, t: int) -> bool:
+        for q in range(p_n):
+            tq = mapping[q]
+            if tq < 0:
+                continue
+            if q in p_sets[p] and tq not in t_sets[t]:
+                return False
+        return True
+
+    def search(depth: int) -> bool:
+        if timed_out():
+            return False
+        if len(results) >= max(1, int(limit)):
+            return True
+        if depth >= p_n:
+            results.append({i: mapping[i] for i in range(p_n)})
+            return len(results) >= max(1, int(limit))
+
+        p = order[depth]
+        cand = sorted(candidates[p], key=lambda t: len(t_sets[t]))
+        for t in cand:
+            if used[t]:
+                continue
+            if not consistent(p, t):
+                continue
+            used[t] = True
+            mapping[p] = t
+            stop = search(depth + 1)
+            mapping[p] = -1
+            used[t] = False
+            if stop:
+                return True
+            if timed_out():
+                return False
+        return False
+
+    search(0)
+    return results
+
+
+def render_ascii_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    if not headers:
+        return []
+    cols = len(headers)
+    normalized_rows = []
+    for row in rows:
+        r = [str(cell) for cell in (row or [])]
+        if len(r) < cols:
+            r.extend([""] * (cols - len(r)))
+        normalized_rows.append(r[:cols])
+    widths = [len(str(h)) for h in headers]
+    for row in normalized_rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+
+    def fmt_row(values: list[str]) -> str:
+        return " | ".join(str(values[i]).ljust(widths[i]) for i in range(cols))
+
+    sep = "-+-".join("-" * widths[i] for i in range(cols))
+    lines = [fmt_row([str(h) for h in headers]), sep]
+    for row in normalized_rows:
+        lines.append(fmt_row(row))
+    return lines
+
+
+def fmt_ms(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.3f}"
+
+
+def fmt_int(value: int | None) -> str:
+    if value is None:
+        return "n/a"
+    return str(int(value))
+
+
+def fmt_median_stdev(median_value: float | int | None, stdev_value: float | int | None) -> str:
+    med = "n/a" if median_value is None else f"{float(median_value):.3f}"
+    sd = "n/a" if stdev_value is None else f"{float(stdev_value):.3f}"
+    return f"median={med} stdev={sd}"
+
+
+def fmt_labeled_median_stdev(
+    label: str,
+    median_value: float | int | None,
+    stdev_value: float | int | None,
+    *,
+    label_width: int = 24,
+    value_width: int = 10,
+) -> str:
+    med = "n/a" if median_value is None else f"{float(median_value):.3f}"
+    sd = "n/a" if stdev_value is None else f"{float(stdev_value):.3f}"
+    return (
+        f"{str(label):<{label_width}} "
+        f"median={med:>{value_width}}  "
+        f"stdev={sd:>{value_width}}"
+    )
+
+
+def fmt_labeled_value(label: str, value: str, *, label_width: int = 24) -> str:
+    return f"{str(label):<{label_width}} {str(value)}"
+
+
 def build_visualization_iteration(
     *,
     algorithm: str,
     pattern_adj: list[list[int]],
     target_adj: list[list[int]],
     mapping_sources: list[str],
+    pattern_nodes_hint: list[int] | None,
     iteration: int,
     seed: int | None,
 ) -> dict:
@@ -679,6 +1004,24 @@ def build_visualization_iteration(
         if len(parsed_mappings) >= 1000:
             break
     normalized = normalize_mappings(parsed_mappings, pattern_n, target_n, limit=1000)
+    if not normalized:
+        hinted = mapping_from_pattern_nodes_hint(
+            pattern_nodes_hint,
+            pattern_n,
+            target_n,
+            pattern_edges,
+            target_edge_set,
+        )
+        if hinted:
+            normalized = normalize_mappings([hinted], pattern_n, target_n, limit=1000)
+    if not normalized:
+        discovered = find_subgraph_mappings(
+            pattern_adj,
+            target_adj,
+            limit=256,
+            time_budget_ms=1200,
+        )
+        normalized = normalize_mappings(discovered, pattern_n, target_n, limit=1000)
 
     solutions = []
     for mapping in normalized:
@@ -762,12 +1105,14 @@ def maybe_write_visualization(
         first_out = baseline_first_outputs[idx] if idx < len(baseline_first_outputs) else ""
         all_out = baseline_all_outputs[idx] if idx < len(baseline_all_outputs) else ""
         vis_algorithm = "subgraph" if algorithm_input == "subgraph" else selected_family
+        pattern_nodes_hint = parse_pattern_nodes_hint(inputs, selected_family)
         payloads.append(
             build_visualization_iteration(
                 algorithm=vis_algorithm,
                 pattern_adj=pattern_adj,
                 target_adj=target_adj,
                 mapping_sources=[first_out, all_out],
+                pattern_nodes_hint=pattern_nodes_hint,
                 iteration=idx + 1,
                 seed=seed_val,
             )
@@ -1047,12 +1392,30 @@ def main() -> int:
                     }
                 )
 
+        solution_counts_by_variant: dict[str, list[str]] = {}
+        comparison_reference_label: str | None = None
+        comparison_reference_counts: list[int | None] = []
         if selected_family == "dijkstra":
             baseline_outputs = per_solver_outputs[(baseline_row.variant_id, "single")]
         else:
             baseline_outputs = per_solver_outputs[(baseline_row.variant_id, "all")]
             if not baseline_outputs:
                 baseline_outputs = per_solver_outputs[(baseline_row.variant_id, "first")]
+            baseline_counts_values: list[int | None] = []
+            for out in baseline_outputs:
+                c = parse_solution_count(out)
+                baseline_counts_values.append(c)
+            baseline_counts = [str(c) if c is not None else "NA" for c in baseline_counts_values]
+            solution_counts_by_variant[baseline_row.variant_id] = baseline_counts
+            comparison_reference_counts = list(baseline_counts_values)
+            comparison_reference_label = baseline_row.label
+
+            # In combined subgraph mode, use VF3 baseline (phase 1) as the correctness reference.
+            if algorithm_input == "subgraph" and selected_family != "vf3":
+                vf3_counts = load_previous_vf3_baseline_counts(iterations)
+                if vf3_counts and any(v is not None for v in vf3_counts):
+                    comparison_reference_counts = vf3_counts
+                    comparison_reference_label = "VF3 Baseline (phase 1)"
 
         for row in by_role:
             if row.role == "baseline":
@@ -1077,17 +1440,21 @@ def main() -> int:
                 row_outputs = per_solver_outputs[(row.variant_id, "all")]
                 if not row_outputs:
                     row_outputs = per_solver_outputs[(row.variant_id, "first")]
+                row_counts = []
                 for i, out in enumerate(row_outputs):
-                    if i >= len(baseline_outputs):
+                    parsed_count = parse_solution_count(out)
+                    row_counts.append(str(parsed_count) if parsed_count is not None else "NA")
+                    if i >= len(comparison_reference_counts):
                         continue
-                    left = parse_solution_count(baseline_outputs[i])
-                    right = parse_solution_count(out)
+                    left = comparison_reference_counts[i]
+                    right = parsed_count
                     if left is None or right is None:
                         continue
                     total += 1
                     if left == right:
                         matches += 1
                 mismatches = max(0, total - matches)
+                solution_counts_by_variant[row.variant_id] = row_counts
             key = row.llm_key or row.variant_id
             if algorithm_input == "subgraph":
                 key = row.variant_id
@@ -1111,6 +1478,8 @@ def main() -> int:
         output_lines.append(f"Iterations: {iterations}")
         output_lines.append(f"Warmup: {warmup}")
         output_lines.append(f"Seed used: {base_seed}")
+        if comparison_reference_label and comparison_reference_label != baseline_row.label:
+            output_lines.append(f"Equivalence reference: {comparison_reference_label}")
         if first_only_fallback_rows:
             output_lines.append(
                 "First-only fallback used for: "
@@ -1121,77 +1490,109 @@ def main() -> int:
             for item in skipped_rows:
                 output_lines.append(f"  - {item}")
         output_lines.append("")
-        for row in by_role:
-            key = build_variant_metric_key(row)
-            if algorithm_input == "dijkstra":
-                metric_key = key
-                ms = timings_ms.get(metric_key)
-                kb = memory_kb.get(metric_key)
-                ms_stdev = timings_ms_stdev.get(metric_key)
-                kb_stdev = memory_kb_stdev.get(metric_key)
-                output_lines.append(f"[{row.label}] runtime_ms={ms if ms is not None else 'n/a'} peak_rss_kb={kb if kb is not None else 'n/a'}")
-                output_lines.append(f"{row.label} stats:")
+        if algorithm_input == "dijkstra":
+            for row in by_role:
+                metric_key = build_variant_metric_key(row)
+                output_lines.append(f"[{row.label}]")
                 output_lines.append(
-                    f"  runtime_median_ms={ms if ms is not None else 'n/a'} "
-                    f"runtime_stdev_ms={ms_stdev if ms_stdev is not None else 'n/a'}"
+                    fmt_labeled_median_stdev(
+                        "Runtime (ms)",
+                        timings_ms.get(metric_key),
+                        timings_ms_stdev.get(metric_key),
+                    )
                 )
                 output_lines.append(
-                    f"  peak_rss_median_kb={kb if kb is not None else 'n/a'} "
-                    f"peak_rss_stdev_kb={kb_stdev if kb_stdev is not None else 'n/a'}"
+                    fmt_labeled_median_stdev(
+                        "Peak RSS (KB)",
+                        memory_kb.get(metric_key),
+                        memory_kb_stdev.get(metric_key),
+                    )
                 )
-                output_lines.append(f"  samples={len(per_solver_times.get((row.variant_id, 'single'), []))}")
-            else:
+                output_lines.append(
+                    fmt_labeled_value(
+                        "Samples",
+                        str(len(per_solver_times.get((row.variant_id, "single"), []))),
+                    )
+                )
+                output_lines.append("")
+        else:
+            for row in by_role:
+                key = build_variant_metric_key(row)
                 metric_prefix = key
                 if algorithm_input == "subgraph":
                     metric_prefix = f"{selected_family}_{metric_prefix}"
-                ms_first = timings_ms.get(f"{metric_prefix}_first")
-                ms_all = timings_ms.get(f"{metric_prefix}_all")
-                kb_first = memory_kb.get(f"{metric_prefix}_first")
-                kb_all = memory_kb.get(f"{metric_prefix}_all")
-                ms_first_stdev = timings_ms_stdev.get(f"{metric_prefix}_first")
-                ms_all_stdev = timings_ms_stdev.get(f"{metric_prefix}_all")
-                kb_first_stdev = memory_kb_stdev.get(f"{metric_prefix}_first")
-                kb_all_stdev = memory_kb_stdev.get(f"{metric_prefix}_all")
+
+                output_lines.append(f"[{row.label}]")
+                if row.role != "baseline":
+                    match_key = row.llm_key or row.variant_id
+                    if algorithm_input == "subgraph":
+                        match_key = row.variant_id
+                    match_row = match_counts.get(match_key)
+                    if isinstance(match_row, dict):
+                        matched = match_row.get("matches", "n/a")
+                        total = match_row.get("total", "n/a")
+                        mismatches = match_row.get("mismatches", "n/a")
+                        output_lines.append(
+                            fmt_labeled_value(
+                                "Equivalence",
+                                f"{matched}/{total} matched ({mismatches} mismatches)",
+                            )
+                        )
                 output_lines.append(
-                    f"[{row.label}] first_runtime_ms={ms_first if ms_first is not None else 'n/a'} "
-                    f"all_runtime_ms={ms_all if ms_all is not None else 'n/a'} "
-                    f"first_peak_rss_kb={kb_first if kb_first is not None else 'n/a'} "
-                    f"all_peak_rss_kb={kb_all if kb_all is not None else 'n/a'}"
-                )
-                output_lines.append(f"{row.label} stats:")
-                output_lines.append(
-                    f"  first_runtime_median_ms={ms_first if ms_first is not None else 'n/a'} "
-                    f"first_runtime_stdev_ms={ms_first_stdev if ms_first_stdev is not None else 'n/a'}"
-                )
-                output_lines.append(
-                    f"  all_runtime_median_ms={ms_all if ms_all is not None else 'n/a'} "
-                    f"all_runtime_stdev_ms={ms_all_stdev if ms_all_stdev is not None else 'n/a'}"
-                )
-                output_lines.append(
-                    f"  first_peak_rss_median_kb={kb_first if kb_first is not None else 'n/a'} "
-                    f"first_peak_rss_stdev_kb={kb_first_stdev if kb_first_stdev is not None else 'n/a'}"
-                )
-                output_lines.append(
-                    f"  all_peak_rss_median_kb={kb_all if kb_all is not None else 'n/a'} "
-                    f"all_peak_rss_stdev_kb={kb_all_stdev if kb_all_stdev is not None else 'n/a'}"
-                )
-                output_lines.append(
-                    f"  samples_first={len(per_solver_times.get((row.variant_id, 'first'), []))} "
-                    f"samples_all={len(per_solver_times.get((row.variant_id, 'all'), []))}"
-                )
-            if row.role != "baseline":
-                match_key = row.llm_key or row.variant_id
-                if algorithm_input == "subgraph":
-                    match_key = row.variant_id
-                match_row = match_counts.get(match_key)
-                if isinstance(match_row, dict):
-                    output_lines.append(
-                        "  equivalence: "
-                        f"matches={match_row.get('matches', 'n/a')} "
-                        f"total={match_row.get('total', 'n/a')} "
-                        f"mismatches={match_row.get('mismatches', 'n/a')}"
+                    fmt_labeled_median_stdev(
+                        "Runtime First (ms)",
+                        timings_ms.get(f"{metric_prefix}_first"),
+                        timings_ms_stdev.get(f"{metric_prefix}_first"),
                     )
+                )
+                output_lines.append(
+                    fmt_labeled_median_stdev(
+                        "Runtime All (ms)",
+                        timings_ms.get(f"{metric_prefix}_all"),
+                        timings_ms_stdev.get(f"{metric_prefix}_all"),
+                    )
+                )
+                output_lines.append(
+                    fmt_labeled_median_stdev(
+                        "Peak RSS First (KB)",
+                        memory_kb.get(f"{metric_prefix}_first"),
+                        memory_kb_stdev.get(f"{metric_prefix}_first"),
+                    )
+                )
+                output_lines.append(
+                    fmt_labeled_median_stdev(
+                        "Peak RSS All (KB)",
+                        memory_kb.get(f"{metric_prefix}_all"),
+                        memory_kb_stdev.get(f"{metric_prefix}_all"),
+                    )
+                )
+                output_lines.append(
+                    fmt_labeled_value(
+                        "Samples (first/all)",
+                        f"{len(per_solver_times.get((row.variant_id, 'first'), []))}/"
+                        f"{len(per_solver_times.get((row.variant_id, 'all'), []))}",
+                    )
+                )
+                output_lines.append("")
+
+            count_headers = ["Variant"] + [f"I{i + 1}" for i in range(iterations)]
+            count_rows: list[list[str]] = []
+            for row in by_role:
+                counts = solution_counts_by_variant.get(row.variant_id, [])
+                padded = list(counts) + ["NA"] * max(0, iterations - len(counts))
+                count_rows.append([row.label, *padded[:iterations]])
+            output_lines.append("Solution Counts Per Iteration:")
+            output_lines.extend(render_ascii_table(count_headers, count_rows))
             output_lines.append("")
+
+            # Keep this explicit format so the visualizer's count parser can read it.
+            for row in by_role:
+                counts = solution_counts_by_variant.get(row.variant_id, [])
+                if not counts:
+                    continue
+                output_lines.append(f"[{row.label}]")
+                output_lines.append(f"Solution counts: [{', '.join(counts)}]")
+                output_lines.append("")
 
     except Exception as exc:
         exit_code = 1

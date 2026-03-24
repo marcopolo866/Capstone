@@ -1389,22 +1389,37 @@ self.onmessage = async function(ev) {
             return { n, mean, median, stdev, min, max };
         }
 
+        const STATS_LABEL_WIDTH = 40;
+        const STATS_VALUE_WIDTH = 10;
+
+        function formatAlignedLabelValueRow(label, value, labelWidth = STATS_LABEL_WIDTH) {
+            const cleanLabel = String(label || '').trim().replace(/:\s*$/, '');
+            return `${cleanLabel.padEnd(labelWidth)} ${String(value == null ? '' : value)}`;
+        }
+
+        function formatAlignedMedianStdevRow(label, stats, labelWidth = STATS_LABEL_WIDTH) {
+            if (!stats) return '';
+            const cleanLabel = String(label || '').trim().replace(/:\s*$/, '');
+            const fmt = (v) => Number(v).toFixed(3).padStart(STATS_VALUE_WIDTH);
+            return `${cleanLabel.padEnd(labelWidth)} median=${fmt(stats.median)}  stdev=${fmt(stats.stdev)}`;
+        }
+
         function formatStatsMsFirstAll(prefix, firstStats, allStats) {
-            const pfx = String(prefix || '');
-            const indent = ' '.repeat(pfx.length);
-            const fmt = (v) => Number(v).toFixed(3).padStart(10);
-            const line = (lead, label, s) => `${lead}${String(label).padEnd(5)} median=${fmt(s.median)} mean=${fmt(s.mean)} stdev=${fmt(s.stdev)} min=${fmt(s.min)} max=${fmt(s.max)}`;
+            const raw = String(prefix || '').trim().replace(/:\s*$/, '');
+            const unitMatch = raw.match(/^(.*)\(([^)]+)\)$/);
+            const base = unitMatch ? String(unitMatch[1] || '').trim() : raw;
+            const unit = unitMatch ? String(unitMatch[2] || '').trim() : '';
+            const firstLabel = unit ? `${base} First (${unit})` : `${base} First`;
+            const allLabel = unit ? `${base} All (${unit})` : `${base} All`;
+            const width = Math.max(STATS_LABEL_WIDTH, firstLabel.length, allLabel.length);
             return [
-                line(pfx, 'first', firstStats),
-                line(indent, 'all', allStats)
-            ];
+                formatAlignedMedianStdevRow(firstLabel, firstStats, width),
+                formatAlignedMedianStdevRow(allLabel, allStats, width)
+            ].filter(Boolean);
         }
 
         function formatStatsMsSummary(prefix, stats) {
-            if (!stats) return '';
-            const pfx = String(prefix || '');
-            const fmt = (v) => Number(v).toFixed(3);
-            return `${pfx}median=${fmt(stats.median)} mean=${fmt(stats.mean)} stdev=${fmt(stats.stdev)} min=${fmt(stats.min)} max=${fmt(stats.max)}`;
+            return formatAlignedMedianStdevRow(prefix, stats, STATS_LABEL_WIDTH);
         }
 
         function formatWasmMemoryStatsPrefix(metricInfo) {
@@ -3256,6 +3271,7 @@ def capstone_run_local_generator(args, out_dir):
                     lines.push(`[${title}]`);
                     if (stats) {
                         lines.push(formatStatsMsSummary('Runtime (ms): ', stats));
+                        lines.push(formatAlignedLabelValueRow('Samples', String(stats.n)));
                     }
                     if (memStats) {
                         lines.push(formatStatsMsSummary(memoryPrefix, memStats));
@@ -4100,13 +4116,19 @@ def capstone_run_local_generator(args, out_dir):
                 const addSection = (title, _result, firstStats, allStats, firstMemStats, allMemStats, matchInfo = null, countList = null) => {
                     lines.push(`[${title}]`);
                     if (matchInfo && Number.isInteger(matchInfo.matches) && Number.isInteger(matchInfo.total)) {
-                        lines.push(`Matches: ${matchInfo.matches}/${matchInfo.total} (mismatches: ${matchInfo.mismatches})`);
+                        lines.push(
+                            formatAlignedLabelValueRow(
+                                'Equivalence',
+                                `${matchInfo.matches}/${matchInfo.total} matched (${matchInfo.mismatches} mismatches)`
+                            )
+                        );
                     }
                     if (Array.isArray(countList) && countList.length) {
                         lines.push(...formatSolutionCountBlock('Solution counts', countList));
                     }
                     if (firstStats && allStats) {
                         lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
+                        lines.push(formatAlignedLabelValueRow('Samples (first/all)', `${firstStats.n}/${allStats.n}`));
                     }
                     if (firstMemStats && allMemStats) {
                         lines.push(...formatStatsMsFirstAll(memoryPrefix, firstMemStats, allMemStats));
@@ -5158,7 +5180,7 @@ def capstone_run_local_generator(args, out_dir):
                 const lines = [];
                 const usingVf3Ref = options.vf3BaselineCounts && options.vf3BaselineCounts.length > 0;
                 const failureSuffix = glasgowFail > 0 ? `, ${glasgowFail} failed` : '';
-                lines.push(usingVf3Ref ? '[Glasgow Subgraph Solver] (compared against VF3 baseline count)' : '[Glasgow Subgraph Solver]');
+                lines.push(usingVf3Ref ? '[Glasgow Subgraph Solver] (external baseline reference)' : '[Glasgow Subgraph Solver]');
                 lines.push(`${glasgowSuccess} iterations ran successfully${failureSuffix}`);
                 if (sBaseFirst && sBaseAll) lines.push(...formatStatsMsFirstAll('Runtime (ms): ', sBaseFirst, sBaseAll));
                 if (mBaseFirst && mBaseAll) lines.push(...formatStatsMsFirstAll(memoryPrefix, mBaseFirst, mBaseAll));
@@ -5167,9 +5189,17 @@ def capstone_run_local_generator(args, out_dir):
                 const addLlmSection = (title, match, total, mismatch, firstStats, allStats, firstMemStats, allMemStats) => {
                     lines.push(`[${title}]`);
                     if (Number.isInteger(match) && Number.isInteger(total)) {
-                        lines.push(`Matches: ${match}/${total} (mismatches: ${mismatch})`);
+                        lines.push(
+                            formatAlignedLabelValueRow(
+                                'Equivalence',
+                                `${match}/${total} matched (${mismatch} mismatches)`
+                            )
+                        );
                     }
-                    if (firstStats && allStats) lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
+                    if (firstStats && allStats) {
+                        lines.push(...formatStatsMsFirstAll('Runtime (ms): ', firstStats, allStats));
+                        lines.push(formatAlignedLabelValueRow('Samples (first/all)', `${firstStats.n}/${allStats.n}`));
+                    }
                     if (firstMemStats && allMemStats) lines.push(...formatStatsMsFirstAll(memoryPrefix, firstMemStats, allMemStats));
                     lines.push('');
                 };
