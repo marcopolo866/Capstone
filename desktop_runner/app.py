@@ -2748,7 +2748,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 # Match the web runner's stable baseline invocation on generated VF inputs.
                 command = [str(binary), "-u", "-r", "0", "-e", str(generated["vf_pattern"]), str(generated["vf_target"])]
             else:
-                command = [str(binary), "--non-induced", str(generated["vf_pattern"]), str(generated["vf_target"])]
+                command = [str(binary), str(generated["vf_pattern"]), str(generated["vf_target"])]
         elif variant_id.startswith("glasgow_"):
             if variant_id == "glasgow_baseline":
                 command = [str(binary), "--count-solutions", "--format", "vertexlabelledlad", str(generated["lad_pattern"]), str(generated["lad_target"])]

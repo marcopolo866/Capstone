@@ -19,6 +19,7 @@ The output should only be two lines:
 #include <chrono>
 #include <algorithm>
 #include <sstream>
+#include <fstream>
 
 using namespace std;
 
@@ -40,7 +41,7 @@ struct State {
     }
 };
 
-int main() {
+int main(int argc, char** argv) {
     // Start timing as early as possible
     auto start_time = chrono::high_resolution_clock::now();
 
@@ -48,8 +49,16 @@ int main() {
     ios::sync_with_stdio(false);
     cin.tie(NULL);
 
+    ifstream infile;
+    istream* in = &cin;
+    if (argc >= 2) {
+        infile.open(argv[1]);
+        if (!infile.is_open()) return 1;
+        in = &infile;
+    }
+
     string line;
-    if (!getline(cin, line)) return 0;
+    if (!getline(*in, line)) return 0;
 
     // Parse the metadata line: # start=A target=C
     string start_node_name, target_node_name;
@@ -63,7 +72,7 @@ int main() {
     }
 
     // Skip the header line (e.g., source,target,weight)
-    getline(cin, line);
+    getline(*in, line);
 
     unordered_map<string, int> name_to_id;
     vector<string> id_to_name;
@@ -78,7 +87,7 @@ int main() {
     };
 
     vector<vector<Edge>> adj;
-    while (getline(cin, line)) {
+    while (getline(*in, line)) {
         if (line.empty() || line[0] == '\r' || line[0] == '\n') continue;
         
         size_t c1 = line.find(',');

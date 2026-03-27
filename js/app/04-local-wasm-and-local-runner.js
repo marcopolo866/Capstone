@@ -3005,12 +3005,6 @@ def capstone_run_local_generator(args, out_dir):
                 writeEmscriptenTextFile(mod, inputFsPath, String(textForRun || ''));
             };
 
-            const runDijkstraGeminiWasm = async (mod, textForRun = inputText) => {
-                // The current Gemini Dijkstra implementation reads CSV from stdin (argc-less main()).
-                // Provide stdin text to avoid the browser prompt fallback used by Emscripten TTY.
-                return await runEmscriptenMain(mod, [], { stdinText: String(textForRun || '') });
-            };
-
             const unloadModule = (spec) => {
                 try {
                     invalidateEmscriptenModule(spec && spec.id ? spec.id : '');
@@ -3049,11 +3043,7 @@ def capstone_run_local_generator(args, out_dir):
                                 if (runCtx && runCtx.aborted) return { status: 'aborted', error: 'Run Aborted' };
                                 progressSetDeterminate(`Warming up: ${label}`, setupDone, setupTotal, { stage: 'setup' });
                                 try {
-                                    if (token === 'gemini') {
-                                        await runDijkstraGeminiWasm(mod, warmupInput.inputText);
-                                    } else {
-                                        await runEmscriptenMain(mod, [inputFsPath]);
-                                    }
+                                    await runEmscriptenMain(mod, [inputFsPath]);
                                 } catch (error) {
                                     const msg = error && error.message ? error.message : String(error);
                                     throw new Error(`Warmup ${i + 1}/${safeWarmup} - ${label}: ${msg}`);
@@ -3188,7 +3178,7 @@ def capstone_run_local_generator(args, out_dir):
                             const t0 = runTimerNowMs();
                             let stdout = '';
                             try {
-                                const res = await runDijkstraGeminiWasm(mod, iterInput.inputText);
+                                const res = await runEmscriptenMain(mod, [inputFsPath]);
                                 stdout = res && typeof res.stdout === 'string' ? res.stdout : '';
                             } catch (error) {
                                 const msg = error && error.message ? error.message : String(error);
@@ -3629,9 +3619,9 @@ def capstone_run_local_generator(args, out_dir):
                             gemLabel,
                             geminiSpec,
                             `${gemLabel} first`,
-                            ['--non-induced', '--first-only', patternFsPath, targetFsPath],
+                            ['--first-only', patternFsPath, targetFsPath],
                             `${gemLabel} all`,
-                            ['--non-induced', patternFsPath, targetFsPath],
+                            [patternFsPath, targetFsPath],
                             setupDoneRef,
                             firstVf3Input
                         );
@@ -3641,9 +3631,9 @@ def capstone_run_local_generator(args, out_dir):
                             chatLabel,
                             chatgptSpec,
                             `${chatLabel} first`,
-                            ['--non-induced', '--first-only', patternFsPath, targetFsPath],
+                            ['--first-only', patternFsPath, targetFsPath],
                             `${chatLabel} all`,
-                            ['--non-induced', patternFsPath, targetFsPath],
+                            [patternFsPath, targetFsPath],
                             setupDoneRef,
                             firstVf3Input
                         );
@@ -3655,9 +3645,9 @@ def capstone_run_local_generator(args, out_dir):
                             label,
                             extraSpec,
                             `${label} first`,
-                            ['--non-induced', '--first-only', patternFsPath, targetFsPath],
+                            ['--first-only', patternFsPath, targetFsPath],
                             `${label} all`,
-                            ['--non-induced', patternFsPath, targetFsPath],
+                            [patternFsPath, targetFsPath],
                             setupDoneRef,
                             firstVf3Input
                         );
@@ -3852,9 +3842,9 @@ def capstone_run_local_generator(args, out_dir):
                         title: gemLabel,
                         spec: geminiSpec,
                         labelFirst: `${gemLabel} first`,
-                        argsFirst: ['--non-induced', '--first-only', patternFsPath, targetFsPath],
+                        argsFirst: ['--first-only', patternFsPath, targetFsPath],
                         labelAll: `${gemLabel} all`,
-                        argsAll: ['--non-induced', patternFsPath, targetFsPath],
+                        argsAll: [patternFsPath, targetFsPath],
                         timesFirst: gemFirst,
                         timesAll: gemAll,
                         heapsFirst: gemFirstHeapKiB,
@@ -3884,9 +3874,9 @@ def capstone_run_local_generator(args, out_dir):
                         title: chatLabel,
                         spec: chatgptSpec,
                         labelFirst: `${chatLabel} first`,
-                        argsFirst: ['--non-induced', '--first-only', patternFsPath, targetFsPath],
+                        argsFirst: ['--first-only', patternFsPath, targetFsPath],
                         labelAll: `${chatLabel} all`,
-                        argsAll: ['--non-induced', patternFsPath, targetFsPath],
+                        argsAll: [patternFsPath, targetFsPath],
                         timesFirst: chatFirst,
                         timesAll: chatAll,
                         heapsFirst: chatFirstHeapKiB,
@@ -3916,9 +3906,9 @@ def capstone_run_local_generator(args, out_dir):
                         title: extra.label,
                         spec: extra.spec,
                         labelFirst: `${extra.label} first`,
-                        argsFirst: ['--non-induced', '--first-only', patternFsPath, targetFsPath],
+                        argsFirst: ['--first-only', patternFsPath, targetFsPath],
                         labelAll: `${extra.label} all`,
-                        argsAll: ['--non-induced', patternFsPath, targetFsPath],
+                        argsAll: [patternFsPath, targetFsPath],
                         timesFirst: extra.first,
                         timesAll: extra.all,
                         heapsFirst: extra.firstHeapKiB,
