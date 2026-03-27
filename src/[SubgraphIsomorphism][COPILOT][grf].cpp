@@ -23,6 +23,37 @@ static void usage(const char* prog) {
     cerr << "Accepts --induced (treated as non-induced for compatibility).\n";
 }
 
+static bool parse_int_token_strict(const string& token, int& out) {
+    if (token.empty()) return false;
+    size_t idx = 0;
+    long long v = 0;
+    try {
+        v = stoll(token, &idx, 10);
+    } catch (...) {
+        return false;
+    }
+    if (idx != token.size()) return false;
+    if (v < -2147483648LL || v > 2147483647LL) return false;
+    out = (int)v;
+    return true;
+}
+
+static int parse_label_id(
+    string raw_label,
+    unordered_map<string, int>& shared_label_pool,
+    int& next_shared_label_id
+) {
+    size_t eq = raw_label.find('=');
+    if (eq != string::npos) raw_label = raw_label.substr(eq + 1);
+    int numeric = 0;
+    if (parse_int_token_strict(raw_label, numeric)) return numeric;
+    auto it = shared_label_pool.find(raw_label);
+    if (it != shared_label_pool.end()) return it->second;
+    int assigned = next_shared_label_id++;
+    shared_label_pool.emplace(raw_label, assigned);
+    return assigned;
+}
+
 struct Graph {
     int n = 0;
     vector<int> label; // integer labels
@@ -58,7 +89,12 @@ struct Graph {
     }
 };
 
-static bool parse_graph_file(const string& path, Graph& G) {
+static bool parse_graph_file(
+    const string& path,
+    Graph& G,
+    unordered_map<string, int>& shared_label_pool,
+    int& next_shared_label_id
+) {
     ifstream in(path);
     if (!in) return false;
     string line;
@@ -78,11 +114,11 @@ static bool parse_graph_file(const string& path, Graph& G) {
     G.label.assign(n, 0);
     G.adj.assign(n, {});
     G.deg.assign(n, 0);
-    // Next n lines: vertex metadata containing at least id and label (robust)
-    // We'll read lines until we've parsed n vertex label entries.
-    unordered_map<string,int> labelmap;
-    int next_label_id = 1;
+
+    // Next n lines: vertex metadata. Assign by explicit vertex id when present.
+    vector<char> label_assigned((size_t)n, 0);
     int parsed = 0;
+    int fallback_vid = 0;
     while (parsed < n && getline(in, line)) {
         // skip blank lines
         bool allws = true;
@@ -94,27 +130,33 @@ static bool parse_graph_file(const string& path, Graph& G) {
         string t;
         while (ss >> t) toks.push_back(t);
         if (toks.empty()) continue;
-        // first token likely id; find first token that is not the id (second token) as label
-        string labstr;
-        if (toks.size() >= 2) {
-            labstr = toks[1];
-        } else {
-            // if only one token, maybe label on next token line; try to read next non-empty token
-            if (!(in >> labstr)) labstr = "0";
-            string rest;
-            getline(in, rest);
+
+        int vid_candidate = -1;
+        bool first_is_vid = false;
+        if (parse_int_token_strict(toks[0], vid_candidate)) {
+            if (vid_candidate >= 0 && vid_candidate < n) {
+                first_is_vid = true;
+            }
         }
-        // remove possible "label=" prefix or "l=" etc
-        size_t pos = string::npos;
-        if ((pos = labstr.find('=')) != string::npos) labstr = labstr.substr(pos+1);
-        // map label string to int
-        int lid;
-        auto it = labelmap.find(labstr);
-        if (it == labelmap.end()) {
-            lid = next_label_id++;
-            labelmap.emplace(labstr, lid);
-        } else lid = it->second;
-        G.label[parsed] = lid;
+
+        int vid = -1;
+        if (first_is_vid && !label_assigned[(size_t)vid_candidate]) {
+            vid = vid_candidate;
+        } else {
+            while (fallback_vid < n && label_assigned[(size_t)fallback_vid]) ++fallback_vid;
+            if (fallback_vid >= n) break;
+            vid = fallback_vid;
+        }
+
+        string labstr = "0";
+        if (first_is_vid) {
+            if (toks.size() >= 2) labstr = toks[1];
+        } else {
+            labstr = toks[0];
+        }
+
+        G.label[(size_t)vid] = parse_label_id(labstr, shared_label_pool, next_shared_label_id);
+        label_assigned[(size_t)vid] = 1;
         ++parsed;
     }
     if (parsed != n) return false;
@@ -128,18 +170,17 @@ static bool parse_graph_file(const string& path, Graph& G) {
         if (allws) continue;
         stringstream ss(line);
         int ec = -1;
-        if (!(ss >> ec)) {
-            // maybe line contains "degree: X" or other tokens; try to extract first integer
-            ss.clear();
-            ss.str(line);
-            string tok;
-            while (ss >> tok) {
-                bool isnum = true;
-                for (char ch : tok) if (!isdigit((unsigned char)ch) && ch!='-') { isnum = false; break; }
-                if (isnum) { ec = stoi(tok); break; }
+            if (!(ss >> ec)) {
+                // maybe line contains "degree: X" or other tokens; try to extract first integer
+                ss.clear();
+                ss.str(line);
+                string tok;
+                while (ss >> tok) {
+                    int value = 0;
+                    if (parse_int_token_strict(tok, value)) { ec = value; break; }
+                }
+                if (ec < 0) return false;
             }
-            if (ec < 0) return false;
-        }
         // read ec edge lines
         int read = 0;
         while (read < ec && getline(in, line)) {
@@ -155,9 +196,8 @@ static bool parse_graph_file(const string& path, Graph& G) {
                 string tok;
                 vector<int> ints;
                 while (es >> tok) {
-                    bool isnum = true;
-                    for (char ch : tok) if (!isdigit((unsigned char)ch) && ch!='-') { isnum = false; break; }
-                    if (isnum) ints.push_back(stoi(tok));
+                    int value = 0;
+                    if (parse_int_token_strict(tok, value)) ints.push_back(value);
                     if (ints.size()>=2) break;
                 }
                 if (ints.size()>=2) { a = ints[0]; b = ints[1]; }
@@ -357,19 +397,15 @@ int main(int argc, char** argv) {
         return 1;
     }
     bool first_only = false;
-    bool non_induced = false;
     vector<string> files;
     for (int i = 1; i < argc; ++i) {
         string s = argv[i];
         if (s == "--first-only" || s == "-F" || s == "--firstonly" || s == "--first") {
             first_only = true;
         } else if (s == "--non-induced" || s == "--noninduced" || s == "--non-induced" ) {
-            non_induced = true;
-        } else if (s == "--noninduced") {
-            non_induced = true;
+            // accepted for compatibility; solver semantics stay non-induced
         } else if (s == "--induced") {
-            // accept but ignore (treat as non-induced)
-            non_induced = true;
+            // accepted for compatibility; solver semantics stay non-induced
         } else if (s.rfind("-",0) == 0) {
             // unknown flag
             usage(argv[0]);
@@ -386,11 +422,13 @@ int main(int argc, char** argv) {
     string target_file = files[1];
 
     Graph P, T;
-    if (!parse_graph_file(pattern_file, P)) {
+    unordered_map<string, int> shared_label_pool;
+    int next_shared_label_id = 1;
+    if (!parse_graph_file(pattern_file, P, shared_label_pool, next_shared_label_id)) {
         cerr << "Failed to parse pattern file: " << pattern_file << "\n";
         return 2;
     }
-    if (!parse_graph_file(target_file, T)) {
+    if (!parse_graph_file(target_file, T, shared_label_pool, next_shared_label_id)) {
         cerr << "Failed to parse target file: " << target_file << "\n";
         return 3;
     }
