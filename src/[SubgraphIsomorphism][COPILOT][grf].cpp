@@ -1,7 +1,17 @@
 // src/[SubgraphIsomorphism][COPILOT][grf].cpp
 // Compile: g++ -std=c++17 -O3 -Wall -Wextra src/[SubgraphIsomorphism][COPILOT][grf].cpp -o src/vf3_copilot
 
-#include <bits/stdc++.h>
+#include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <cstdint>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <vector>
 using namespace std;
 using u64 = uint64_t;
 using u32 = uint32_t;
