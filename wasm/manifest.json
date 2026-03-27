@@ -2,8 +2,8 @@
   "schema_version": 1,
   "workflow": "Build WASM Modules",
   "workflow_file": ".github/workflows/build-wasm.yml",
-  "generated_at_utc": "2026-03-27T20:10:34Z",
-  "git_sha": "73fe77f1ddfab7aff8c78ee53f50b24fae3522f1",
+  "generated_at_utc": "2026-03-27T20:24:10Z",
+  "git_sha": "751a438539acc1eef68b8409e2d597bd15aa42de",
   "git_ref_name": "main",
   "modules": {
     "dijkstra_baseline": {
@@ -45,6 +45,11 @@
       "scriptPath": "wasm/glasgow_claude.js",
       "wasmPath": "wasm/glasgow_claude.wasm",
       "factoryName": "createGlasgowClaudeModule"
+    },
+    "vf3_copilot": {
+      "scriptPath": "wasm/vf3_copilot.js",
+      "wasmPath": "wasm/vf3_copilot.wasm",
+      "factoryName": "createVf3CopilotModule"
     },
     "vf3_gemini": {
       "scriptPath": "wasm/vf3_gemini.js",
@@ -152,6 +157,16 @@
       "role": "variant",
       "llm_key": "claude",
       "llm_label": "Claude"
+    },
+    {
+      "variant_id": "vf3_copilot",
+      "family": "vf3",
+      "algorithm": "vf3",
+      "label": "VF3 Copilot",
+      "binary_path": "src/vf3_copilot",
+      "role": "variant",
+      "llm_key": "copilot",
+      "llm_label": "Copilot"
     },
     {
       "variant_id": "vf3_gemini",
