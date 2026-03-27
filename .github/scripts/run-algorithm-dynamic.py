@@ -1139,24 +1139,6 @@ def maybe_write_visualization(
         first_out = baseline_first_outputs[idx] if idx < len(baseline_first_outputs) else ""
         all_out = baseline_all_outputs[idx] if idx < len(baseline_all_outputs) else ""
         mapping_sources = [first_out, all_out]
-        if selected_family == "vf3" and baseline_binary_path:
-            preview = extract_mappings_from_text("\n".join(mapping_sources), limit=2)
-            if not preview:
-                vis_cmd = [
-                    str(baseline_binary_path),
-                    "-u",
-                    "-s",
-                    "-r",
-                    "0",
-                    "-e",
-                    str(inputs["vf_pattern"]),
-                    str(inputs["vf_target"]),
-                ]
-                _, _, vout, verr, vrc = run_with_peak_rss(vis_cmd)
-                if vrc == 0:
-                    vis_text = (vout or "") + ("\n" + verr if verr else "")
-                    if vis_text.strip():
-                        mapping_sources.insert(0, vis_text)
         vis_algorithm = "subgraph" if algorithm_input == "subgraph" else selected_family
         pattern_nodes_hint = parse_pattern_nodes_hint(inputs, selected_family)
         payloads.append(
