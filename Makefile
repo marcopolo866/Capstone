@@ -9,6 +9,7 @@
 BASH ?= bash
 POWERSHELL ?= powershell
 PYTHON ?= python
+SUPPRESS_DIAGNOSTICS ?= 1
 
 ifeq ($(OS),Windows_NT)
 DEFAULT_BACKEND := ps1
@@ -21,21 +22,21 @@ BACKEND ?= $(DEFAULT_BACKEND)
 build-local:
 ifeq ($(BACKEND),ps1)
 	@echo "==> Building native solvers via scripts/build-local.ps1"
-	"$(PYTHON)" "./scripts/build-local.py" --backend ps1 --cmake-generator "$(CMAKE_GENERATOR)"
+	BUILD_LOCAL_SUPPRESS_DIAGNOSTICS="$(SUPPRESS_DIAGNOSTICS)" "$(PYTHON)" "./scripts/build-local.py" --backend ps1 --cmake-generator "$(CMAKE_GENERATOR)"
 else ifeq ($(BACKEND),sh)
 	@echo "==> Building native solvers via scripts/build-local.sh"
-	"$(PYTHON)" "./scripts/build-local.py" --backend sh --cmake-generator "$(CMAKE_GENERATOR)"
+	BUILD_LOCAL_SUPPRESS_DIAGNOSTICS="$(SUPPRESS_DIAGNOSTICS)" "$(PYTHON)" "./scripts/build-local.py" --backend sh --cmake-generator "$(CMAKE_GENERATOR)"
 else
 	$(error Unsupported BACKEND '$(BACKEND)'. Use BACKEND=ps1 or BACKEND=sh)
 endif
 
 build-local-sh:
 	@echo "==> Building native solvers via scripts/build-local.sh"
-	"$(PYTHON)" "./scripts/build-local.py" --backend sh --cmake-generator "$(CMAKE_GENERATOR)"
+	BUILD_LOCAL_SUPPRESS_DIAGNOSTICS="$(SUPPRESS_DIAGNOSTICS)" "$(PYTHON)" "./scripts/build-local.py" --backend sh --cmake-generator "$(CMAKE_GENERATOR)"
 
 build-local-ps1:
 	@echo "==> Building native solvers via scripts/build-local.ps1"
-	"$(PYTHON)" "./scripts/build-local.py" --backend ps1 --cmake-generator "$(CMAKE_GENERATOR)"
+	BUILD_LOCAL_SUPPRESS_DIAGNOSTICS="$(SUPPRESS_DIAGNOSTICS)" "$(PYTHON)" "./scripts/build-local.py" --backend ps1 --cmake-generator "$(CMAKE_GENERATOR)"
 
 ifeq ($(OS),Windows_NT)
 build-all: build-local build-runner
@@ -80,3 +81,4 @@ help:
 	@echo ""
 	@echo "Options:"
 	@echo "  CMAKE_GENERATOR=<name>         Forward generator to build script."
+	@echo "  SUPPRESS_DIAGNOSTICS=1         Suppress compile warnings/notes (default)."

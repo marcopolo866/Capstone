@@ -7,6 +7,7 @@ import csv
 import concurrent.futures
 import datetime as dt
 import importlib.util
+import argparse
 import json
 import math
 import os
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,16 +29,29 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+try:
+    if sys.platform.startswith("win"):
+        from tkwebview2.tkwebview2 import WebView2 as TkWebView2, have_runtime as webview2_runtime_available
+    else:
+        TkWebView2 = None
+        webview2_runtime_available = None
+except Exception:
+    TkWebView2 = None
+    webview2_runtime_available = None
 
 APP_TITLE = "Capstone Benchmark Runner"
 DEFAULT_WIDTH = 1500
 DEFAULT_HEIGHT = 980
 DEFAULT_DISCARDED_WARMUP_TRIALS = 5
+DEFAULT_OUTLIER_MIN_SAMPLES = 7
 DEFAULT_3D_ELEV = 30.0
 # Keep x=min and y=min corner toward the viewer in the default isometric view.
 DEFAULT_3D_AZIM = -135.0
+LOG_COLOR_TAGS = ("info", "error", "warn", "success", "notice")
 
 
 def resource_root() -> Path:
@@ -137,6 +152,105 @@ def linear_regression_line(xs: list[float], ys: list[float]):
     return sorted_x, reg_y
 
 
+def percentile(sorted_values: list[float], q: float) -> float:
+    if not sorted_values:
+        return math.nan
+    if len(sorted_values) == 1:
+        return float(sorted_values[0])
+    q = max(0.0, min(1.0, float(q)))
+    pos = q * float(len(sorted_values) - 1)
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return float(sorted_values[lo])
+    frac = pos - float(lo)
+    return (float(sorted_values[lo]) * (1.0 - frac)) + (float(sorted_values[hi]) * frac)
+
+
+def filter_outlier_samples(samples: list[float], mode: str, min_samples: int = DEFAULT_OUTLIER_MIN_SAMPLES) -> list[float]:
+    values = [float(v) for v in (samples or []) if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    if len(values) < max(1, int(min_samples)):
+        return values
+
+    mode_key = str(mode or "none").strip().lower()
+    if mode_key in {"", "none"}:
+        return values
+
+    if mode_key == "mad":
+        center = float(statistics.median(values))
+        deviations = [abs(v - center) for v in values]
+        mad = float(statistics.median(deviations))
+        if mad <= 0.0:
+            return values
+        sigma_estimate = 1.4826 * mad
+        threshold = 3.0 * sigma_estimate
+        filtered = [v for v in values if abs(v - center) <= threshold]
+        return filtered or values
+
+    if mode_key == "iqr":
+        ordered = sorted(values)
+        q1 = percentile(ordered, 0.25)
+        q3 = percentile(ordered, 0.75)
+        iqr = float(q3 - q1)
+        if not math.isfinite(iqr) or iqr <= 0.0:
+            return values
+        low = q1 - (1.5 * iqr)
+        high = q3 + (1.5 * iqr)
+        filtered = [v for v in values if low <= v <= high]
+        return filtered or values
+
+    return values
+
+
+def _simpson_integral(func, a: float, b: float) -> float:
+    c = (a + b) * 0.5
+    h = b - a
+    return (h / 6.0) * (func(a) + (4.0 * func(c)) + func(b))
+
+
+def _adaptive_simpson(func, a: float, b: float, eps: float, whole: float, depth: int) -> float:
+    c = (a + b) * 0.5
+    left = _simpson_integral(func, a, c)
+    right = _simpson_integral(func, c, b)
+    delta = left + right - whole
+    if depth <= 0 or abs(delta) <= 15.0 * eps:
+        return left + right + (delta / 15.0)
+    return (
+        _adaptive_simpson(func, a, c, eps * 0.5, left, depth - 1)
+        + _adaptive_simpson(func, c, b, eps * 0.5, right, depth - 1)
+    )
+
+
+def student_t_two_sided_p_value(t_stat: float, degrees_of_freedom: int) -> float | None:
+    if not math.isfinite(t_stat):
+        return None
+    df = int(degrees_of_freedom)
+    if df <= 0:
+        return None
+    x = abs(float(t_stat))
+    if x <= 0.0:
+        return 1.0
+    if x >= 50.0:
+        return 0.0
+
+    # For very large df the normal approximation is accurate and cheaper.
+    if df >= 200:
+        tail = 0.5 * math.erfc(x / math.sqrt(2.0))
+        return max(0.0, min(1.0, 2.0 * tail))
+
+    # Student-t PDF normalizing constant.
+    log_c = math.lgamma((df + 1.0) * 0.5) - math.lgamma(df * 0.5) - 0.5 * math.log(df * math.pi)
+    c = math.exp(log_c)
+
+    def pdf(val: float) -> float:
+        return c * ((1.0 + ((val * val) / float(df))) ** (-(df + 1.0) * 0.5))
+
+    whole = _simpson_integral(pdf, 0.0, x)
+    area_0_to_x = _adaptive_simpson(pdf, 0.0, x, 1e-8, whole, depth=20)
+    cdf = max(0.0, min(1.0, 0.5 + area_0_to_x))
+    return max(0.0, min(1.0, 2.0 * (1.0 - cdf)))
+
+
 def number_or_blank(value: float | None) -> str:
     if value is None or not math.isfinite(value):
         return ""
@@ -176,6 +290,7 @@ def parse_solution_count(output_text: str) -> int | None:
     if text == "":
         return None
     patterns = [
+        r"(?im)\bsolution[_\s-]*count\s*[:=]\s*(-?\d+)\b",
         r"(?im)\bsolutions?\s*(?:count|found|total)?\s*[:=]\s*(-?\d+)\b",
         r"(?im)\bcount\s*[:=]\s*(-?\d+)\b",
         r"(?im)\b(-?\d+)\s+solutions?\b",
@@ -190,10 +305,291 @@ def parse_solution_count(output_text: str) -> int | None:
                 continue
 
     stripped = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in stripped:
+        # VF3 baseline terse mode prints: "<solutions> <first_time> <all_time>"
+        # Parse the leading integer as the solution count.
+        terse = re.fullmatch(
+            r"\s*(-?\d+)\s+[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?\s+[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?\s*",
+            line,
+        )
+        if terse:
+            try:
+                return int(terse.group(1))
+            except Exception:
+                pass
+
     if len(stripped) == 1 and re.fullmatch(r"-?\d+", stripped[0]):
         return int(stripped[0])
 
     return None
+
+
+def parse_dijkstra_distance(output_text: str) -> str | None:
+    text = (output_text or "").strip()
+    if text == "":
+        return None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line == "":
+            continue
+        if re.match(r"(?i)^runtime\s*:", line):
+            continue
+
+        token = line.split(";", 1)[0].strip()
+        if token == "":
+            continue
+        token_upper = token.upper()
+        if token_upper in {"INF", "INFINITY"}:
+            return "INF"
+        if token == "-1":
+            return "INF"
+        if re.fullmatch(r"[+-]?\d+", token):
+            try:
+                value = int(token)
+            except Exception:
+                continue
+            if value < 0:
+                return "INF"
+            return str(value)
+
+        match = re.search(r"(?i)\bdistance\s*[:=]\s*([+-]?\d+|INF|INFINITY)\b", line)
+        if match:
+            raw_value = str(match.group(1)).strip()
+            raw_upper = raw_value.upper()
+            if raw_upper in {"INF", "INFINITY"}:
+                return "INF"
+            try:
+                parsed = int(raw_value)
+            except Exception:
+                continue
+            if parsed < 0:
+                return "INF"
+            return str(parsed)
+
+    return None
+
+
+VISUALIZER_SOLUTION_CAP = 2000
+
+
+def parse_int_tokens(line: str) -> list[int]:
+    return [int(item) for item in re.findall(r"-?\d+", str(line or ""))]
+
+
+def parse_vf_graph(path: Path) -> list[list[int]]:
+    lines = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not lines:
+        raise RuntimeError(f"Empty VF graph file: {path}")
+    n_tokens = parse_int_tokens(lines[0])
+    if not n_tokens:
+        raise RuntimeError(f"Invalid VF header in {path}")
+    n = max(0, int(n_tokens[0]))
+    adj: list[set[int]] = [set() for _ in range(n)]
+    idx = 1
+    for _ in range(n):
+        if idx >= len(lines):
+            break
+        idx += 1
+    for u in range(n):
+        if idx >= len(lines):
+            break
+        count_tokens = parse_int_tokens(lines[idx])
+        idx += 1
+        edge_count = int(count_tokens[0]) if count_tokens else 0
+        for _ in range(max(0, edge_count)):
+            if idx >= len(lines):
+                break
+            edge_tokens = parse_int_tokens(lines[idx])
+            idx += 1
+            if not edge_tokens:
+                continue
+            v = int(edge_tokens[1]) if len(edge_tokens) >= 2 else int(edge_tokens[0])
+            if 0 <= v < n and v != u:
+                adj[u].add(v)
+    return [sorted(row) for row in adj]
+
+
+def parse_lad_graph(path: Path) -> list[list[int]]:
+    lines = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not lines:
+        raise RuntimeError(f"Empty LAD graph file: {path}")
+    n_tokens = parse_int_tokens(lines[0])
+    if not n_tokens:
+        raise RuntimeError(f"Invalid LAD header in {path}")
+    n = max(0, int(n_tokens[0]))
+    adj: list[set[int]] = [set() for _ in range(n)]
+    for u in range(n):
+        if u + 1 >= len(lines):
+            break
+        values = parse_int_tokens(lines[u + 1])
+        if not values:
+            continue
+        neighbors: list[int]
+        unlabeled_match = len(values) >= 1 and values[0] >= 0 and len(values) == 1 + int(values[0])
+        labeled_match = len(values) >= 2 and values[1] >= 0 and len(values) == 2 + int(values[1])
+        if labeled_match and not unlabeled_match:
+            degree = int(values[1])
+            neighbors = values[2 : 2 + degree]
+        elif unlabeled_match:
+            degree = int(values[0])
+            neighbors = values[1 : 1 + degree]
+        elif len(values) >= 2:
+            degree = int(values[1])
+            neighbors = values[2 : 2 + max(0, degree)]
+        else:
+            degree = int(values[0])
+            neighbors = values[1 : 1 + max(0, degree)]
+        for v in neighbors:
+            if 0 <= v < n and v != u:
+                adj[u].add(v)
+    return [sorted(row) for row in adj]
+
+
+def edge_key(u: int, v: int) -> tuple[int, int] | None:
+    if not isinstance(u, int) or not isinstance(v, int):
+        return None
+    if u == v:
+        return None
+    return (u, v) if u < v else (v, u)
+
+
+def extract_mappings_from_text(text: str, limit: int = VISUALIZER_SOLUTION_CAP) -> list[dict[int, int]]:
+    src = str(text or "")
+    if not src:
+        return []
+    out: list[dict[int, int]] = []
+    seen: set[str] = set()
+    max_items = max(1, int(limit))
+
+    def add_pairs(pairs: list[tuple[str, str]]) -> None:
+        if not pairs:
+            return
+        mapping: dict[int, int] = {}
+        for p_raw, t_raw in pairs:
+            try:
+                p = int(p_raw)
+                t = int(t_raw)
+            except ValueError:
+                continue
+            mapping[p] = t
+        if not mapping:
+            return
+        key = json.dumps(mapping, sort_keys=True)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(mapping)
+
+    for raw_line in src.replace("\r", "").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        pairs1 = [(m.group(1), m.group(2)) for m in re.finditer(r"\(\s*(\d+)\s*->\s*(\d+)\s*\)", line)]
+        if pairs1:
+            add_pairs(pairs1)
+            if len(out) >= max_items:
+                break
+            continue
+        pairs2 = [(m.group(1), m.group(2)) for m in re.finditer(r"(\d+)\s*,\s*(\d+)\s*:", line)]
+        if pairs2:
+            add_pairs(pairs2)
+            if len(out) >= max_items:
+                break
+            continue
+        if re.search(r"mapping\s*[:=]", line, flags=re.IGNORECASE) or "->" in line:
+            pairs3 = [(m.group(1), m.group(2)) for m in re.finditer(r"(\d+)\s*->\s*(\d+)", line)]
+            if pairs3:
+                add_pairs(pairs3)
+                if len(out) >= max_items:
+                    break
+                continue
+            pairs4 = [(m.group(1), m.group(2)) for m in re.finditer(r"(\d+)\s*=\s*(\d+)", line)]
+            if pairs4:
+                add_pairs(pairs4)
+                if len(out) >= max_items:
+                    break
+                continue
+
+    if not out:
+        pairs = [(m.group(1), m.group(2)) for m in re.finditer(r"\(\s*(\d+)\s*->\s*(\d+)\s*\)", src)]
+        if not pairs:
+            pairs = [(m.group(1), m.group(2)) for m in re.finditer(r"(\d+)\s*->\s*(\d+)", src)]
+        if pairs:
+            add_pairs(pairs)
+
+    return out[:max_items]
+
+
+def normalize_mappings(
+    mappings: list[dict[int, int]],
+    pattern_n: int,
+    target_n: int,
+    limit: int = VISUALIZER_SOLUTION_CAP,
+) -> list[dict[int, int]]:
+    out: list[dict[int, int]] = []
+    seen: set[str] = set()
+    max_items = max(1, int(limit))
+    for item in mappings:
+        if not isinstance(item, dict):
+            continue
+        pairs: list[tuple[int, int]] = []
+        for p_raw, t_raw in item.items():
+            try:
+                p = int(p_raw)
+                t = int(t_raw)
+            except (TypeError, ValueError):
+                continue
+            pairs.append((p, t))
+        if not pairs:
+            continue
+
+        allow_p_shift = pattern_n > 0 and all(1 <= p <= pattern_n for p, _ in pairs)
+        allow_t_shift = target_n > 0 and all(1 <= t <= target_n for _, t in pairs)
+        variants = [(0, 0)]
+        if allow_p_shift:
+            variants.append((-1, 0))
+        if allow_t_shift:
+            variants.append((0, -1))
+        if allow_p_shift and allow_t_shift:
+            variants.append((-1, -1))
+
+        best_map: dict[int, int] | None = None
+        best_score = -1
+        best_penalty = 10**9
+        for p_shift, t_shift in variants:
+            candidate: dict[int, int] = {}
+            for p0, t0 in pairs:
+                p = p0 + p_shift
+                t = t0 + t_shift
+                if p < 0 or p >= pattern_n or t < 0 or t >= target_n:
+                    continue
+                candidate[p] = t
+            score = len(candidate)
+            penalty = abs(p_shift) + abs(t_shift)
+            if score > best_score or (score == best_score and penalty < best_penalty):
+                best_map = candidate
+                best_score = score
+                best_penalty = penalty
+
+        if not best_map:
+            continue
+        key = json.dumps(best_map, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(best_map)
+        if len(out) >= max_items:
+            break
+    return out
 
 
 def serialize_for_json(obj):
@@ -229,6 +625,36 @@ def write_ascii_stl(path: Path, solid_name: str, triangles):
             fh.write("    endloop\n")
             fh.write("  endfacet\n")
         fh.write(f"endsolid {solid_name}\n")
+
+
+def has_pywebview() -> bool:
+    try:
+        import webview  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def run_visualizer_webview_window(url: str, title: str, fullscreen: bool = False) -> int:
+    try:
+        import webview
+    except Exception as exc:
+        print(f"pywebview is unavailable: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        webview.create_window(
+            str(title or "Benchmark Visualizer"),
+            url=str(url or ""),
+            width=1280,
+            height=840,
+            fullscreen=bool(fullscreen),
+        )
+        webview.start()
+        return 0
+    except Exception as exc:
+        print(f"Failed to open desktop webview: {exc}", file=sys.stderr)
+        return 3
 
 
 class RunAbortedError(RuntimeError):
@@ -755,6 +1181,36 @@ class BenchmarkRunnerApp(tk.Tk):
         self.drilldown_popup_point_key: tuple | None = None
         self.drilldown_highlight_artist = None
         self.drilldown_highlight_canvas: FigureCanvasTkAgg | None = None
+        self.visualizer_embed_enabled = bool(
+            TkWebView2 is not None
+            and sys.platform.startswith("win")
+            and (webview2_runtime_available() if callable(webview2_runtime_available) else False)
+        )
+        self.visualizer_popup_webview_enabled = bool(
+            (not self.visualizer_embed_enabled) and has_pywebview()
+        )
+        self.visualizer_webview = None
+        self.visualizer_point_rows: list[dict] = []
+        self.visualizer_nav_values: dict[str, list[float]] = {"n": [], "k": [], "density": []}
+        self.visualizer_nav_index: dict[str, int] = {"n": 0, "k": 0, "density": 0}
+        self.visualizer_nav_display_vars: dict[str, tk.StringVar] = {}
+        self.visualizer_nav_count_vars: dict[str, tk.StringVar] = {}
+        self.visualizer_nav_name_labels: dict[str, tk.Widget] = {}
+        self.visualizer_nav_value_labels: dict[str, tk.Widget] = {}
+        self.visualizer_nav_prev_buttons: dict[str, tk.Widget] = {}
+        self.visualizer_nav_next_buttons: dict[str, tk.Widget] = {}
+        self.visualizer_nav_rows: dict[str, tk.Widget] = {}
+        self.visualizer_graph_canvas: FigureCanvasTkAgg | None = None
+        self.visualizer_graph_fig: Figure | None = None
+        self.visualizer_loaded_result: dict | None = None
+        self.visualizer_iterations: list[dict] = []
+        self.visualizer_iteration_index = 0
+        self.visualizer_solution_index = 0
+        self.visualizer_iteration_label_var = tk.StringVar(value="Iteration --")
+        self.visualizer_solution_label_var = tk.StringVar(value="Solution --")
+        self.visualizer_solution_count_var = tk.StringVar(value="Solution Count: --")
+        self.visualizer_no_solution_var = tk.StringVar(value="")
+        self.visualizer_is_loading = False
 
         self._build_state()
         self._build_ui()
@@ -771,16 +1227,22 @@ class BenchmarkRunnerApp(tk.Tk):
         self.solver_timeout_seconds_var = tk.StringVar(value="0")
         self.detected_logical_cores = int(psutil.cpu_count(logical=True) or os.cpu_count() or 1)
         self.parallel_enabled_var = tk.BooleanVar(value=self.detected_logical_cores > 1)
-        default_workers = 1 if self.detected_logical_cores <= 1 else min(8, self.detected_logical_cores)
+        default_workers = max(1, self.detected_logical_cores - 1)
         self.max_workers_var = tk.StringVar(value=str(default_workers))
         self.delete_generated_inputs_var = tk.BooleanVar(value=True)
         self.plot3d_style_var = tk.StringVar(value="surface")
         self.plot3d_variant_var = tk.StringVar(value="")
         self.show_stddev_var = tk.BooleanVar(value=True)
         self.show_regression_var = tk.BooleanVar(value=False)
+        self.show_trendlines_only_var = tk.BooleanVar(value=False)
         self.log_x_scale_var = tk.BooleanVar(value=False)
         self.log_y_scale_var = tk.BooleanVar(value=False)
-        self.failure_policy_var = tk.StringVar(value="stop")
+        self.visualizer_status_var = tk.StringVar(
+            value="Run a benchmark, then load a datapoint into the visualizer tab."
+        )
+        self.k_mode_var = tk.StringVar(value="percent")
+        self.outlier_filter_var = tk.StringVar(value="none")
+        self.failure_policy_var = tk.StringVar(value="continue")
         self.retry_failed_trials_var = tk.StringVar(value="0")
         self.timeout_as_missing_var = tk.BooleanVar(value=True)
 
@@ -872,6 +1334,8 @@ class BenchmarkRunnerApp(tk.Tk):
         left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         right_col = ttk.Frame(row1)
         right_col.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right_col.columnconfigure(0, weight=1)
+        right_col.columnconfigure(1, weight=0)
 
         ttk.Label(left_col, text="Iterations per datapoint").grid(row=0, column=0, sticky="w")
         ttk.Entry(left_col, textvariable=self.iterations_var, width=10).grid(row=0, column=1, padx=(8, 0), sticky="w")
@@ -927,6 +1391,25 @@ class BenchmarkRunnerApp(tk.Tk):
             text="Treat timeout as missing",
             variable=self.timeout_as_missing_var,
         ).grid(row=7, column=0, columnspan=2, pady=(8, 0), sticky="w")
+        ttk.Label(right_col, text="Outlier Filter").grid(row=8, column=0, pady=(8, 0), sticky="w")
+        self.outlier_filter_combo = ttk.Combobox(
+            right_col,
+            state="readonly",
+            textvariable=self.outlier_filter_var,
+            values=["none", "mad", "iqr"],
+            width=12,
+        )
+        self.outlier_filter_combo.grid(row=8, column=1, pady=(8, 0), padx=(8, 0), sticky="w")
+        self.outlier_filter_combo.bind("<<ComboboxSelected>>", lambda _evt: self._on_outlier_filter_changed())
+        self.outlier_filter_blurb = ttk.Label(
+            right_col,
+            text="",
+            foreground="#666666",
+            wraplength=260,
+            justify=tk.LEFT,
+        )
+        right_col.bind("<Configure>", self._on_outlier_blurb_parent_resize)
+        self._on_outlier_filter_changed()
 
         sweep = ttk.LabelFrame(settings_row, text="Independent Variables", padding=10)
         sweep.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
@@ -934,16 +1417,27 @@ class BenchmarkRunnerApp(tk.Tk):
             sweep,
             text="Select up to two variables to sweep. For unselected variables, Start is treated as the fixed value.",
         ).grid(row=0, column=0, columnspan=5, sticky="w", padx=4, pady=(0, 8))
+        ttk.Label(sweep, text="K Mode").grid(row=1, column=0, sticky="w", padx=4, pady=(0, 8))
+        self.k_mode_combo = ttk.Combobox(
+            sweep,
+            state="readonly",
+            textvariable=self.k_mode_var,
+            values=["percent", "absolute"],
+            width=12,
+        )
+        self.k_mode_combo.grid(row=1, column=1, columnspan=2, sticky="w", padx=4, pady=(0, 8))
+        self.k_mode_combo.bind("<<ComboboxSelected>>", lambda _evt: self._on_variable_selection_changed())
         headers = ["Use", "Variable", "Start", "End", "Step"]
         for col, header in enumerate(headers):
-            ttk.Label(sweep, text=header, font=("Segoe UI", 9, "bold")).grid(row=1, column=col, sticky="w", padx=4, pady=(0, 6))
+            ttk.Label(sweep, text=header, font=("Segoe UI", 9, "bold")).grid(row=2, column=col, sticky="w", padx=4, pady=(0, 6))
 
         self.sweep_rows: dict[str, dict[str, tk.Widget]] = {}
         ordered = [("n", "N"), ("density", "Density"), ("k", "k % of N")]
-        for i, (var_id, label) in enumerate(ordered, start=2):
+        for i, (var_id, label) in enumerate(ordered, start=3):
             use_cb = ttk.Checkbutton(sweep, variable=self.var_selected[var_id], command=self._on_variable_selection_changed)
             use_cb.grid(row=i, column=0, padx=4, sticky="w")
-            ttk.Label(sweep, text=label).grid(row=i, column=1, padx=4, sticky="w")
+            name_label = ttk.Label(sweep, text=label)
+            name_label.grid(row=i, column=1, padx=4, sticky="w")
             start_entry = ttk.Entry(sweep, textvariable=self.var_start[var_id], width=12)
             start_entry.grid(row=i, column=2, padx=4, sticky="w")
             end_entry = ttk.Entry(sweep, textvariable=self.var_end[var_id], width=12)
@@ -952,6 +1446,7 @@ class BenchmarkRunnerApp(tk.Tk):
             step_entry.grid(row=i, column=4, padx=4, sticky="w")
             self.sweep_rows[var_id] = {
                 "use_cb": use_cb,
+                "label": name_label,
                 "start": start_entry,
                 "end": end_entry,
                 "step": step_entry,
@@ -1002,6 +1497,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.run_log_timer_label = ttk.Label(log_header, text="", font=("Consolas", 10, "bold"))
         self.log_box = ScrolledText(log_container, height=16, wrap=tk.WORD)
         self.log_box.pack(fill=tk.BOTH, expand=True)
+        self.log_box.tag_configure("info", foreground="#222222")
         self.log_box.tag_configure("error", foreground="#B00020")
         self.log_box.tag_configure("warn", foreground="#9A6700")
         self.log_box.tag_configure("success", foreground="#0A7D32")
@@ -1017,10 +1513,12 @@ class BenchmarkRunnerApp(tk.Tk):
         memory_tab = ttk.Frame(chart_panel)
         runtime_3d_tab = ttk.Frame(chart_panel)
         memory_3d_tab = ttk.Frame(chart_panel)
+        visualizer_tab = ttk.Frame(chart_panel)
         chart_panel.add(runtime_tab, text="Runtime 2D")
         chart_panel.add(memory_tab, text="Memory 2D")
         chart_panel.add(runtime_3d_tab, text="Runtime 3D")
         chart_panel.add(memory_3d_tab, text="Memory 3D")
+        chart_panel.add(visualizer_tab, text="Visualizer")
 
         runtime_toolbar = ttk.Frame(runtime_tab)
         runtime_toolbar.pack(fill=tk.X, padx=4, pady=(4, 2))
@@ -1034,6 +1532,12 @@ class BenchmarkRunnerApp(tk.Tk):
             runtime_toolbar,
             text="Show Regression Line",
             variable=self.show_regression_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Checkbutton(
+            runtime_toolbar,
+            text="Trendlines Only",
+            variable=self.show_trendlines_only_var,
             command=self._repaint_existing_plots,
         ).pack(side=tk.LEFT, padx=(12, 0))
         ttk.Checkbutton(
@@ -1065,6 +1569,12 @@ class BenchmarkRunnerApp(tk.Tk):
             memory_toolbar,
             text="Show Regression Line",
             variable=self.show_regression_var,
+            command=self._repaint_existing_plots,
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Checkbutton(
+            memory_toolbar,
+            text="Trendlines Only",
+            variable=self.show_trendlines_only_var,
             command=self._repaint_existing_plots,
         ).pack(side=tk.LEFT, padx=(12, 0))
         ttk.Checkbutton(
@@ -1124,6 +1634,112 @@ class BenchmarkRunnerApp(tk.Tk):
         self.memory_3d_frame = ttk.Frame(memory_3d_tab)
         self.memory_3d_frame.pack(fill=tk.BOTH, expand=True)
 
+        vis_wrap = ttk.Frame(visualizer_tab, padding=12)
+        vis_wrap.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            vis_wrap,
+            text=(
+                "Use variable navigators to choose a datapoint tuple. "
+                "The visualizer renders in this tab and supports iteration/solution navigation."
+            ),
+            wraplength=760,
+            justify=tk.LEFT,
+        ).pack(anchor="w")
+        vis_var_frame = ttk.Frame(vis_wrap)
+        vis_var_frame.pack(fill=tk.X, pady=(10, 4))
+        self.visualizer_var_frame = vis_var_frame
+        ttk.Label(vis_var_frame, text="Datapoint Selection:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
+        for var_id in ("n", "k", "density"):
+            row = ttk.Frame(vis_var_frame)
+            row.pack(fill=tk.X, pady=(1, 1))
+            lbl = ttk.Label(row, text=f"{self._axis_label(var_id)}:", width=12)
+            lbl.pack(side=tk.LEFT)
+            prev_btn = ttk.Button(row, text="<", width=3, command=lambda v=var_id: self._shift_visualizer_variable(v, -1))
+            prev_btn.pack(side=tk.LEFT)
+            value_var = tk.StringVar(value="--")
+            value_label = tk.Label(row, textvariable=value_var, width=16, anchor="center", fg="#666666")
+            value_label.pack(side=tk.LEFT, padx=(6, 6))
+            next_btn = ttk.Button(row, text=">", width=3, command=lambda v=var_id: self._shift_visualizer_variable(v, 1))
+            next_btn.pack(side=tk.LEFT)
+            count_var = tk.StringVar(value="(0/0)")
+            count_label = ttk.Label(row, textvariable=count_var, foreground="#666666")
+            count_label.pack(side=tk.LEFT, padx=(8, 0))
+            self.visualizer_nav_rows[var_id] = row
+            self.visualizer_nav_display_vars[var_id] = value_var
+            self.visualizer_nav_count_vars[var_id] = count_var
+            self.visualizer_nav_name_labels[var_id] = lbl
+            self.visualizer_nav_value_labels[var_id] = value_label
+            self.visualizer_nav_prev_buttons[var_id] = prev_btn
+            self.visualizer_nav_next_buttons[var_id] = next_btn
+
+        vis_iter_sol_frame = ttk.Frame(vis_wrap)
+        vis_iter_sol_frame.pack(fill=tk.X, pady=(6, 6))
+        ttk.Label(vis_iter_sol_frame, text="Iteration:", width=10).pack(side=tk.LEFT)
+        self.visualizer_iter_prev_btn = ttk.Button(vis_iter_sol_frame, text="<", width=3, command=self._visualizer_prev_iteration, state=tk.DISABLED)
+        self.visualizer_iter_prev_btn.pack(side=tk.LEFT)
+        ttk.Label(vis_iter_sol_frame, textvariable=self.visualizer_iteration_label_var, width=20).pack(side=tk.LEFT, padx=(6, 6))
+        self.visualizer_iter_next_btn = ttk.Button(vis_iter_sol_frame, text=">", width=3, command=self._visualizer_next_iteration, state=tk.DISABLED)
+        self.visualizer_iter_next_btn.pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Label(vis_iter_sol_frame, text="Solution:", width=10).pack(side=tk.LEFT)
+        self.visualizer_sol_prev_btn = ttk.Button(vis_iter_sol_frame, text="<", width=3, command=self._visualizer_prev_solution, state=tk.DISABLED)
+        self.visualizer_sol_prev_btn.pack(side=tk.LEFT)
+        ttk.Label(vis_iter_sol_frame, textvariable=self.visualizer_solution_label_var, width=28).pack(side=tk.LEFT, padx=(6, 6))
+        self.visualizer_sol_next_btn = ttk.Button(vis_iter_sol_frame, text=">", width=3, command=self._visualizer_next_solution, state=tk.DISABLED)
+        self.visualizer_sol_next_btn.pack(side=tk.LEFT)
+
+        vis_controls = ttk.Frame(vis_wrap)
+        vis_controls.pack(fill=tk.X, pady=(2, 4))
+        self.load_visualizer_btn = ttk.Button(
+            vis_controls,
+            text="Load In Tab",
+            command=self._load_visualizer_in_tab,
+            state=tk.DISABLED,
+        )
+        self.load_visualizer_btn.pack(side=tk.LEFT)
+        self.open_visualizer_btn = ttk.Button(
+            vis_controls,
+            text="Open External",
+            command=self._open_visualizer_external,
+            state=tk.DISABLED,
+        )
+        self.open_visualizer_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self.visualizer_fullscreen_btn = ttk.Button(
+            vis_controls,
+            text="Fullscreen",
+            command=self._open_visualizer_fullscreen,
+            state=tk.DISABLED,
+        )
+        self.visualizer_fullscreen_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self.visualizer_embed_note = ttk.Label(
+            vis_wrap,
+            text="Open External uses the website visualizer in your browser.",
+            foreground="#666666",
+            wraplength=760,
+            justify=tk.LEFT,
+        )
+        self.visualizer_embed_note.pack(anchor="w", pady=(0, 4))
+        ttk.Label(
+            vis_wrap,
+            textvariable=self.visualizer_status_var,
+            foreground="#555555",
+            wraplength=760,
+            justify=tk.LEFT,
+        ).pack(anchor="w", pady=(0, 6))
+        ttk.Label(
+            vis_wrap,
+            textvariable=self.visualizer_solution_count_var,
+            foreground="#555555",
+            justify=tk.LEFT,
+        ).pack(anchor="w", pady=(0, 2))
+        ttk.Label(
+            vis_wrap,
+            textvariable=self.visualizer_no_solution_var,
+            foreground="#B00020",
+            justify=tk.LEFT,
+        ).pack(anchor="w", pady=(0, 6))
+        self.visualizer_host_frame = ttk.Frame(vis_wrap)
+        self.visualizer_host_frame.pack(fill=tk.BOTH, expand=True)
+
         self.runtime_canvas: FigureCanvasTkAgg | None = None
         self.memory_canvas: FigureCanvasTkAgg | None = None
         self.runtime_3d_canvas: FigureCanvasTkAgg | None = None
@@ -1181,7 +1797,7 @@ class BenchmarkRunnerApp(tk.Tk):
             return
 
         families = list(dict.fromkeys(v.family for v in variants))
-        role_rank = {"baseline": 0, "chatgpt": 1, "gemini": 2}
+        role_rank = {"baseline": 0, "chatgpt": 1, "claude": 2, "copilot": 3, "gemini": 4}
 
         def role_key(variant: SolverVariant):
             token = variant.variant_id.rsplit("_", 1)[-1].strip().lower()
@@ -1192,25 +1808,51 @@ class BenchmarkRunnerApp(tk.Tk):
                 return "baseline"
             if "chatgpt" in label_lower:
                 return "chatgpt"
+            if "claude" in label_lower:
+                return "claude"
+            if "copilot" in label_lower:
+                return "copilot"
             if "gemini" in label_lower:
                 return "gemini"
             return token
 
+        def role_label(role: str) -> str:
+            role = str(role or "").strip().lower()
+            if role == "baseline":
+                return "Baseline"
+            if role == "chatgpt":
+                return "ChatGPT"
+            if role == "claude":
+                return "Claude"
+            if role == "copilot":
+                return "Copilot"
+            if role == "gemini":
+                return "Gemini"
+            return " ".join(part.capitalize() for part in role.split("_") if part) or "Unknown"
+
+        def family_label(family: str) -> str:
+            f = str(family or "").strip().lower()
+            if f == "vf3":
+                return "VF3 (.grf)"
+            if f == "glasgow":
+                return "Glasgow (.lad)"
+            if f == "dijkstra":
+                return "Dijkstra (.csv)"
+            return f.title()
+
         role_keys = sorted({role_key(v) for v in variants}, key=lambda r: (role_rank.get(r, 99), r))
         by_family_role = {(v.family, role_key(v)): v for v in variants}
 
-        ttk.Label(vars_frame, text="Variant", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, padx=(0, 8), pady=(0, 6), sticky="w")
-        for col, family in enumerate(families, start=1):
-            family_label = family.upper() if len(family) <= 5 else family.title()
-            ttk.Label(vars_frame, text=family_label, font=("Segoe UI", 9, "bold")).grid(row=0, column=col, padx=(0, 12), pady=(0, 6), sticky="w")
+        ttk.Label(vars_frame, text="Family", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, padx=(0, 8), pady=(0, 6), sticky="w")
+        for col, role in enumerate(role_keys, start=1):
+            ttk.Label(vars_frame, text=role_label(role), font=("Segoe UI", 9, "bold")).grid(row=0, column=col, padx=(0, 12), pady=(0, 6), sticky="w")
 
-        for row, role in enumerate(role_keys, start=1):
-            role_label = role.upper() if role.lower() == "chatgpt" else role.title()
-            ttk.Label(vars_frame, text=role_label).grid(row=row, column=0, padx=(0, 8), pady=(0, 6), sticky="w")
-            for col, family in enumerate(families, start=1):
+        for row, family in enumerate(families, start=1):
+            ttk.Label(vars_frame, text=family_label(family)).grid(row=row, column=0, padx=(0, 8), pady=(0, 6), sticky="w")
+            for col, role in enumerate(role_keys, start=1):
                 variant = by_family_role.get((family, role))
                 if variant is None:
-                    ttk.Label(vars_frame, text="-", foreground="#888888").grid(row=row, column=col, padx=(0, 12), pady=(0, 6), sticky="w")
+                    tk.Label(vars_frame, text="-", fg="#888888").grid(row=row, column=col, padx=(0, 12), pady=(0, 6), sticky="w")
                     continue
                 cb = ttk.Checkbutton(
                     vars_frame,
@@ -1254,6 +1896,46 @@ class BenchmarkRunnerApp(tk.Tk):
         except Exception:
             pass
 
+    def _on_outlier_filter_changed(self):
+        if not hasattr(self, "outlier_filter_blurb"):
+            return
+        mode = self.outlier_filter_var.get().strip().lower()
+        blurb_text = ""
+        if mode == "mad":
+            blurb_text = (
+                "MAD (3-sigma): centers on the median, estimates spread from median absolute deviation, "
+                f"and drops samples beyond 3 x 1.4826 x MAD (requires >= {DEFAULT_OUTLIER_MIN_SAMPLES} samples)."
+            )
+        elif mode == "iqr":
+            blurb_text = (
+                "IQR (1.5x): computes Q1/Q3 and drops samples outside [Q1 - 1.5xIQR, Q3 + 1.5xIQR] "
+                f"(requires >= {DEFAULT_OUTLIER_MIN_SAMPLES} samples)."
+            )
+
+        try:
+            if blurb_text:
+                self.outlier_filter_blurb.configure(text=blurb_text)
+                self._refresh_outlier_blurb_wraplength()
+                self.outlier_filter_blurb.grid(row=9, column=0, columnspan=2, pady=(4, 0), sticky="ew")
+            else:
+                self.outlier_filter_blurb.grid_forget()
+        except Exception:
+            pass
+
+    def _refresh_outlier_blurb_wraplength(self):
+        if not hasattr(self, "outlier_filter_blurb"):
+            return
+        try:
+            parent = self.outlier_filter_blurb.nametowidget(self.outlier_filter_blurb.winfo_parent())
+            width = int(parent.winfo_width() or parent.winfo_reqwidth() or 260)
+            wrap = max(180, width - 16)
+            self.outlier_filter_blurb.configure(wraplength=wrap)
+        except Exception:
+            pass
+
+    def _on_outlier_blurb_parent_resize(self, _event=None):
+        self._refresh_outlier_blurb_wraplength()
+
     def _on_variable_selection_changed(self):
         tab_id = self.tab_id_var.get()
         run_mode = self.run_mode_var.get().strip().lower()
@@ -1272,6 +1954,17 @@ class BenchmarkRunnerApp(tk.Tk):
             widgets["start"].configure(state=tk.NORMAL if is_allowed else tk.DISABLED)
             widgets["end"].configure(state=tk.NORMAL if (is_allowed and is_selected and (not timed_mode)) else tk.DISABLED)
             widgets["step"].configure(state=tk.NORMAL if (is_allowed and is_selected) else tk.DISABLED)
+        k_label = self.sweep_rows.get("k", {}).get("label")
+        if k_label is not None:
+            label_text = "K (nodes)" if self.k_mode_var.get().strip().lower() == "absolute" else "k % of N"
+            try:
+                k_label.configure(text=label_text)
+            except Exception:
+                pass
+        try:
+            self.k_mode_combo.configure(state=tk.NORMAL if tab_id == "subgraph" else tk.DISABLED)
+        except Exception:
+            pass
 
     def _refresh_3d_variant_choices(self):
         selected = self._selected_variants_for_current_tab()
@@ -1284,19 +1977,31 @@ class BenchmarkRunnerApp(tk.Tk):
         else:
             self.plot3d_variant_var.set("")
 
+    def _apply_log_line_style(self, start_idx: str, end_idx: str, level: str):
+        level_key = str(level or "info").strip().lower()
+        if level_key not in LOG_COLOR_TAGS:
+            level_key = "info"
+        for tag_name in LOG_COLOR_TAGS:
+            try:
+                self.log_box.tag_remove(tag_name, start_idx, end_idx)
+            except Exception:
+                pass
+        try:
+            self.log_box.tag_add(level_key, start_idx, end_idx)
+        except Exception:
+            pass
+
     def _append_log(self, text: str, level: str = "info"):
         self.log_box.configure(state=tk.NORMAL)
         auto_follow = self._log_should_autoscroll()
-        tag = None
-        if level in {"error", "warn", "success", "notice"}:
-            tag = level
         insert_at = self._first_live_log_index_locked()
         if insert_at is None:
             insert_at = tk.END
-        if tag is not None:
-            self.log_box.insert(insert_at, text + "\n", (tag,))
-        else:
-            self.log_box.insert(insert_at, text + "\n")
+        start_idx = self.log_box.index(insert_at)
+        line_text = text + "\n"
+        self.log_box.insert(start_idx, line_text)
+        end_idx = self.log_box.index(f"{start_idx}+{len(line_text)}c")
+        self._apply_log_line_style(start_idx, end_idx, level)
         if auto_follow:
             self.log_box.see(tk.END)
         self.log_box.configure(state=tk.DISABLED)
@@ -1375,11 +2080,11 @@ class BenchmarkRunnerApp(tk.Tk):
                     self.live_log_lines[token] = mark_name
                     self.log_box.mark_set(mark_name, "end-1c")
                     self.log_box.mark_gravity(mark_name, tk.LEFT)
-            tag = (level,) if level in {"error", "warn", "success", "notice"} else ()
-            if tag:
-                self.log_box.insert(mark_name, text + "\n", tag)
-            else:
-                self.log_box.insert(mark_name, text + "\n")
+            start_idx = self.log_box.index(mark_name)
+            line_text = text + "\n"
+            self.log_box.insert(start_idx, line_text)
+            end_idx = self.log_box.index(f"{start_idx}+{len(line_text)}c")
+            self._apply_log_line_style(start_idx, end_idx, level)
             if auto_follow:
                 self.log_box.see(tk.END)
         finally:
@@ -1455,10 +2160,12 @@ class BenchmarkRunnerApp(tk.Tk):
             self.memory_canvas is not None,
             self.runtime_3d_canvas is not None,
             self.memory_3d_canvas is not None,
+            self.visualizer_graph_canvas is not None,
             self.last_runtime_fig is not None,
             self.last_memory_fig is not None,
             self.last_runtime_3d_fig is not None,
             self.last_memory_3d_fig is not None,
+            self.visualizer_graph_fig is not None,
         ])
 
         for canvas_attr in ("runtime_canvas", "memory_canvas", "runtime_3d_canvas", "memory_3d_canvas"):
@@ -1478,6 +2185,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 except Exception:
                     pass
                 setattr(self, fig_attr, None)
+        self._clear_visualizer_render()
 
         self._clear_drilldown()
         self.last_plot_context = None
@@ -1520,6 +2228,10 @@ class BenchmarkRunnerApp(tk.Tk):
         y_val = row.get("y_value")
         runtime_samples = list(row.get("runtime_samples_ms") or [])
         memory_samples = list(row.get("memory_samples_kb") or [])
+        runtime_samples_raw = list(row.get("runtime_samples_raw_ms") or runtime_samples)
+        memory_samples_raw = list(row.get("memory_samples_raw_kb") or memory_samples)
+        outlier_mode = str(row.get("outlier_filter_mode", "none")).strip().lower()
+        outlier_min_samples = row.get("outlier_filter_min_samples", DEFAULT_OUTLIER_MIN_SAMPLES)
         seeds = list(row.get("seeds") or [])
         lines = [
             "Datapoint Drilldown",
@@ -1527,16 +2239,19 @@ class BenchmarkRunnerApp(tk.Tk):
             f"Variant: {row.get('variant_label', row.get('variant_id', 'unknown'))}",
             f"X value: {number_or_blank(x_val) if x_val is not None else 'n/a'}",
             f"Y value: {number_or_blank(y_val) if y_val is not None else 'n/a'}",
+            f"Outlier filter: {outlier_mode} (min samples={outlier_min_samples})",
             "",
             f"Runtime median (ms): {number_or_blank(row.get('runtime_median_ms'))}",
             f"Runtime stdev (ms): {number_or_blank(row.get('runtime_stdev_ms'))}",
-            f"Runtime samples: {len(runtime_samples)}",
-            f"Runtime samples raw: {json.dumps(runtime_samples)}",
+            f"Runtime samples used/total: {len(runtime_samples)}/{len(runtime_samples_raw)}",
+            f"Runtime samples used: {json.dumps(runtime_samples)}",
+            f"Runtime samples raw: {json.dumps(runtime_samples_raw)}",
             "",
             f"Memory median (KiB): {number_or_blank(row.get('memory_median_kb'))}",
             f"Memory stdev (KiB): {number_or_blank(row.get('memory_stdev_kb'))}",
-            f"Memory samples: {len(memory_samples)}",
-            f"Memory samples raw: {json.dumps(memory_samples)}",
+            f"Memory samples used/total: {len(memory_samples)}/{len(memory_samples_raw)}",
+            f"Memory samples used: {json.dumps(memory_samples)}",
+            f"Memory samples raw: {json.dumps(memory_samples_raw)}",
             "",
             f"Completed iterations: {row.get('completed_iterations')}/{row.get('requested_iterations')}",
             f"Seeds: {json.dumps(seeds)}",
@@ -1597,10 +2312,38 @@ class BenchmarkRunnerApp(tk.Tk):
             if variant.tab_id == tab_id and self.variant_checks[variant.variant_id].get()
         ]
 
+    def _k_mode(self, config: dict | None = None) -> str:
+        if isinstance(config, dict):
+            mode = str(config.get("k_mode", "percent")).strip().lower()
+        else:
+            mode = self.k_mode_var.get().strip().lower()
+        return mode if mode in {"percent", "absolute"} else "percent"
+
+    def _axis_label(self, var_id: str, config: dict | None = None) -> str:
+        if var_id != "k":
+            return axis_label(var_id)
+        return "K (nodes)" if self._k_mode(config) == "absolute" else "k % of N"
+
+    def _format_point_value(self, var_id: str, value: float, config: dict | None = None) -> str:
+        if var_id != "k":
+            return format_point_value(var_id, value)
+        if self._k_mode(config) == "absolute":
+            return str(int(round(value)))
+        return format_point_value(var_id, value)
+
+    def _format_step_value(self, var_id: str, value: float | None, config: dict | None = None) -> str:
+        if var_id != "k":
+            return format_step_value(var_id, value)
+        if value is None:
+            return "n/a"
+        if self._k_mode(config) == "absolute":
+            return str(int(round(value)))
+        return format_step_value(var_id, value)
+
     def _format_run_input_segment(self, config: dict, var_id: str) -> str:
         specs = config.get("input_specs", {})
         spec = specs.get(var_id)
-        label = axis_label(var_id)
+        label = self._axis_label(var_id, config)
         if spec is None:
             return f"{label}=n/a"
         selected = bool(spec.get("selected"))
@@ -1610,14 +2353,14 @@ class BenchmarkRunnerApp(tk.Tk):
         if selected:
             if config.get("run_mode") == "timed":
                 return (
-                    f"{label} start={format_point_value(var_id, float(start))} "
-                    f"step={format_step_value(var_id, None if step is None else float(step))} (timed)"
+                    f"{label} start={self._format_point_value(var_id, float(start), config)} "
+                    f"step={self._format_step_value(var_id, None if step is None else float(step), config)} (timed)"
                 )
             return (
-                f"{label} {format_point_value(var_id, float(start))}->{format_point_value(var_id, float(end))} "
-                f"step={format_step_value(var_id, None if step is None else float(step))}"
+                f"{label} {self._format_point_value(var_id, float(start), config)}->{self._format_point_value(var_id, float(end), config)} "
+                f"step={self._format_step_value(var_id, None if step is None else float(step), config)}"
             )
-        return f"{label} fixed={format_point_value(var_id, float(start))}"
+        return f"{label} fixed={self._format_point_value(var_id, float(start), config)}"
 
     def _validate_and_build_config(self):
         tab_id = self.tab_id_var.get()
@@ -1663,6 +2406,10 @@ class BenchmarkRunnerApp(tk.Tk):
             raise ValueError("Failure policy must be stop or continue.")
         retry_failed_trials = parse_int(self.retry_failed_trials_var.get(), "Retry failed trials", minimum=0)
         timeout_as_missing = bool(self.timeout_as_missing_var.get())
+        outlier_filter = self.outlier_filter_var.get().strip().lower()
+        if outlier_filter not in {"none", "mad", "iqr"}:
+            raise ValueError("Outlier filter must be none, mad, or iqr.")
+        k_mode = self._k_mode()
 
         variable_order = ["n", "density", "k"]
         allowed_vars = ["n", "density"] if tab_id == "shortest_path" else variable_order
@@ -1679,28 +2426,33 @@ class BenchmarkRunnerApp(tk.Tk):
         input_specs = {}
         for var_id in allowed_vars:
             if self.var_selected[var_id].get():
-                integer_mode = var_id == "n"
+                integer_mode = var_id == "n" or (var_id == "k" and k_mode == "absolute")
                 start_raw = self.var_start[var_id].get().strip()
                 step_raw = self.var_step[var_id].get().strip()
                 end_raw = self.var_end[var_id].get().strip()
                 if start_raw == "":
-                    raise ValueError(f"Start is required for {axis_label(var_id)}.")
+                    raise ValueError(f"Start is required for {self._axis_label(var_id)}.")
                 if step_raw == "":
-                    raise ValueError(f"Step is required for {axis_label(var_id)}.")
+                    raise ValueError(f"Step is required for {self._axis_label(var_id)}.")
                 if run_mode != "timed" and end_raw == "":
-                    raise ValueError(f"End is required for {axis_label(var_id)}.")
+                    raise ValueError(f"End is required for {self._axis_label(var_id)}.")
                 if var_id == "n":
-                    start = float(parse_int(start_raw, f"{axis_label(var_id)} start", minimum=1))
-                    step = float(parse_int(step_raw, f"{axis_label(var_id)} step", minimum=1))
-                    end = float(parse_int(end_raw, f"{axis_label(var_id)} end", minimum=1)) if run_mode != "timed" else start
+                    start = float(parse_int(start_raw, f"{self._axis_label(var_id)} start", minimum=1))
+                    step = float(parse_int(step_raw, f"{self._axis_label(var_id)} step", minimum=1))
+                    end = float(parse_int(end_raw, f"{self._axis_label(var_id)} end", minimum=1)) if run_mode != "timed" else start
                 elif var_id == "density":
-                    start = parse_float(start_raw, f"{axis_label(var_id)} start", minimum=0.000001, maximum=1.0)
-                    step = parse_float(step_raw, f"{axis_label(var_id)} step", minimum=0.000001, maximum=1.0)
-                    end = parse_float(end_raw, f"{axis_label(var_id)} end", minimum=0.000001, maximum=1.0) if run_mode != "timed" else start
+                    start = parse_float(start_raw, f"{self._axis_label(var_id)} start", minimum=0.000001, maximum=1.0)
+                    step = parse_float(step_raw, f"{self._axis_label(var_id)} step", minimum=0.000001, maximum=1.0)
+                    end = parse_float(end_raw, f"{self._axis_label(var_id)} end", minimum=0.000001, maximum=1.0) if run_mode != "timed" else start
                 else:
-                    start = parse_float(start_raw, f"{axis_label(var_id)} start", minimum=0.000001, maximum=100.0)
-                    step = parse_float(step_raw, f"{axis_label(var_id)} step", minimum=0.000001, maximum=100.0)
-                    end = parse_float(end_raw, f"{axis_label(var_id)} end", minimum=0.000001, maximum=100.0) if run_mode != "timed" else start
+                    if k_mode == "absolute":
+                        start = float(parse_int(start_raw, f"{self._axis_label(var_id)} start", minimum=2))
+                        step = float(parse_int(step_raw, f"{self._axis_label(var_id)} step", minimum=1))
+                        end = float(parse_int(end_raw, f"{self._axis_label(var_id)} end", minimum=2)) if run_mode != "timed" else start
+                    else:
+                        start = parse_float(start_raw, f"{self._axis_label(var_id)} start", minimum=0.000001, maximum=100.0)
+                        step = parse_float(step_raw, f"{self._axis_label(var_id)} step", minimum=0.000001, maximum=100.0)
+                        end = parse_float(end_raw, f"{self._axis_label(var_id)} end", minimum=0.000001, maximum=100.0) if run_mode != "timed" else start
                 if run_mode == "timed":
                     timed_start[var_id] = start
                     timed_step[var_id] = step
@@ -1718,9 +2470,14 @@ class BenchmarkRunnerApp(tk.Tk):
                             if v <= 0 or v > 1:
                                 raise ValueError("Density values must be in (0, 1].")
                     if var_id == "k":
-                        for v in values:
-                            if v <= 0 or v > 100:
-                                raise ValueError("k % of N values must be in (0, 100].")
+                        if k_mode == "percent":
+                            for v in values:
+                                if v <= 0 or v > 100:
+                                    raise ValueError("k % of N values must be in (0, 100].")
+                        else:
+                            for v in values:
+                                if int(round(v)) < 2:
+                                    raise ValueError("K (nodes) values must be >= 2.")
                     var_ranges[var_id] = values
                     input_specs[var_id] = {
                         "selected": True,
@@ -1731,13 +2488,16 @@ class BenchmarkRunnerApp(tk.Tk):
             else:
                 start_raw = self.var_start[var_id].get().strip()
                 if start_raw == "":
-                    raise ValueError(f"Start is required for {axis_label(var_id)}.")
+                    raise ValueError(f"Start is required for {self._axis_label(var_id)}.")
                 if var_id == "n":
-                    fixed_values[var_id] = float(parse_int(start_raw, f"{axis_label(var_id)} start", minimum=1))
+                    fixed_values[var_id] = float(parse_int(start_raw, f"{self._axis_label(var_id)} start", minimum=1))
                 elif var_id == "density":
-                    fixed_values[var_id] = parse_float(start_raw, f"{axis_label(var_id)} start", minimum=0.000001, maximum=1.0)
+                    fixed_values[var_id] = parse_float(start_raw, f"{self._axis_label(var_id)} start", minimum=0.000001, maximum=1.0)
                 else:
-                    fixed_values[var_id] = parse_float(start_raw, f"{axis_label(var_id)} start", minimum=0.000001, maximum=100.0)
+                    if k_mode == "absolute":
+                        fixed_values[var_id] = float(parse_int(start_raw, f"{self._axis_label(var_id)} start", minimum=2))
+                    else:
+                        fixed_values[var_id] = parse_float(start_raw, f"{self._axis_label(var_id)} start", minimum=0.000001, maximum=100.0)
                 input_specs[var_id] = {
                     "selected": False,
                     "start": float(fixed_values[var_id]),
@@ -1770,9 +2530,15 @@ class BenchmarkRunnerApp(tk.Tk):
                 n_nodes = int(round(timed_probe["n"]))
                 if n_nodes < 3:
                     raise ValueError("N must be at least 3 for subgraph benchmarking.")
-                k_percent = float(timed_probe["k"])
-                if k_percent <= 0 or k_percent > 100:
-                    raise ValueError("k % of N must be in (0, 100].")
+                k_value = float(timed_probe["k"])
+                if k_mode == "percent":
+                    if k_value <= 0 or k_value > 100:
+                        raise ValueError("k % of N must be in (0, 100].")
+                else:
+                    if int(round(k_value)) < 2:
+                        raise ValueError("K (nodes) must be >= 2.")
+                    if int(round(k_value)) >= n_nodes:
+                        raise ValueError("K (nodes) must be smaller than N in subgraph mode.")
             elif tab_id == "shortest_path":
                 n_nodes = int(round(timed_probe["n"]))
                 if n_nodes < 2:
@@ -1795,12 +2561,19 @@ class BenchmarkRunnerApp(tk.Tk):
                     n_nodes = int(round(point["n"]))
                     if n_nodes < 3:
                         raise ValueError("N must be at least 3 for subgraph benchmarking.")
-                    k_percent = float(point["k"])
-                    if k_percent <= 0 or k_percent > 100:
-                        raise ValueError("k % of N must be in (0, 100].")
-                    # k is defined as a percentage of N; round and clamp to a valid pattern size.
-                    k_nodes = int(round((k_percent / 100.0) * n_nodes))
-                    k_nodes = max(2, min(n_nodes - 1, k_nodes))
+                    k_value = float(point["k"])
+                    if k_mode == "percent":
+                        if k_value <= 0 or k_value > 100:
+                            raise ValueError("k % of N must be in (0, 100].")
+                        # k is defined as a percentage of N; round and clamp to a valid pattern size.
+                        k_nodes = int(round((k_value / 100.0) * n_nodes))
+                        k_nodes = max(2, min(n_nodes - 1, k_nodes))
+                    else:
+                        k_nodes = int(round(k_value))
+                        if k_nodes < 2:
+                            raise ValueError("K (nodes) must be >= 2.")
+                        if k_nodes >= n_nodes:
+                            raise ValueError("K (nodes) must be smaller than N in subgraph mode.")
                     point["k_nodes"] = k_nodes
 
         style = self.plot3d_style_var.get().strip().lower()
@@ -1824,6 +2597,8 @@ class BenchmarkRunnerApp(tk.Tk):
             "failure_policy": failure_policy,
             "retry_failed_trials": retry_failed_trials,
             "timeout_as_missing": timeout_as_missing,
+            "outlier_filter": outlier_filter,
+            "k_mode": k_mode,
             "primary_var": primary_var,
             "secondary_var": secondary_var,
             "var_ranges": var_ranges,
@@ -1836,6 +2611,7 @@ class BenchmarkRunnerApp(tk.Tk):
             "plot3d_variant": variant_for_3d,
             "show_stddev_bars": bool(self.show_stddev_var.get()),
             "show_regression_line": bool(self.show_regression_var.get()),
+            "show_trendlines_only": bool(self.show_trendlines_only_var.get()),
             "parallel_requested": parallel_requested,
             "requested_workers": requested_workers,
             "max_workers": max_workers,
@@ -1858,6 +2634,8 @@ class BenchmarkRunnerApp(tk.Tk):
         self.pause_event.clear()
         self.session_output_dir = make_session_output_dir()
         self.last_run_payload = None
+        self._reset_visualizer_selection_state()
+        self._clear_visualizer_render()
         self._clear_graphs(announce=False)
         self._clear_drilldown()
         self._append_log("Cleared previous graphs for new run.", level="notice")
@@ -1878,12 +2656,14 @@ class BenchmarkRunnerApp(tk.Tk):
         failure_mode = config.get("failure_policy", "stop")
         retry_count = int(config.get("retry_failed_trials", 0))
         timeout_mode_policy = "missing" if config.get("timeout_as_missing", True) else "strict"
+        outlier_mode = str(config.get("outlier_filter", "none")).strip().lower()
         self._append_log(
             f"Starting run | tab={config['tab_id']} | variants={len(config['selected_variants'])} | "
             f"datapoints={datapoints_label} | iterations={config['iterations']} | "
             f"parallel={parallel_mode} workers={config['max_workers']} cores={config['detected_logical_cores']} | "
             f"solver_timeout={timeout_mode} | "
             f"failure_policy={failure_mode} retries={retry_count} timeout_policy={timeout_mode_policy} | "
+            f"outlier_filter={outlier_mode} min_samples={DEFAULT_OUTLIER_MIN_SAMPLES} | "
             f"delete_generated_inputs={'on' if config.get('delete_generated_inputs') else 'off'} | "
             f"{variable_segments}"
         )
@@ -1893,6 +2673,10 @@ class BenchmarkRunnerApp(tk.Tk):
         self.pause_btn.configure(state=tk.NORMAL, text="Pause")
         self.open_dir_btn.configure(state=tk.NORMAL)
         self.save_btn.configure(state=tk.DISABLED)
+        self.load_visualizer_btn.configure(state=tk.DISABLED)
+        self.open_visualizer_btn.configure(state=tk.DISABLED)
+        self.visualizer_fullscreen_btn.configure(state=tk.DISABLED)
+        self.visualizer_status_var.set("Run in progress. Visualizer will be available after completion.")
 
         self.worker_thread = threading.Thread(target=self._run_worker, args=(config,), daemon=True)
         self.worker_thread.start()
@@ -2010,18 +2794,22 @@ class BenchmarkRunnerApp(tk.Tk):
         if var_id == "density":
             return max(0.000001, min(1.0, float(value)))
         if var_id == "k":
+            if self._k_mode(config) == "absolute":
+                return float(max(2, int(round(value))))
             return max(0.000001, min(100.0, float(value)))
         return float(value)
 
-    def _timed_upper_bound(self, var_id: str) -> float | None:
+    def _timed_upper_bound(self, var_id: str, config: dict | None = None) -> float | None:
         if var_id == "density":
             return 1.0
         if var_id == "k":
+            if self._k_mode(config) == "absolute":
+                return None
             return 100.0
         return None
 
     def _timed_max_index(self, config: dict, var_id: str) -> int | None:
-        upper = self._timed_upper_bound(var_id)
+        upper = self._timed_upper_bound(var_id, config)
         if upper is None:
             return None
         start = float(config["timed_start"][var_id])
@@ -2041,12 +2829,22 @@ class BenchmarkRunnerApp(tk.Tk):
             if n_nodes < 3:
                 raise ValueError("N must be at least 3 for subgraph benchmarking.")
             density_value = max(0.000001, min(1.0, float(point["density"])))
-            k_percent = max(0.000001, min(100.0, float(point["k"])))
+            k_mode = self._k_mode(config)
+            k_raw = float(point["k"])
             point["n"] = float(n_nodes)
             point["density"] = density_value
-            point["k"] = k_percent
-            k_nodes = int(round((k_percent / 100.0) * n_nodes))
-            k_nodes = max(2, min(n_nodes - 1, k_nodes))
+            if k_mode == "absolute":
+                k_nodes = int(round(k_raw))
+                if k_nodes < 2:
+                    raise ValueError("K (nodes) must be >= 2.")
+                if k_nodes >= n_nodes:
+                    raise ValueError("K (nodes) must be smaller than N in subgraph mode.")
+                point["k"] = float(k_nodes)
+            else:
+                k_percent = max(0.000001, min(100.0, k_raw))
+                point["k"] = k_percent
+                k_nodes = int(round((k_percent / 100.0) * n_nodes))
+                k_nodes = max(2, min(n_nodes - 1, k_nodes))
             point["k_nodes"] = k_nodes
         return point
 
@@ -2142,6 +2940,10 @@ class BenchmarkRunnerApp(tk.Tk):
         timeout_completion_notice_emitted = False
         timed_points_exhausted = False
         selected_variants = list(config["selected_variants"])
+        if config["tab_id"] == "subgraph":
+            accuracy_baseline_variant = "vf3_baseline"
+        else:
+            accuracy_baseline_variant = "dijkstra_baseline"
         solver_timeout_seconds = config.get("solver_timeout_seconds")
         warmup_trials = int(max(0, config.get("warmup_trials", 0)))
         failure_policy = str(config.get("failure_policy", "stop")).strip().lower()
@@ -2154,9 +2956,14 @@ class BenchmarkRunnerApp(tk.Tk):
         )
 
         if config["run_mode"] == "timed":
-            bounded_vars = [v for v in (config["primary_var"], config["secondary_var"]) if v in {"density", "k"}]
+            bounded_vars = []
+            for v in (config["primary_var"], config["secondary_var"]):
+                if v == "density":
+                    bounded_vars.append(v)
+                elif v == "k" and self._k_mode(config) == "percent":
+                    bounded_vars.append(v)
             if bounded_vars:
-                bounded_labels = ", ".join(axis_label(v) for v in bounded_vars)
+                bounded_labels = ", ".join(self._axis_label(v, config) for v in bounded_vars)
                 bounded_verb = "is" if len(bounded_vars) == 1 else "are"
                 self._append_log_threadsafe(
                     f"Timed mode note: {bounded_labels} {bounded_verb} bounded; duplicate capped datapoints are skipped automatically.",
@@ -2265,10 +3072,13 @@ class BenchmarkRunnerApp(tk.Tk):
 
                 x_value = float(state["x_value"])
                 y_value = float(state["y_value"]) if state["y_value"] is not None else None
+                outlier_mode = str(config.get("outlier_filter", "none")).strip().lower()
                 for variant_id in selected_variants:
-                    runtimes = state["samples_runtime"][variant_id]
-                    memories = state["samples_memory"][variant_id]
-                    if not runtimes and not memories:
+                    runtimes_raw = [float(v) for v in state["samples_runtime"][variant_id]]
+                    memories_raw = [float(v) for v in state["samples_memory"][variant_id]]
+                    runtimes = filter_outlier_samples(runtimes_raw, outlier_mode)
+                    memories = filter_outlier_samples(memories_raw, outlier_mode)
+                    if not runtimes_raw and not memories_raw:
                         if timed_out or aborted:
                             continue
                     row = {
@@ -2276,24 +3086,35 @@ class BenchmarkRunnerApp(tk.Tk):
                         "variant_label": config["selected_variant_labels"].get(variant_id, variant_id),
                         "x_value": x_value,
                         "y_value": y_value,
+                        "outlier_filter_mode": outlier_mode,
+                        "outlier_filter_min_samples": int(DEFAULT_OUTLIER_MIN_SAMPLES),
                         "runtime_median_ms": median_or_none(runtimes),
                         "runtime_stdev_ms": safe_stdev(runtimes),
                         "runtime_samples_n": len(runtimes),
+                        "runtime_samples_total_n": len(runtimes_raw),
                         "memory_median_kb": median_or_none(memories),
                         "memory_stdev_kb": safe_stdev(memories),
                         "memory_samples_n": len(memories),
+                        "memory_samples_total_n": len(memories_raw),
                         "completed_iterations": int(state["completed_iterations"]),
                         "requested_iterations": config["iterations"],
                         "seeds": list(state["seed_records"][variant_id]),
                         "runtime_samples_ms": [float(v) for v in runtimes],
+                        "runtime_samples_raw_ms": [float(v) for v in runtimes_raw],
                         "memory_samples_kb": [float(v) for v in memories],
+                        "memory_samples_raw_kb": [float(v) for v in memories_raw],
                     }
                     datapoints_stream_fh.write(json.dumps(row, default=serialize_for_json) + "\n")
                     streamed_datapoint_rows += 1
 
                 combined_runtime_samples: list[float] = []
                 for variant_id in selected_variants:
-                    combined_runtime_samples.extend(state["samples_runtime"][variant_id])
+                    combined_runtime_samples.extend(
+                        filter_outlier_samples(
+                            [float(v) for v in state["samples_runtime"][variant_id]],
+                            outlier_mode,
+                        )
+                    )
                 combined_median_runtime = median_or_none(combined_runtime_samples)
                 median_runtime_text = (
                     "combined median runtime=n/a"
@@ -2341,7 +3162,10 @@ class BenchmarkRunnerApp(tk.Tk):
                     f"Density={float(point.get('density', 0.0)):.6f}",
                 ]
                 if config["tab_id"] == "subgraph":
-                    context_bits.append(f"k%={float(point.get('k', 0.0)):.4f}")
+                    if self._k_mode(config) == "absolute":
+                        context_bits.append(f"k_nodes_input={int(round(point.get('k', 0.0)))}")
+                    else:
+                        context_bits.append(f"k%={float(point.get('k', 0.0)):.4f}")
                     context_bits.append(f"k_nodes={int(round(point.get('k_nodes', 0)))}")
                 return RuntimeError(f"{inner_exc} | context: {', '.join(context_bits)}")
 
@@ -2359,9 +3183,9 @@ class BenchmarkRunnerApp(tk.Tk):
                         observed_var_values[config["primary_var"]].add(x_value)
                         if config["secondary_var"] is not None and y_value is not None:
                             observed_var_values[config["secondary_var"]].add(y_value)
-                        point_label = f"{config['primary_var']}={format_point_value(config['primary_var'], x_value)}"
+                        point_label = f"{config['primary_var']}={self._format_point_value(config['primary_var'], x_value, config)}"
                         if config["secondary_var"] is not None and y_value is not None:
-                            point_label += f", {config['secondary_var']}={format_point_value(config['secondary_var'], y_value)}"
+                            point_label += f", {config['secondary_var']}={self._format_point_value(config['secondary_var'], y_value, config)}"
                         state = {
                             "point_idx": point_idx,
                             "point_label": point_label,
@@ -2377,6 +3201,8 @@ class BenchmarkRunnerApp(tk.Tk):
                             "completed_iterations": 0,
                             "iter_pending": {iter_idx: set(selected_variants) for iter_idx in range(config["iterations"])},
                             "iter_solution_counts": {iter_idx: {} for iter_idx in range(config["iterations"])},
+                            "iter_answer_signatures": {iter_idx: {} for iter_idx in range(config["iterations"])},
+                            "iter_runtime_ms": {iter_idx: {} for iter_idx in range(config["iterations"])},
                             "iter_success_count": {iter_idx: 0 for iter_idx in range(config["iterations"])},
                             "inputs_deleted": False,
                             "logged": False,
@@ -2525,12 +3351,13 @@ class BenchmarkRunnerApp(tk.Tk):
                     attempt = int(trial.get("attempt", 0))
                     success = False
                     solution_count = None
+                    answer_signature = None
                     runtime_ms = 0.0
                     peak_kb = 0.0
                     handled_failure = False
 
                     try:
-                        runtime_ms, peak_kb, solution_count = future.result()
+                        runtime_ms, peak_kb, solution_count, answer_signature = future.result()
                         success = True
                     except SolverTimeoutError as exc:
                         if attempt < retry_failed_trials and not self.stop_event.is_set() and not timed_out and not aborted:
@@ -2613,8 +3440,11 @@ class BenchmarkRunnerApp(tk.Tk):
                         state["samples_memory"][variant_id].append(peak_kb)
                         state["seed_records"][variant_id].append(int(trial["iter_seed"]))
                         state["iter_success_count"][iter_idx] = int(state["iter_success_count"][iter_idx]) + 1
+                        state["iter_runtime_ms"][iter_idx][variant_id] = float(runtime_ms)
                         if solution_count is not None:
                             state["iter_solution_counts"][iter_idx][variant_id] = solution_count
+                        if answer_signature is not None:
+                            state["iter_answer_signatures"][iter_idx][variant_id] = answer_signature
                     elif not handled_failure and fatal_error is None and not aborted:
                         # Defensive fallback: treat unexpected non-success as missing so the datapoint can complete.
                         handled_failure = True
@@ -2685,6 +3515,112 @@ class BenchmarkRunnerApp(tk.Tk):
             self.after(0, lambda: self._render_plots(payload))
             self._save_exports(payload, self.session_output_dir)
 
+            baseline_label = config["selected_variant_labels"].get(accuracy_baseline_variant, accuracy_baseline_variant)
+            if accuracy_baseline_variant not in selected_variants:
+                self._append_log_threadsafe(
+                    f"Accuracy summary skipped: {baseline_label} is not selected.",
+                    level="notice",
+                )
+            else:
+                correct_counts = {variant_id: 0 for variant_id in selected_variants}
+                total_counts = {variant_id: 0 for variant_id in selected_variants}
+                baseline_trials = 0
+                for state in point_states.values():
+                    iter_answers = state.get("iter_answer_signatures", {})
+                    for iter_idx in range(config["iterations"]):
+                        answers = iter_answers.get(iter_idx, {})
+                        baseline_answer = answers.get(accuracy_baseline_variant)
+                        if baseline_answer is None:
+                            continue
+                        baseline_trials += 1
+                        for variant_id in selected_variants:
+                            total_counts[variant_id] += 1
+                            if answers.get(variant_id) == baseline_answer:
+                                correct_counts[variant_id] += 1
+                self._append_log_threadsafe(f"Accuracy vs {baseline_label}:", level="notice")
+                if baseline_trials == 0:
+                    self._append_log_threadsafe(
+                        "No baseline-comparable trials were recorded.",
+                        level="warn",
+                    )
+                for variant_id in selected_variants:
+                    correct = int(correct_counts.get(variant_id, 0))
+                    total = int(total_counts.get(variant_id, 0))
+                    percent = (100.0 * float(correct) / float(total)) if total > 0 else 0.0
+                    solver_label = config["selected_variant_labels"].get(variant_id, variant_id)
+                    self._append_log_threadsafe(
+                        f"[{solver_label}]: {correct}/{total} ({percent:.3f}%)",
+                        level="notice",
+                    )
+
+            family_to_baseline = {
+                "vf3": "vf3_baseline",
+                "glasgow": "glasgow_baseline",
+                "dijkstra": "dijkstra_baseline",
+            }
+            runtime_diff_by_variant: dict[str, list[float]] = {variant_id: [] for variant_id in selected_variants}
+            baseline_id_by_variant: dict[str, str] = {}
+            for state in point_states.values():
+                iter_runtime_ms = state.get("iter_runtime_ms", {})
+                for iter_idx in range(config["iterations"]):
+                    iter_map = iter_runtime_ms.get(iter_idx, {})
+                    if not isinstance(iter_map, dict):
+                        continue
+                    for variant_id in selected_variants:
+                        family = variant_id.split("_", 1)[0].strip().lower()
+                        baseline_variant_id = family_to_baseline.get(family)
+                        if not baseline_variant_id:
+                            continue
+                        if baseline_variant_id == variant_id:
+                            continue
+                        baseline_runtime = iter_map.get(baseline_variant_id)
+                        solver_runtime = iter_map.get(variant_id)
+                        if baseline_runtime is None or solver_runtime is None:
+                            continue
+                        baseline_id_by_variant[variant_id] = baseline_variant_id
+                        runtime_diff_by_variant[variant_id].append(float(solver_runtime) - float(baseline_runtime))
+
+            self._append_log_threadsafe("Paired t-test vs family baseline (runtime, two-sided):", level="notice")
+            for variant_id in selected_variants:
+                if variant_id.endswith("_baseline"):
+                    continue
+                baseline_variant_id = baseline_id_by_variant.get(variant_id)
+                if not baseline_variant_id:
+                    solver_label = config["selected_variant_labels"].get(variant_id, variant_id)
+                    self._append_log_threadsafe(
+                        f"[{solver_label}]: insufficient matched pairs (n=0).",
+                        level="warn",
+                    )
+                    continue
+                diffs = runtime_diff_by_variant.get(variant_id, [])
+                n = len(diffs)
+                solver_label = config["selected_variant_labels"].get(variant_id, variant_id)
+                baseline_label = config["selected_variant_labels"].get(baseline_variant_id, baseline_variant_id)
+                if n < 2:
+                    self._append_log_threadsafe(
+                        f"[{solver_label}] vs [{baseline_label}]: insufficient matched pairs (n={n}).",
+                        level="warn",
+                    )
+                    continue
+                mean_diff = float(statistics.mean(diffs))
+                sd_diff = float(statistics.stdev(diffs)) if n >= 2 else 0.0
+                if sd_diff <= 0.0:
+                    if abs(mean_diff) <= 1e-12:
+                        t_stat = 0.0
+                        p_value = 1.0
+                    else:
+                        t_stat = math.copysign(float("inf"), mean_diff)
+                        p_value = 0.0
+                else:
+                    t_stat = mean_diff / (sd_diff / math.sqrt(float(n)))
+                    p_value = student_t_two_sided_p_value(t_stat, n - 1)
+                p_text = "n/a" if p_value is None else f"{p_value:.6g}"
+                self._append_log_threadsafe(
+                    f"[{solver_label}] vs [{baseline_label}]: n={n}, mean_delta={mean_diff:.3f} ms, "
+                    f"t={t_stat:.4f}, p={p_text}",
+                    level="notice",
+                )
+
             status_msg = "Run complete."
             status_level = "success"
             if timed_points_exhausted:
@@ -2696,6 +3632,7 @@ class BenchmarkRunnerApp(tk.Tk):
             if aborted:
                 status_msg = "Run aborted by user."
                 status_level = "warn"
+            self._append_log_threadsafe(f"Seed used for run: {int(config.get('base_seed', 0))}", level="notice")
             self._append_log_threadsafe(status_msg, level=status_level)
             self._append_log_threadsafe(f"Exports written to: {self.session_output_dir}", level="notice")
         except RunAbortedError:
@@ -2729,6 +3666,16 @@ class BenchmarkRunnerApp(tk.Tk):
         self.pause_btn.configure(state=tk.DISABLED, text="Pause")
         if self.last_run_payload:
             self.save_btn.configure(state=tk.NORMAL)
+            self._refresh_visualizer_controls(self.last_run_payload)
+            self.load_visualizer_btn.configure(state=tk.NORMAL if self.visualizer_point_rows else tk.DISABLED)
+            self.open_visualizer_btn.configure(state=tk.NORMAL)
+            self.visualizer_fullscreen_btn.configure(state=tk.NORMAL if self.visualizer_point_rows else tk.DISABLED)
+            self.visualizer_status_var.set("Ready. Choose a datapoint tuple and click Load In Tab.")
+        else:
+            self.load_visualizer_btn.configure(state=tk.DISABLED)
+            self.open_visualizer_btn.configure(state=tk.DISABLED)
+            self.visualizer_fullscreen_btn.configure(state=tk.DISABLED)
+            self.visualizer_status_var.set("No run payload available yet.")
 
     def _run_solver_variant(
         self,
@@ -2782,9 +3729,17 @@ class BenchmarkRunnerApp(tk.Tk):
             cmdline = subprocess.list2cmdline(command)
             raise RuntimeError(f"{variant_id} failed with code {return_code} ({code_hex}) | cmd: {cmdline} | {detail[:300]}")
         solution_count = None
+        answer_signature = None
+        combined_output = stdout_text + "\n" + stderr_text
         if variant_id.startswith("vf3_") or variant_id.startswith("glasgow_"):
-            solution_count = parse_solution_count(stdout_text + "\n" + stderr_text)
-        return runtime_ms, peak_kb, solution_count
+            solution_count = parse_solution_count(combined_output)
+            if solution_count is not None:
+                answer_signature = ("solution_count", int(solution_count))
+        elif variant_id.startswith("dijkstra_"):
+            distance_signature = parse_dijkstra_distance(combined_output)
+            if distance_signature is not None:
+                answer_signature = ("distance", distance_signature)
+        return runtime_ms, peak_kb, solution_count, answer_signature
 
     def _run_process_with_peak_memory(
         self,
@@ -2939,6 +3894,9 @@ class BenchmarkRunnerApp(tk.Tk):
                 "failure_policy": config.get("failure_policy"),
                 "retry_failed_trials": config.get("retry_failed_trials"),
                 "timeout_as_missing": config.get("timeout_as_missing"),
+                "outlier_filter": config.get("outlier_filter", "none"),
+                "outlier_filter_min_samples": int(DEFAULT_OUTLIER_MIN_SAMPLES),
+                "k_mode": config.get("k_mode", "percent"),
                 "max_workers": config.get("max_workers"),
                 "detected_logical_cores": config.get("detected_logical_cores"),
                 "primary_variable": config["primary_var"],
@@ -2952,6 +3910,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 "plot3d_variant": config["plot3d_variant"],
                 "show_stddev_bars": config.get("show_stddev_bars"),
                 "show_regression_line": config.get("show_regression_line"),
+                "show_trendlines_only": config.get("show_trendlines_only"),
                 "delete_generated_inputs": config.get("delete_generated_inputs"),
                 "warmup_trials": config.get("warmup_trials", 0),
             },
@@ -3041,9 +4000,12 @@ class BenchmarkRunnerApp(tk.Tk):
         label_map = config["selected_variant_labels"]
         show_stddev = bool(self.show_stddev_var.get())
         show_regression = bool(self.show_regression_var.get())
+        show_trendlines_only = bool(self.show_trendlines_only_var.get())
+        effective_show_regression = show_regression or show_trendlines_only
         use_log_x = bool(self.log_x_scale_var.get())
         use_log_y = bool(self.log_y_scale_var.get())
         pick_map = {}
+        series_artist_map: dict[str, list] = {}
         if not x_values_full:
             x_values_full = sorted({float(row["x_value"]) for row in datapoints if row["x_value"] is not None})
         point_lookup = {}
@@ -3071,22 +4033,71 @@ class BenchmarkRunnerApp(tk.Tk):
                 errs = [item[2] for item in filtered]
                 rows = [item[3] for item in filtered]
             line_for_pick = None
-            if show_stddev:
-                container = ax.errorbar(xs, ys, yerr=errs, marker="o", capsize=3, label=label)
-                line_color = None
-                if getattr(container, "lines", None):
-                    first_line = container.lines[0]
-                    line_color = first_line.get_color() if first_line is not None else None
-                    line_for_pick = first_line
+            series_artists = []
+            line_color = None
+            if show_trendlines_only:
+                reg_line = linear_regression_line(xs, ys)
+                if reg_line is not None:
+                    reg_x, reg_y = reg_line
+                    reg_artist = ax.plot(
+                        reg_x,
+                        reg_y,
+                        linestyle="--",
+                        linewidth=1.4,
+                        alpha=0.95,
+                        label=label,
+                    )[0]
+                else:
+                    reg_artist = ax.plot(
+                        xs,
+                        ys,
+                        linestyle="--",
+                        linewidth=1.4,
+                        alpha=0.95,
+                        label=label,
+                    )[0]
+                line_color = reg_artist.get_color()
+                series_artists.append(reg_artist)
+                pick_artist = ax.plot(
+                    xs,
+                    ys,
+                    linestyle="None",
+                    marker="o",
+                    markersize=9.0,
+                    alpha=0.0,
+                    color=line_color,
+                    label="_nolegend_",
+                )[0]
+                line_for_pick = pick_artist
+                series_artists.append(pick_artist)
             else:
-                plotted = ax.plot(xs, ys, marker="o", label=label)
-                line_color = plotted[0].get_color() if plotted else None
-                if plotted:
-                    line_for_pick = plotted[0]
+                if show_stddev:
+                    container = ax.errorbar(xs, ys, yerr=errs, capsize=3, label=label)
+                    if getattr(container, "lines", None):
+                        first_line = container.lines[0]
+                        line_color = first_line.get_color() if first_line is not None else None
+                        line_for_pick = first_line
+                    if line_for_pick is not None:
+                        series_artists.append(line_for_pick)
+                    try:
+                        for item in list(getattr(container, "lines", [])[1:]):
+                            if isinstance(item, (list, tuple)):
+                                series_artists.extend([artist for artist in item if artist is not None])
+                            elif item is not None:
+                                series_artists.append(item)
+                    except Exception:
+                        pass
+                else:
+                    plotted = ax.plot(xs, ys, label=label)
+                    line_color = plotted[0].get_color() if plotted else None
+                    if plotted:
+                        line_for_pick = plotted[0]
+                        series_artists.append(line_for_pick)
 
             if line_for_pick is not None:
                 try:
-                    line_for_pick.set_picker(5)
+                    line_for_pick.set_picker(True)
+                    line_for_pick.set_pickradius(8)
                     pick_map[line_for_pick] = {
                         "rows": list(rows),
                         "xs": list(xs),
@@ -3095,19 +4106,30 @@ class BenchmarkRunnerApp(tk.Tk):
                 except Exception:
                     pass
 
-            if show_regression:
+            if effective_show_regression and not show_trendlines_only:
                 reg_line = linear_regression_line(xs, ys)
                 if reg_line is not None:
                     reg_x, reg_y = reg_line
-                    ax.plot(
+                    reg_artist = ax.plot(
                         reg_x,
                         reg_y,
                         linestyle="--",
                         linewidth=1.2,
                         alpha=0.9,
                         color=line_color,
-                        label=f"{label} trend",
-                    )
+                        label="_nolegend_",
+                    )[0]
+                    series_artists.append(reg_artist)
+            if series_artists:
+                deduped = []
+                seen_ids: set[int] = set()
+                for artist in series_artists:
+                    artist_id = id(artist)
+                    if artist_id in seen_ids:
+                        continue
+                    seen_ids.add(artist_id)
+                    deduped.append(artist)
+                series_artist_map[label] = deduped
 
         if secondary_var is None:
             for variant_id in selected_variants:
@@ -3147,10 +4169,13 @@ class BenchmarkRunnerApp(tk.Tk):
                         errs.append(match[e_key] or 0.0)
                         rows.append(match)
                     if xs:
-                        series_name = f"{label_map.get(variant_id, variant_id)} | {axis_label(secondary_var)}={format_point_value(secondary_var, y_const)}"
+                        series_name = (
+                            f"{label_map.get(variant_id, variant_id)} | "
+                            f"{self._axis_label(secondary_var, config)}={self._format_point_value(secondary_var, y_const, config)}"
+                        )
                         plot_series(xs, ys, errs, series_name, rows)
 
-        ax.set_xlabel(axis_label(primary_var))
+        ax.set_xlabel(self._axis_label(primary_var, config))
         if metric == "runtime":
             ax.set_ylabel("Runtime (ms)")
             ax.set_title("Runtime by Independent Variable")
@@ -3167,26 +4192,66 @@ class BenchmarkRunnerApp(tk.Tk):
         except Exception:
             pass
         ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
-        handles, _labels = ax.get_legend_handles_labels()
+        handles, legend_labels = ax.get_legend_handles_labels()
+        legend_entry_map: dict[str, dict] = {}
+        all_series_artists = []
         if handles:
             ncols = 1 if len(handles) <= 3 else 2
             legend_title = None
-            if show_stddev and show_regression:
+            if show_trendlines_only:
+                legend_title = "Trendlines only"
+            elif show_stddev and show_regression:
                 legend_title = "Error bars: +/-1 SD | Dashed: linear trend"
             elif show_stddev:
                 legend_title = "Error bars: +/-1 SD"
             elif show_regression:
                 legend_title = "Dashed lines: linear trend"
-            ax.legend(
+            legend = ax.legend(
                 loc="upper center",
                 bbox_to_anchor=(0.5, -0.22),
                 ncol=ncols,
                 fontsize=8,
                 title=legend_title,
             )
+            legend_texts = list(legend.get_texts())
+            legend_handles = list(getattr(legend, "legend_handles", []) or getattr(legend, "legendHandles", []) or [])
+            for idx, label in enumerate(legend_labels):
+                data_artists = list(series_artist_map.get(label, []))
+                if not data_artists:
+                    continue
+                legend_artists = []
+                if idx < len(legend_handles):
+                    legend_artists.append(legend_handles[idx])
+                if idx < len(legend_texts):
+                    legend_artists.append(legend_texts[idx])
+                legend_entry_map[label] = {
+                    "legend_artists": legend_artists,
+                    "data_artists": data_artists,
+                }
+                all_series_artists.extend(data_artists)
             fig.tight_layout(rect=(0.0, 0.08, 1.0, 1.0))
         else:
             fig.tight_layout()
+        if all_series_artists:
+            deduped_all = []
+            seen_ids: set[int] = set()
+            for artist in all_series_artists:
+                artist_id = id(artist)
+                if artist_id in seen_ids:
+                    continue
+                seen_ids.add(artist_id)
+                deduped_all.append(artist)
+            setattr(
+                fig,
+                "_legend_hover_state",
+                {
+                    "entries": legend_entry_map,
+                    "all_artists": deduped_all,
+                    "active_label": None,
+                },
+            )
+        else:
+            setattr(fig, "_legend_hover_state", None)
         setattr(fig, "_drilldown_pick_map", pick_map)
         setattr(fig, "_drilldown_metric", metric)
         return fig
@@ -3277,8 +4342,8 @@ class BenchmarkRunnerApp(tk.Tk):
             ax.scatter(xv, yv, zv, c=zv if zv else None, cmap="viridis", depthshade=True)
 
         primary_var = config["primary_variable"]
-        ax.set_xlabel(axis_label(primary_var))
-        ax.set_ylabel(axis_label(secondary_var))
+        ax.set_xlabel(self._axis_label(primary_var, config))
+        ax.set_ylabel(self._axis_label(secondary_var, config))
         if metric == "runtime":
             ax.set_zlabel("Runtime (ms)")
             ax.set_title(f"Runtime 3D ({config['selected_variant_labels'].get(variant_id, variant_id)})")
@@ -3333,6 +4398,66 @@ class BenchmarkRunnerApp(tk.Tk):
             return
         self._render_plots(self.last_plot_context)
 
+    def _apply_legend_hover_focus(self, figure, active_label: str | None):
+        if figure is None:
+            return
+        state = getattr(figure, "_legend_hover_state", None)
+        if not isinstance(state, dict):
+            return
+        entries = state.get("entries", {})
+        if not isinstance(entries, dict) or not entries:
+            return
+        if state.get("active_label") == active_label:
+            return
+
+        visible_artists = set()
+        if active_label is not None:
+            entry = entries.get(active_label, {})
+            if isinstance(entry, dict):
+                visible_artists = {artist for artist in entry.get("data_artists", []) if artist is not None}
+
+        for artist in list(state.get("all_artists", [])):
+            try:
+                artist.set_visible(active_label is None or artist in visible_artists)
+            except Exception:
+                pass
+        state["active_label"] = active_label
+        canvas = getattr(figure, "canvas", None)
+        if canvas is not None:
+            try:
+                canvas.draw_idle()
+            except Exception:
+                pass
+
+    def _update_legend_hover(self, event) -> bool:
+        canvas = getattr(event, "canvas", None)
+        figure = getattr(canvas, "figure", None)
+        if figure is None:
+            return False
+        state = getattr(figure, "_legend_hover_state", None)
+        if not isinstance(state, dict):
+            return False
+        entries = state.get("entries", {})
+        if not isinstance(entries, dict) or not entries:
+            return False
+
+        hovered_label = None
+        for label, payload in entries.items():
+            legend_artists = list(payload.get("legend_artists", [])) if isinstance(payload, dict) else []
+            for legend_artist in legend_artists:
+                try:
+                    contains, _ = legend_artist.contains(event)
+                except Exception:
+                    contains = False
+                if contains:
+                    hovered_label = str(label)
+                    break
+            if hovered_label is not None:
+                break
+
+        self._apply_legend_hover_focus(figure, hovered_label)
+        return hovered_label is not None
+
     def _locate_2d_row_from_event(self, event, metric: str):
         if event is None or getattr(event, "inaxes", None) is None:
             return None
@@ -3371,6 +4496,29 @@ class BenchmarkRunnerApp(tk.Tk):
             }
         return None
 
+    def _place_popup_near_pointer(self, popup: tk.Toplevel, x_root: int, y_root: int, offset_x: int = 16, offset_y: int = 16):
+        try:
+            popup.update_idletasks()
+            popup_width = int(popup.winfo_width() or popup.winfo_reqwidth() or 1)
+            popup_height = int(popup.winfo_height() or popup.winfo_reqheight() or 1)
+            screen_width = int(self.winfo_screenwidth() or 1)
+            screen_height = int(self.winfo_screenheight() or 1)
+            margin = 12
+            x_pos = int(x_root + offset_x)
+            y_pos = int(y_root + offset_y)
+            if x_pos + popup_width + margin > screen_width:
+                x_pos = int(x_root - popup_width - offset_x)
+            if y_pos + popup_height + margin > screen_height:
+                y_pos = int(y_root - popup_height - offset_y)
+            x_pos = max(margin, min(x_pos, max(margin, screen_width - popup_width - margin)))
+            y_pos = max(margin, min(y_pos, max(margin, screen_height - popup_height - margin)))
+            popup.geometry(f"+{x_pos}+{y_pos}")
+        except Exception:
+            try:
+                popup.geometry(f"+{int(x_root + offset_x)}+{int(y_root + offset_y)}")
+            except Exception:
+                pass
+
     def _drilldown_pointer_position(self, event):
         gui_event = getattr(event, "guiEvent", None)
         if gui_event is not None:
@@ -3394,10 +4542,7 @@ class BenchmarkRunnerApp(tk.Tk):
             return
 
         if mode == "hover" and self.drilldown_popup_mode == "hover" and self.drilldown_popup_point_key == key and self.drilldown_popup is not None:
-            try:
-                self.drilldown_popup.geometry(f"+{x_root + 16}+{y_root + 16}")
-            except Exception:
-                pass
+            self._place_popup_near_pointer(self.drilldown_popup, x_root, y_root, offset_x=16, offset_y=16)
             return
 
         self._clear_drilldown()
@@ -3420,7 +4565,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 font=("Consolas", 9),
             )
             label.pack(fill=tk.BOTH, expand=True)
-            popup.geometry(f"+{x_root + 16}+{y_root + 16}")
+            self._place_popup_near_pointer(popup, x_root, y_root, offset_x=16, offset_y=16)
         else:
             popup = tk.Toplevel(self)
             popup.title("Datapoint Drilldown")
@@ -3438,7 +4583,7 @@ class BenchmarkRunnerApp(tk.Tk):
             body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
             body.insert("1.0", text)
             body.configure(state=tk.DISABLED)
-            popup.geometry(f"+{x_root + 20}+{y_root + 20}")
+            self._place_popup_near_pointer(popup, x_root, y_root, offset_x=20, offset_y=20)
 
         self.drilldown_popup = popup
         self.drilldown_popup_mode = mode
@@ -3448,6 +4593,10 @@ class BenchmarkRunnerApp(tk.Tk):
     def _on_2d_motion(self, event, metric: str):
         if self.drilldown_popup_mode == "click":
             return
+        if self._update_legend_hover(event):
+            if self.drilldown_popup_mode == "hover":
+                self._clear_drilldown()
+            return
         info = self._locate_2d_row_from_event(event, metric)
         if info is None:
             if self.drilldown_popup_mode == "hover":
@@ -3456,6 +4605,9 @@ class BenchmarkRunnerApp(tk.Tk):
         self._open_drilldown_popup(info, mode="hover", event=event)
 
     def _on_2d_leave(self, _event, metric: str):
+        figure = getattr(getattr(_event, "canvas", None), "figure", None)
+        if figure is not None:
+            self._apply_legend_hover_focus(figure, None)
         if metric and self.drilldown_popup_mode == "hover":
             self._clear_drilldown()
 
@@ -3470,6 +4622,1718 @@ class BenchmarkRunnerApp(tk.Tk):
             self._clear_drilldown()
             return
         self._open_drilldown_popup(info, mode="click", event=event)
+
+    def _refresh_visualizer_controls(self, payload: dict):
+        run_config = payload.get("run_config")
+        if not isinstance(run_config, dict):
+            self._reset_visualizer_selection_state()
+            self._clear_visualizer_render()
+            return
+
+        family, _view_label, _algo = self._visualizer_family_context(run_config)
+        rows_with_index = self._collect_visualizer_point_rows(payload, family)
+        old_selected = self._selected_visualizer_point(run_config)
+        self.visualizer_point_rows = []
+        for item in rows_with_index:
+            row = item.get("row") or {}
+            point = self._resolve_visualizer_point_from_row(run_config, row, family)
+            if not point:
+                continue
+            self.visualizer_point_rows.append({**item, "point": point, "point_key": self._visualizer_point_key(point)})
+
+        vars_for_tab = self._visualizer_vars_for_tab(run_config)
+        for var_id in ("n", "k", "density"):
+            raw_values: list[float] = []
+            for item in self.visualizer_point_rows:
+                point = item.get("point") or {}
+                raw = point.get(var_id)
+                if isinstance(raw, (int, float)):
+                    raw_values.append(float(raw))
+            unique_values = sorted({float(v) for v in raw_values})
+            if not unique_values:
+                fixed_raw = run_config.get("fixed_values", {}).get(var_id)
+                if isinstance(fixed_raw, (int, float)):
+                    unique_values = [float(fixed_raw)]
+                else:
+                    range_values = run_config.get("var_ranges", {}).get(var_id, [])
+                    if isinstance(range_values, list) and range_values:
+                        try:
+                            unique_values = [float(range_values[0])]
+                        except Exception:
+                            unique_values = []
+            self.visualizer_nav_values[var_id] = unique_values
+            self.visualizer_nav_index[var_id] = 0
+            if old_selected and var_id in vars_for_tab and unique_values:
+                try:
+                    target = float(old_selected.get(var_id))
+                except Exception:
+                    target = None
+                if target is not None:
+                    best_idx = min(range(len(unique_values)), key=lambda idx: abs(unique_values[idx] - target))
+                    if abs(unique_values[best_idx] - target) <= 1e-9:
+                        self.visualizer_nav_index[var_id] = int(best_idx)
+
+        self._update_visualizer_nav_controls(run_config)
+        if not self.visualizer_point_rows:
+            self.visualizer_status_var.set("No visualizer datapoints were recorded for this run.")
+        else:
+            self.visualizer_status_var.set("Ready. Choose a datapoint tuple and click Load In Tab.")
+
+    def _collect_visualizer_point_rows(self, payload: dict, family: str) -> list[dict]:
+        datapoints = self._collect_payload_datapoints(payload)
+        if not datapoints:
+            return []
+        run_config = payload.get("run_config")
+        if not isinstance(run_config, dict):
+            return []
+        baseline_id = f"{family}_baseline"
+        rows = [
+            row for row in datapoints
+            if str(row.get("variant_id") or "").strip().lower() == baseline_id
+        ]
+        if not rows:
+            rows = [
+                row for row in datapoints
+                if str(row.get("variant_id") or "").strip().lower().startswith(f"{family}_")
+            ]
+        out: list[dict] = []
+        for row in rows:
+            point_idx = self._find_datapoint_index_from_run_config(run_config, row)
+            out.append({"row": row, "point_idx": point_idx})
+        out.sort(
+            key=lambda item: (
+                float(item["row"]["x_value"]) if isinstance(item.get("row", {}).get("x_value"), (int, float)) else float("inf"),
+                float(item["row"]["y_value"]) if isinstance(item.get("row", {}).get("y_value"), (int, float)) else float("-inf"),
+            )
+        )
+        return out
+
+    def _reset_visualizer_selection_state(self):
+        self.visualizer_point_rows = []
+        self.visualizer_nav_values = {"n": [], "k": [], "density": []}
+        self.visualizer_nav_index = {"n": 0, "k": 0, "density": 0}
+        self.visualizer_loaded_result = None
+        self.visualizer_iterations = []
+        self.visualizer_iteration_index = 0
+        self.visualizer_solution_index = 0
+        self.visualizer_iteration_label_var.set("Iteration --")
+        self.visualizer_solution_label_var.set("Solution --")
+        self.visualizer_solution_count_var.set("Solution Count: --")
+        self.visualizer_no_solution_var.set("")
+        if self.last_run_payload and isinstance(self.last_run_payload, dict):
+            run_cfg = self.last_run_payload.get("run_config")
+        else:
+            run_cfg = None
+        self._update_visualizer_nav_controls(run_cfg if isinstance(run_cfg, dict) else None)
+        self._update_visualizer_iteration_solution_controls()
+
+    def _clear_visualizer_render(self):
+        if self.visualizer_graph_canvas is not None:
+            try:
+                self.visualizer_graph_canvas.get_tk_widget().destroy()
+            except Exception:
+                pass
+            self.visualizer_graph_canvas = None
+        if self.visualizer_graph_fig is not None:
+            try:
+                self.visualizer_graph_fig.clear()
+            except Exception:
+                pass
+            self.visualizer_graph_fig = None
+        self.visualizer_iterations = []
+        self.visualizer_iteration_index = 0
+        self.visualizer_solution_index = 0
+        self.visualizer_iteration_label_var.set("Iteration --")
+        self.visualizer_solution_label_var.set("Solution --")
+        self.visualizer_solution_count_var.set("Solution Count: --")
+        self.visualizer_no_solution_var.set("")
+        self._update_visualizer_iteration_solution_controls()
+
+    def _visualizer_vars_for_tab(self, run_config: dict) -> list[str]:
+        tab_id = str(run_config.get("tab_id") or "").strip().lower()
+        if tab_id == "subgraph":
+            return ["n", "k", "density"]
+        return ["n", "density"]
+
+    def _visualizer_point_key(self, point: dict) -> tuple[float, float, float]:
+        return (
+            round(float(point.get("n", math.nan)), 10),
+            round(float(point.get("k", math.nan)), 10),
+            round(float(point.get("density", math.nan)), 10),
+        )
+
+    def _resolve_visualizer_point_from_row(self, run_config: dict, row: dict, family: str) -> dict | None:
+        primary = str(run_config.get("primary_variable") or "").strip()
+        secondary = str(run_config.get("secondary_variable") or "").strip() or None
+        fixed_raw = run_config.get("fixed_values")
+        fixed_values = dict(fixed_raw) if isinstance(fixed_raw, dict) else {}
+
+        point: dict[str, float] = {}
+        for k, v in fixed_values.items():
+            try:
+                point[str(k)] = float(v)
+            except Exception:
+                continue
+
+        if primary:
+            x_val = row.get("x_value")
+            if isinstance(x_val, (int, float)):
+                point[primary] = float(x_val)
+        if secondary:
+            y_val = row.get("y_value")
+            if isinstance(y_val, (int, float)):
+                point[secondary] = float(y_val)
+
+        for required_key in ("n", "density", "k"):
+            if required_key in point:
+                continue
+            vals = run_config.get("var_ranges", {}).get(required_key, [])
+            if isinstance(vals, list) and vals:
+                try:
+                    point[required_key] = float(vals[0])
+                except Exception:
+                    pass
+
+        if "n" not in point or "density" not in point:
+            return None
+
+        if family != "dijkstra":
+            if "k" not in point:
+                return None
+            n_nodes = int(round(float(point["n"])))
+            k_mode = str(run_config.get("k_mode") or "percent").strip().lower()
+            if k_mode == "absolute":
+                k_nodes = int(round(float(point["k"])))
+            else:
+                k_nodes = int(round((float(point["k"]) / 100.0) * n_nodes))
+                k_nodes = max(2, min(n_nodes - 1, k_nodes))
+            if k_nodes < 2:
+                k_nodes = 2
+            if k_nodes >= n_nodes:
+                k_nodes = max(2, n_nodes - 1)
+            point["k_nodes"] = float(k_nodes)
+
+        return point
+
+    def _update_visualizer_nav_controls(self, run_config: dict | None):
+        vars_for_tab = self._visualizer_vars_for_tab(run_config) if isinstance(run_config, dict) else []
+        for var_id in ("n", "k", "density"):
+            row = self.visualizer_nav_rows.get(var_id)
+            if row is None:
+                continue
+            name_label = self.visualizer_nav_name_labels.get(var_id)
+            if name_label is not None and isinstance(run_config, dict):
+                try:
+                    name_label.configure(text=f"{self._axis_label(var_id, run_config)}:")
+                except Exception:
+                    pass
+            if var_id in vars_for_tab:
+                if not row.winfo_manager():
+                    row.pack(fill=tk.X, pady=(1, 1))
+            else:
+                if row.winfo_manager():
+                    row.pack_forget()
+                continue
+
+            values = self.visualizer_nav_values.get(var_id, [])
+            idx = int(self.visualizer_nav_index.get(var_id, 0))
+            if values:
+                idx = max(0, min(idx, len(values) - 1))
+                self.visualizer_nav_index[var_id] = idx
+                value = values[idx]
+                display = self._format_point_value(var_id, float(value), run_config)
+                self.visualizer_nav_display_vars[var_id].set(display)
+                self.visualizer_nav_count_vars[var_id].set(f"({idx + 1}/{len(values)})")
+            else:
+                self.visualizer_nav_index[var_id] = 0
+                self.visualizer_nav_display_vars[var_id].set("--")
+                self.visualizer_nav_count_vars[var_id].set("(0/0)")
+
+            enabled = (len(values) > 1) and (not self.visualizer_is_loading)
+            self.visualizer_nav_prev_buttons[var_id].configure(state=(tk.NORMAL if enabled and idx > 0 else tk.DISABLED))
+            self.visualizer_nav_next_buttons[var_id].configure(
+                state=(tk.NORMAL if enabled and idx < (len(values) - 1) else tk.DISABLED)
+            )
+            value_widget = self.visualizer_nav_value_labels.get(var_id)
+            if value_widget is not None:
+                try:
+                    value_widget.configure(fg=("#222222" if len(values) > 1 else "#888888"))
+                except Exception:
+                    pass
+
+    def _selected_visualizer_point(self, run_config: dict | None = None) -> dict[str, float] | None:
+        if run_config is None:
+            payload = self.last_run_payload if isinstance(self.last_run_payload, dict) else {}
+            cfg = payload.get("run_config")
+            run_config = cfg if isinstance(cfg, dict) else None
+        if not isinstance(run_config, dict):
+            return None
+        vars_for_tab = self._visualizer_vars_for_tab(run_config)
+        point: dict[str, float] = {}
+        for var_id in vars_for_tab:
+            values = self.visualizer_nav_values.get(var_id, [])
+            if not values:
+                return None
+            idx = max(0, min(int(self.visualizer_nav_index.get(var_id, 0)), len(values) - 1))
+            point[var_id] = float(values[idx])
+        return point
+
+    def _find_visualizer_item_for_selected_point(self, selected_point: dict[str, float]) -> dict | None:
+        tol = 1e-9
+        for item in self.visualizer_point_rows:
+            point = item.get("point") or {}
+            matched = True
+            for key, target in selected_point.items():
+                raw = point.get(key)
+                if not isinstance(raw, (int, float)) or abs(float(raw) - float(target)) > tol:
+                    matched = False
+                    break
+            if matched:
+                return item
+        return None
+
+    def _shift_visualizer_variable(self, var_id: str, delta: int):
+        if self.visualizer_is_loading:
+            return
+        values = self.visualizer_nav_values.get(var_id, [])
+        if len(values) <= 1:
+            return
+        old = int(self.visualizer_nav_index.get(var_id, 0))
+        new = max(0, min(old + int(delta), len(values) - 1))
+        if new == old:
+            return
+        self.visualizer_nav_index[var_id] = new
+        run_config = self.last_run_payload.get("run_config") if isinstance(self.last_run_payload, dict) else None
+        self._update_visualizer_nav_controls(run_config if isinstance(run_config, dict) else None)
+        self._on_visualizer_variable_changed()
+
+    def _on_visualizer_variable_changed(self):
+        if not self.visualizer_point_rows:
+            return
+        payload = self.last_run_payload if isinstance(self.last_run_payload, dict) else None
+        run_config = payload.get("run_config") if isinstance(payload, dict) else None
+        if not isinstance(run_config, dict):
+            return
+        selected = self._selected_visualizer_point(run_config)
+        if not selected:
+            self.visualizer_status_var.set("Selection updated, but no datapoint is available for loading.")
+            return
+        item = self._find_visualizer_item_for_selected_point(selected)
+        if item is None:
+            self.visualizer_status_var.set("No datapoint was recorded for this variable combination.")
+            self.visualizer_no_solution_var.set("No datapoint was recorded for this variable combination.")
+            self._clear_visualizer_render()
+            return
+        self.visualizer_no_solution_var.set("")
+        self.visualizer_status_var.set("Selection updated. Loading visualizer for selected tuple...")
+        self._start_visualizer_job(mode="embed", auto=True)
+
+    def _load_visualizer_in_tab(self):
+        self._start_visualizer_job(mode="embed", auto=False)
+
+    def _open_visualizer_external(self):
+        self._start_visualizer_job(mode="external", auto=False)
+
+    def _open_visualizer_fullscreen(self):
+        self._start_visualizer_job(mode="fullscreen", auto=False)
+
+    def _start_visualizer_job(self, mode: str, auto: bool = False):
+        payload = self.last_run_payload
+        if not payload or not isinstance(payload, dict):
+            if not auto:
+                messagebox.showwarning(APP_TITLE, "Run a benchmark first so the visualizer has data.")
+            return
+        if not self.session_output_dir:
+            if not auto:
+                messagebox.showwarning(APP_TITLE, "No output directory is available for this run.")
+            return
+        if self.visualizer_is_loading:
+            return
+        run_config = payload.get("run_config")
+        if not isinstance(run_config, dict):
+            if not auto:
+                messagebox.showwarning(APP_TITLE, "Run config is unavailable for this benchmark payload.")
+            return
+        selected_point = self._selected_visualizer_point(run_config)
+        if not selected_point:
+            if not auto:
+                messagebox.showwarning(APP_TITLE, "No visualizer datapoint is selected.")
+            return
+        if self._find_visualizer_item_for_selected_point(selected_point) is None:
+            self.visualizer_status_var.set("No datapoint was recorded for this variable combination.")
+            self.visualizer_no_solution_var.set("No datapoint was recorded for this variable combination.")
+            self._clear_visualizer_render()
+            return
+        self.visualizer_is_loading = True
+        self._update_visualizer_nav_controls(run_config)
+        self.load_visualizer_btn.configure(state=tk.DISABLED)
+        self.open_visualizer_btn.configure(state=tk.DISABLED)
+        self.visualizer_fullscreen_btn.configure(state=tk.DISABLED)
+        point_text = ", ".join(
+            f"{self._axis_label(k, run_config)}={self._format_point_value(k, float(v), run_config)}"
+            for k, v in selected_point.items()
+        )
+        self.visualizer_status_var.set(f"Preparing visualizer data for selected tuple ({point_text})...")
+        worker = threading.Thread(
+            target=self._open_visualizer_worker,
+            args=(payload, mode, dict(selected_point)),
+            daemon=True,
+        )
+        worker.start()
+
+    def _open_visualizer_worker(self, payload: dict, mode: str, selected_point: dict[str, float]):
+        error: Exception | None = None
+        html_path: Path | None = None
+        status_note = ""
+        visualization_result: dict | None = None
+        try:
+            html_path, status_note, visualization_result = self._build_visualizer_bundle(payload, selected_point=selected_point)
+            if mode == "external":
+                webbrowser.open_new_tab(html_path.resolve().as_uri())
+            self._append_log_threadsafe(f"Prepared visualizer: {html_path}", level="notice")
+        except Exception as exc:
+            error = exc
+            self._append_log_threadsafe(f"Failed to open visualizer: {exc}", level="error")
+
+        def _finish():
+            self.visualizer_is_loading = False
+            has_payload = bool(self.last_run_payload)
+            run_cfg = self.last_run_payload.get("run_config") if isinstance(self.last_run_payload, dict) else None
+            self._update_visualizer_nav_controls(run_cfg if isinstance(run_cfg, dict) else None)
+            self.load_visualizer_btn.configure(state=(tk.NORMAL if has_payload and self.visualizer_point_rows else tk.DISABLED))
+            self.open_visualizer_btn.configure(state=(tk.NORMAL if has_payload else tk.DISABLED))
+            self.visualizer_fullscreen_btn.configure(state=(tk.NORMAL if has_payload and self.visualizer_point_rows else tk.DISABLED))
+            if error is not None:
+                self.visualizer_status_var.set(f"Visualizer failed: {error}")
+                if not mode == "embed":
+                    messagebox.showerror(APP_TITLE, f"Failed to open visualizer:\n{error}")
+            else:
+                if mode == "external":
+                    self.visualizer_status_var.set(status_note or "Visualizer opened externally.")
+                elif mode == "fullscreen":
+                    self._render_visualizer_result_in_tab(visualization_result)
+                    self._show_visualizer_native_fullscreen()
+                    self.visualizer_status_var.set(status_note or "Visualizer loaded in fullscreen.")
+                else:
+                    self._render_visualizer_result_in_tab(visualization_result)
+                    self.visualizer_status_var.set(status_note or "Visualizer loaded in tab.")
+
+        self.after(0, _finish)
+
+    def _current_visualizer_iteration_payload(self) -> dict | None:
+        if not self.visualizer_iterations:
+            return None
+        self.visualizer_iteration_index = max(0, min(int(self.visualizer_iteration_index), len(self.visualizer_iterations) - 1))
+        payload = self.visualizer_iterations[self.visualizer_iteration_index]
+        return payload if isinstance(payload, dict) else None
+
+    def _current_visualizer_solutions(self) -> list[dict]:
+        iteration_payload = self._current_visualizer_iteration_payload()
+        if not iteration_payload:
+            return []
+        raw = iteration_payload.get("solutions")
+        if not isinstance(raw, list):
+            return []
+        return [entry for entry in raw if isinstance(entry, dict)]
+
+    def _update_visualizer_iteration_solution_controls(self):
+        total_iterations = len(self.visualizer_iterations)
+        if total_iterations <= 0:
+            self.visualizer_iteration_label_var.set("Iteration --")
+            self.visualizer_solution_label_var.set("Solution --")
+            self.visualizer_solution_count_var.set("Solution Count: --")
+            self.visualizer_no_solution_var.set("")
+            self.visualizer_iter_prev_btn.configure(state=tk.DISABLED)
+            self.visualizer_iter_next_btn.configure(state=tk.DISABLED)
+            self.visualizer_sol_prev_btn.configure(state=tk.DISABLED)
+            self.visualizer_sol_next_btn.configure(state=tk.DISABLED)
+            return
+
+        self.visualizer_iteration_index = max(0, min(int(self.visualizer_iteration_index), total_iterations - 1))
+        self.visualizer_iteration_label_var.set(f"Iteration {self.visualizer_iteration_index + 1} of {total_iterations}")
+        self.visualizer_iter_prev_btn.configure(state=(tk.NORMAL if self.visualizer_iteration_index > 0 else tk.DISABLED))
+        self.visualizer_iter_next_btn.configure(
+            state=(tk.NORMAL if self.visualizer_iteration_index < (total_iterations - 1) else tk.DISABLED)
+        )
+
+        solutions = self._current_visualizer_solutions()
+        total_solutions = len(solutions)
+        if total_solutions <= 0:
+            self.visualizer_solution_index = 0
+            self.visualizer_solution_label_var.set("Solution 0 of 0")
+            self.visualizer_solution_count_var.set("Solution Count: 0")
+            self.visualizer_no_solution_var.set("No solutions found for this selection.")
+            self.visualizer_sol_prev_btn.configure(state=tk.DISABLED)
+            self.visualizer_sol_next_btn.configure(state=tk.DISABLED)
+            return
+
+        self.visualizer_solution_index = max(0, min(int(self.visualizer_solution_index), total_solutions - 1))
+        current_solution = solutions[self.visualizer_solution_index]
+        name = str(current_solution.get("name") or "").strip()
+        if name:
+            self.visualizer_solution_label_var.set(
+                f"Solution {self.visualizer_solution_index + 1} of {total_solutions}: {name}"
+            )
+        else:
+            self.visualizer_solution_label_var.set(f"Solution {self.visualizer_solution_index + 1} of {total_solutions}")
+
+        current_iter = self._current_visualizer_iteration_payload() or {}
+        cap_note = " (capped)" if bool(current_iter.get("solution_cap_reached")) else ""
+        self.visualizer_solution_count_var.set(f"Solution Count: {total_solutions}{cap_note}")
+        self.visualizer_no_solution_var.set("")
+        self.visualizer_sol_prev_btn.configure(state=(tk.NORMAL if self.visualizer_solution_index > 0 else tk.DISABLED))
+        self.visualizer_sol_next_btn.configure(
+            state=(tk.NORMAL if self.visualizer_solution_index < (total_solutions - 1) else tk.DISABLED)
+        )
+
+    def _visualizer_prev_iteration(self):
+        if self.visualizer_iteration_index <= 0:
+            return
+        self.visualizer_iteration_index -= 1
+        self.visualizer_solution_index = 0
+        self._render_visualizer_current_iteration()
+
+    def _visualizer_next_iteration(self):
+        if self.visualizer_iteration_index >= len(self.visualizer_iterations) - 1:
+            return
+        self.visualizer_iteration_index += 1
+        self.visualizer_solution_index = 0
+        self._render_visualizer_current_iteration()
+
+    def _visualizer_prev_solution(self):
+        if self.visualizer_solution_index <= 0:
+            return
+        self.visualizer_solution_index -= 1
+        self._render_visualizer_current_iteration()
+
+    def _visualizer_next_solution(self):
+        solutions = self._current_visualizer_solutions()
+        if self.visualizer_solution_index >= len(solutions) - 1:
+            return
+        self.visualizer_solution_index += 1
+        self._render_visualizer_current_iteration()
+
+    def _visualizer_circle_positions(self, node_ids: list[str]) -> dict[str, tuple[float, float]]:
+        n = len(node_ids)
+        if n <= 0:
+            return {}
+        if n == 1:
+            return {node_ids[0]: (0.0, 0.0)}
+        out: dict[str, tuple[float, float]] = {}
+        for idx, node_id in enumerate(node_ids):
+            angle = (2.0 * math.pi * float(idx)) / float(n)
+            out[node_id] = (math.cos(angle), math.sin(angle))
+        return out
+
+    def _draw_visualizer_graph_axis(
+        self,
+        ax,
+        *,
+        nodes: list[dict],
+        edges: list[dict],
+        highlight_nodes: list[str],
+        highlight_edges: list[str],
+        title: str,
+        show_labels: bool,
+    ):
+        node_ids: list[str] = []
+        for entry in nodes:
+            if not isinstance(entry, dict):
+                continue
+            data = entry.get("data")
+            if not isinstance(data, dict):
+                continue
+            raw_id = data.get("id")
+            if raw_id is None:
+                continue
+            node_ids.append(str(raw_id))
+        if not node_ids:
+            ax.set_title(title)
+            ax.text(0.5, 0.5, "No nodes available", ha="center", va="center", transform=ax.transAxes, color="#666666")
+            ax.set_axis_off()
+            return
+
+        def _sort_key(raw: str):
+            try:
+                return (0, int(raw))
+            except Exception:
+                return (1, raw)
+
+        node_ids = sorted(set(node_ids), key=_sort_key)
+        pos = self._visualizer_circle_positions(node_ids)
+        highlight_node_set = {str(v) for v in (highlight_nodes or [])}
+        highlight_edge_set = {str(v) for v in (highlight_edges or [])}
+
+        normal_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        highlighted_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        for entry in edges:
+            if not isinstance(entry, dict):
+                continue
+            data = entry.get("data")
+            if not isinstance(data, dict):
+                continue
+            src = str(data.get("source", ""))
+            dst = str(data.get("target", ""))
+            if src not in pos or dst not in pos:
+                continue
+            edge_id = str(data.get("id") or f"{src}-{dst}")
+            segment = (pos[src], pos[dst])
+            if edge_id in highlight_edge_set:
+                highlighted_segments.append(segment)
+            else:
+                normal_segments.append(segment)
+
+        if normal_segments:
+            ax.add_collection(LineCollection(normal_segments, colors="#d0d7de", linewidths=0.8, zorder=1))
+        if highlighted_segments:
+            ax.add_collection(LineCollection(highlighted_segments, colors="#e45756", linewidths=2.0, zorder=2))
+
+        normal_xy = [pos[node_id] for node_id in node_ids if node_id not in highlight_node_set]
+        highlight_xy = [pos[node_id] for node_id in node_ids if node_id in highlight_node_set]
+        if normal_xy:
+            xs = [xy[0] for xy in normal_xy]
+            ys = [xy[1] for xy in normal_xy]
+            ax.scatter(xs, ys, s=26, c="#7aa6c2", edgecolors="none", zorder=3)
+        if highlight_xy:
+            xs = [xy[0] for xy in highlight_xy]
+            ys = [xy[1] for xy in highlight_xy]
+            ax.scatter(xs, ys, s=44, c="#e45756", edgecolors="none", zorder=4)
+
+        if show_labels:
+            for node_id in node_ids:
+                x, y = pos[node_id]
+                ax.text(x, y, node_id, fontsize=7, ha="center", va="center", color="#1f2d3d", zorder=5)
+
+        ax.set_title(title)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlim(-1.15, 1.15)
+        ax.set_ylim(-1.15, 1.15)
+        ax.set_axis_off()
+
+    def _build_visualizer_native_figure(self) -> Figure | None:
+        current = self._current_visualizer_iteration_payload()
+        if not current:
+            return None
+        solutions = self._current_visualizer_solutions()
+        if solutions:
+            self.visualizer_solution_index = max(0, min(int(self.visualizer_solution_index), len(solutions) - 1))
+            selected_solution = solutions[self.visualizer_solution_index]
+        else:
+            self.visualizer_solution_index = 0
+            selected_solution = None
+
+        nodes = current.get("nodes") if isinstance(current.get("nodes"), list) else []
+        edges = current.get("edges") if isinstance(current.get("edges"), list) else []
+        highlight_nodes = []
+        highlight_edges = []
+        pattern_mapping = []
+        if isinstance(selected_solution, dict):
+            highlight_nodes = list(selected_solution.get("highlight_nodes") or [])
+            highlight_edges = list(selected_solution.get("highlight_edges") or [])
+            pattern_mapping = list(selected_solution.get("mapping") or [])
+        else:
+            highlight_nodes = list(current.get("highlight_nodes") or [])
+            highlight_edges = list(current.get("highlight_edges") or [])
+            pattern_mapping = list(current.get("pattern_nodes") or [])
+
+        pattern_count = int(current.get("pattern_node_count") or 0)
+        pattern_edges_raw = current.get("pattern_edges") if isinstance(current.get("pattern_edges"), list) else []
+        has_pattern = pattern_count > 0 and len(pattern_edges_raw) > 0
+
+        fig = Figure(figsize=(11.0, 6.2), dpi=100)
+        if has_pattern:
+            ax_pattern = fig.add_subplot(1, 2, 1)
+            ax_graph = fig.add_subplot(1, 2, 2)
+        else:
+            ax_pattern = None
+            ax_graph = fig.add_subplot(1, 1, 1)
+
+        node_count = int(current.get("node_count") or len(nodes))
+        edge_count = int(current.get("edge_count") or len(edges))
+        truncated = bool(current.get("truncated"))
+        graph_title = f"Target Graph (nodes={node_count}, edges={edge_count})"
+        if truncated:
+            graph_title += " [truncated]"
+        show_target_labels = node_count <= 80
+        self._draw_visualizer_graph_axis(
+            ax_graph,
+            nodes=nodes,
+            edges=edges,
+            highlight_nodes=[str(v) for v in highlight_nodes],
+            highlight_edges=[str(v) for v in highlight_edges],
+            title=graph_title,
+            show_labels=show_target_labels,
+        )
+
+        if ax_pattern is not None:
+            pattern_nodes = [{"data": {"id": str(idx)}} for idx in range(pattern_count)]
+            pattern_edges: list[dict] = []
+            for edge in pattern_edges_raw:
+                if not isinstance(edge, list) or len(edge) < 2:
+                    continue
+                try:
+                    src = int(edge[0])
+                    dst = int(edge[1])
+                except Exception:
+                    continue
+                pattern_edges.append({"data": {"id": f"{src}-{dst}", "source": str(src), "target": str(dst)}})
+            self._draw_visualizer_graph_axis(
+                ax_pattern,
+                nodes=pattern_nodes,
+                edges=pattern_edges,
+                highlight_nodes=[],
+                highlight_edges=[],
+                title=f"Pattern Graph (nodes={pattern_count}, edges={len(pattern_edges)})",
+                show_labels=pattern_count <= 120,
+            )
+            if pattern_mapping:
+                label_limit = min(pattern_count, len(pattern_mapping))
+                positions = self._visualizer_circle_positions([str(i) for i in range(pattern_count)])
+                for idx in range(label_limit):
+                    mapped = pattern_mapping[idx]
+                    if mapped is None:
+                        continue
+                    xy = positions.get(str(idx))
+                    if xy is None:
+                        continue
+                    ax_pattern.text(
+                        xy[0],
+                        xy[1] - 0.085,
+                        f"-> {mapped}",
+                        fontsize=6,
+                        ha="center",
+                        va="top",
+                        color="#0B5CAD",
+                        zorder=6,
+                    )
+
+        iteration_num = int(current.get("iteration") or (self.visualizer_iteration_index + 1))
+        seed_val = current.get("seed")
+        fig.suptitle(f"Iteration {iteration_num} | Seed {seed_val}", fontsize=11)
+        if not solutions:
+            fig.text(0.5, 0.02, "No solutions found for this iteration.", ha="center", va="bottom", color="#B00020")
+        fig.tight_layout(rect=(0.0, 0.04, 1.0, 0.95))
+        return fig
+
+    def _render_visualizer_current_iteration(self):
+        fig = self._build_visualizer_native_figure()
+        self._update_visualizer_iteration_solution_controls()
+        if fig is None:
+            self._clear_visualizer_render()
+            return
+        self.visualizer_graph_fig = fig
+        self.visualizer_graph_canvas = self._render_figure_in_frame(
+            self.visualizer_host_frame,
+            fig,
+            self.visualizer_graph_canvas,
+        )
+
+    def _render_visualizer_result_in_tab(self, visualization_result: dict | None):
+        if not isinstance(visualization_result, dict):
+            self._clear_visualizer_render()
+            return
+        vis_root = visualization_result.get("visualization")
+        if not isinstance(vis_root, dict):
+            self._clear_visualizer_render()
+            self.visualizer_no_solution_var.set("No visualization payload was generated.")
+            return
+        iterations_raw = vis_root.get("visualization_iterations")
+        if isinstance(iterations_raw, list) and iterations_raw:
+            iterations = [entry for entry in iterations_raw if isinstance(entry, dict)]
+        else:
+            iterations = [vis_root] if isinstance(vis_root, dict) else []
+        if not iterations:
+            self._clear_visualizer_render()
+            self.visualizer_no_solution_var.set("No visualization iterations were generated.")
+            return
+        self.visualizer_loaded_result = visualization_result
+        self.visualizer_iterations = iterations
+        self.visualizer_iteration_index = 0
+        self.visualizer_solution_index = 0
+        self._render_visualizer_current_iteration()
+
+    def _show_visualizer_native_fullscreen(self):
+        fig = self._build_visualizer_native_figure()
+        if fig is None:
+            messagebox.showwarning(APP_TITLE, "No in-tab visualizer is available yet.")
+            return
+        popup = tk.Toplevel(self)
+        popup.title("Visualizer Fullscreen")
+        popup.transient(self)
+        popup.configure(background="#111111")
+
+        def _close_popup(_evt=None):
+            try:
+                fig.clear()
+            except Exception:
+                pass
+            popup.destroy()
+
+        popup.bind("<Escape>", _close_popup)
+        popup.protocol("WM_DELETE_WINDOW", _close_popup)
+        try:
+            popup.attributes("-fullscreen", True)
+        except Exception:
+            try:
+                popup.state("zoomed")
+            except Exception:
+                pass
+
+        top_bar = ttk.Frame(popup)
+        top_bar.pack(fill=tk.X)
+        ttk.Label(top_bar, text="Press Esc to exit fullscreen visualizer").pack(side=tk.LEFT, padx=8, pady=6)
+        ttk.Button(top_bar, text="Close", command=_close_popup).pack(side=tk.RIGHT, padx=8, pady=4)
+
+        canvas = FigureCanvasTkAgg(fig, master=popup)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def _build_visualizer_bundle(
+        self,
+        payload: dict,
+        *,
+        selected_point: dict[str, float] | None = None,
+    ) -> tuple[Path, str, dict]:
+        if not self.session_output_dir:
+            raise RuntimeError("Session output directory is unavailable.")
+        run_config = payload.get("run_config")
+        if not isinstance(run_config, dict):
+            raise RuntimeError("Run config is missing from benchmark payload.")
+        tab_id = str(run_config.get("tab_id") or "").strip().lower()
+        if tab_id not in {"subgraph", "shortest_path"}:
+            raise RuntimeError(f"Unsupported tab for visualizer: {tab_id}")
+        selected_family, view_label, visualization_algo = self._visualizer_family_context(run_config)
+        datapoint, seeds, point_idx = self._select_visualizer_datapoint(
+            payload,
+            selected_family,
+            selected_point=selected_point,
+        )
+        variant_ids = self._visualizer_variants_for_family(run_config, selected_family)
+        if not variant_ids:
+            raise RuntimeError(f"No variants available for family '{selected_family}'.")
+
+        label_lookup = self._variant_label_lookup(run_config)
+        solver_timeout = run_config.get("solver_timeout_seconds")
+        timeout_seconds = float(solver_timeout) if isinstance(solver_timeout, (int, float)) and float(solver_timeout) > 0 else 45.0
+
+        vis_root = self.session_output_dir / "visualizer"
+        vis_inputs = vis_root / "inputs"
+        if vis_root.exists():
+            shutil.rmtree(vis_root, ignore_errors=True)
+        vis_inputs.mkdir(parents=True, exist_ok=True)
+
+        iteration_payloads: list[dict] = []
+        count_by_variant: dict[str, list[str]] = {vid: [] for vid in variant_ids}
+
+        for iter_idx, seed in enumerate(seeds):
+            iter_dir = vis_inputs / f"iter_{iter_idx + 1:03d}"
+            iter_dir.mkdir(parents=True, exist_ok=True)
+
+            if selected_family == "dijkstra":
+                inputs = {
+                    "dijkstra_file": generate_dijkstra_inputs(
+                        iter_dir,
+                        int(round(float(datapoint["n"]))),
+                        float(datapoint["density"]),
+                        int(seed),
+                    )
+                }
+            else:
+                inputs = generate_subgraph_inputs(
+                    iter_dir,
+                    int(round(float(datapoint["n"]))),
+                    int(round(float(datapoint["k_nodes"]))),
+                    float(datapoint["density"]),
+                    int(seed),
+                )
+
+            outputs: dict[str, str] = {}
+            for variant_id in variant_ids:
+                command = self._build_visualizer_variant_command(variant_id, inputs)
+                binary = self.binary_paths.get(variant_id)
+                if binary is None:
+                    outputs[variant_id] = ""
+                    continue
+                try:
+                    outputs[variant_id] = self._run_visualizer_command(
+                        command,
+                        cwd=binary.parent,
+                        timeout_seconds=timeout_seconds,
+                    )
+                except Exception as exc:
+                    outputs[variant_id] = ""
+                    self._append_log_threadsafe(
+                        f"Visualizer capture warning ({variant_id}, iter {iter_idx + 1}): {exc}",
+                        level="warn",
+                    )
+
+                if selected_family == "dijkstra":
+                    distance = parse_dijkstra_distance(outputs.get(variant_id, ""))
+                    count_by_variant[variant_id].append(distance if distance is not None else "NA")
+                else:
+                    count = parse_solution_count(outputs.get(variant_id, ""))
+                    count_by_variant[variant_id].append(str(count) if count is not None else "NA")
+
+            if selected_family == "dijkstra":
+                iteration_payload = self._build_dijkstra_visualization_iteration(
+                    inputs=inputs,
+                    outputs=outputs,
+                    label_lookup=label_lookup,
+                    iteration=iter_idx + 1,
+                    seed=int(seed),
+                )
+            else:
+                iteration_payload = self._build_subgraph_visualization_iteration(
+                    inputs=inputs,
+                    outputs=outputs,
+                    label_lookup=label_lookup,
+                    iteration=iter_idx + 1,
+                    seed=int(seed),
+                    algorithm=visualization_algo,
+                    family=selected_family,
+                )
+            iteration_payloads.append(iteration_payload)
+
+        if not iteration_payloads:
+            raise RuntimeError("No visualization iterations were generated.")
+
+        visualization_root = dict(iteration_payloads[0])
+        visualization_root["visualization_iterations"] = iteration_payloads
+        visualization_result = {
+            "algorithm": visualization_algo,
+            "status": "completed",
+            "visualization": visualization_root,
+        }
+        if selected_family != "dijkstra":
+            lines: list[str] = []
+            for variant_id in variant_ids:
+                label = label_lookup.get(variant_id, variant_id)
+                counts = count_by_variant.get(variant_id, [])
+                lines.append(f"[{label}]")
+                lines.append(f"Solution counts: [{', '.join(counts)}]")
+            visualization_result["output"] = "\n".join(lines)
+
+        js_candidates = [
+            resource_root() / "js" / "app" / "07-visualization-api-bootstrap.js",
+            adjacent_output_base().parent / "js" / "app" / "07-visualization-api-bootstrap.js",
+            Path(__file__).resolve().parent.parent / "js" / "app" / "07-visualization-api-bootstrap.js",
+        ]
+        js_src = None
+        for candidate in js_candidates:
+            if candidate.is_file():
+                js_src = candidate
+                break
+        if js_src is None:
+            searched = "\n".join(str(path) for path in js_candidates)
+            raise RuntimeError(f"Visualizer script not found. Checked:\n{searched}")
+        js_dst = vis_root / "07-visualization-api-bootstrap.js"
+        shutil.copy2(js_src, js_dst)
+
+        payload_json = json.dumps(visualization_result, default=serialize_for_json)
+        html_path = vis_root / "visualizer.html"
+        html_path.write_text(
+            self._build_visualizer_html(payload_json),
+            encoding="utf-8",
+        )
+        (vis_root / "visualization-payload.json").write_text(
+            json.dumps(visualization_result, indent=2, default=serialize_for_json) + "\n",
+            encoding="utf-8",
+        )
+
+        point_text = f"N={int(round(float(datapoint['n'])))} density={float(datapoint['density']):.4f}"
+        if selected_family != "dijkstra":
+            point_text += f" k_nodes={int(round(float(datapoint['k_nodes'])))}"
+        note = (
+            f"Prepared {view_label} visualizer datapoint"
+            f" ({point_text}, iterations={len(seeds)}, point_index={point_idx + 1 if point_idx is not None else 'n/a'})."
+        )
+        return html_path, note, visualization_result
+
+    def _variant_label_lookup(self, run_config: dict) -> dict[str, str]:
+        out: dict[str, str] = {}
+        raw = run_config.get("selected_variant_labels")
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                k = str(key).strip().lower()
+                if not k:
+                    continue
+                out[k] = str(value).strip() or k
+        for variant in SOLVER_VARIANTS:
+            out.setdefault(variant.variant_id, variant.label)
+        return out
+
+    def _visualizer_family_context(self, run_config: dict) -> tuple[str, str, str]:
+        tab_id = str(run_config.get("tab_id") or "").strip().lower()
+        if tab_id == "shortest_path":
+            return "dijkstra", "Shortest Path", "dijkstra"
+        selected_variants = [str(v).strip().lower() for v in list(run_config.get("selected_variants") or [])]
+        # Subgraph view is presented generically; prefer VF3 answers as requested.
+        if any(v.startswith("vf3_") for v in selected_variants):
+            return "vf3", "Subgraph", "subgraph"
+        if any(v.startswith("glasgow_") for v in selected_variants):
+            return "glasgow", "Subgraph", "subgraph"
+        raise RuntimeError("No subgraph solver family is available for visualizer.")
+
+    def _visualizer_variants_for_family(self, run_config: dict, family: str) -> list[str]:
+        prefix = f"{family}_"
+        selected = [str(v).strip().lower() for v in list(run_config.get("selected_variants") or [])]
+        variants = [v for v in selected if v.startswith(prefix)]
+        variants = [v for v in variants if v in self.binary_paths and self.binary_paths[v].exists()]
+        if not variants:
+            variants = [
+                variant.variant_id
+                for variant in SOLVER_VARIANTS
+                if variant.variant_id.startswith(prefix)
+                and variant.variant_id in self.binary_paths
+                and self.binary_paths[variant.variant_id].exists()
+            ]
+        if not variants:
+            baseline = f"{family}_baseline"
+            if baseline in self.binary_paths and self.binary_paths[baseline].exists():
+                variants = [baseline]
+        variants.sort(key=lambda vid: (0 if vid.endswith("_baseline") else 1, vid))
+        return variants
+
+    def _build_visualizer_variant_command(self, variant_id: str, inputs: dict[str, Path]) -> list[str]:
+        binary = self.binary_paths.get(variant_id)
+        if binary is None:
+            raise RuntimeError(f"Unknown variant: {variant_id}")
+        if variant_id.startswith("dijkstra_"):
+            return [str(binary), str(inputs["dijkstra_file"])]
+        if variant_id.startswith("vf3_"):
+            if variant_id == "vf3_baseline":
+                return [str(binary), "-u", "-s", "-r", "0", str(inputs["vf_pattern"]), str(inputs["vf_target"])]
+            return [str(binary), str(inputs["vf_pattern"]), str(inputs["vf_target"])]
+        if variant_id.startswith("glasgow_"):
+            if variant_id == "glasgow_baseline":
+                return [
+                    str(binary),
+                    "--format",
+                    "vertexlabelledlad",
+                    "--print-all-solutions",
+                    "--solution-limit",
+                    str(VISUALIZER_SOLUTION_CAP),
+                    str(inputs["lad_pattern"]),
+                    str(inputs["lad_target"]),
+                ]
+            return [str(binary), str(inputs["lad_pattern"]), str(inputs["lad_target"])]
+        raise RuntimeError(f"Unsupported variant for visualizer: {variant_id}")
+
+    def _run_visualizer_command(self, command: list[str], cwd: Path, timeout_seconds: float) -> str:
+        popen_kwargs = {
+            "args": command,
+            "cwd": str(cwd),
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "timeout": max(1.0, float(timeout_seconds)),
+        }
+        if sys.platform.startswith("win"):
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
+            popen_kwargs["startupinfo"] = startupinfo
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        completed = subprocess.run(**popen_kwargs)
+        stdout_text = completed.stdout or ""
+        stderr_text = completed.stderr or ""
+        combined = (stdout_text + "\n" + stderr_text).strip()
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"exit code {completed.returncode} for '{subprocess.list2cmdline(command)}'"
+                + (f" | {combined[:300]}" if combined else "")
+            )
+        return combined
+
+    def _visualizer_url(self, html_path: Path) -> str:
+        stamp = int(time.time() * 1000)
+        return f"{html_path.resolve().as_uri()}?t={stamp}"
+
+    def _launch_pywebview_window(self, html_path: Path, *, fullscreen: bool = False) -> bool:
+        if not self.visualizer_popup_webview_enabled:
+            return False
+        target_url = self._visualizer_url(html_path)
+        exe_path = Path(sys.executable).resolve()
+        title = APP_TITLE
+        if getattr(sys, "frozen", False):
+            command = [
+                str(exe_path),
+                "--visualizer-webview-url",
+                target_url,
+                "--visualizer-webview-title",
+                title,
+                "--visualizer-webview-fullscreen",
+                "1" if fullscreen else "0",
+            ]
+        else:
+            command = [
+                str(exe_path),
+                str(Path(__file__).resolve()),
+                "--visualizer-webview-url",
+                target_url,
+                "--visualizer-webview-title",
+                title,
+                "--visualizer-webview-fullscreen",
+                "1" if fullscreen else "0",
+            ]
+        popen_kwargs = {
+            "args": command,
+            "cwd": str(Path(__file__).resolve().parent.parent),
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if sys.platform.startswith("win"):
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            subprocess.Popen(**popen_kwargs)
+            return True
+        except Exception as exc:
+            self._append_log_threadsafe(f"Desktop webview launch failed: {exc}", level="warn")
+            return False
+
+    def _show_visualizer_in_tab(self, html_path: Path | None):
+        if html_path is None:
+            return
+        if not self.visualizer_embed_enabled or TkWebView2 is None:
+            if self._launch_pywebview_window(html_path, fullscreen=False):
+                return
+            webbrowser.open_new_tab(html_path.resolve().as_uri())
+            return
+        url = self._visualizer_url(html_path)
+        if self.visualizer_webview is None:
+            self.visualizer_webview = TkWebView2(self.visualizer_host_frame, width=1000, height=680, url=url)
+            self.visualizer_webview.pack(fill=tk.BOTH, expand=True)
+        else:
+            self.visualizer_webview.load_url(url)
+
+    def _show_visualizer_in_fullscreen(self, html_path: Path | None):
+        if html_path is None:
+            return
+        if not self.visualizer_embed_enabled or TkWebView2 is None:
+            if self._launch_pywebview_window(html_path, fullscreen=True):
+                return
+            webbrowser.open_new_tab(html_path.resolve().as_uri())
+            return
+        popup = tk.Toplevel(self)
+        popup.title("Visualizer Fullscreen")
+        popup.transient(self)
+        popup.configure(background="#111111")
+
+        def _close_popup(_evt=None):
+            popup.destroy()
+
+        popup.bind("<Escape>", _close_popup)
+        popup.protocol("WM_DELETE_WINDOW", _close_popup)
+        try:
+            popup.attributes("-fullscreen", True)
+        except Exception:
+            try:
+                popup.state("zoomed")
+            except Exception:
+                pass
+
+        top_bar = ttk.Frame(popup)
+        top_bar.pack(fill=tk.X)
+        ttk.Label(top_bar, text="Press Esc to exit fullscreen visualizer").pack(side=tk.LEFT, padx=8, pady=6)
+        ttk.Button(top_bar, text="Close", command=_close_popup).pack(side=tk.RIGHT, padx=8, pady=4)
+
+        host = ttk.Frame(popup)
+        host.pack(fill=tk.BOTH, expand=True)
+        viewer = TkWebView2(host, width=1400, height=900, url=self._visualizer_url(html_path))
+        viewer.pack(fill=tk.BOTH, expand=True)
+
+    def _select_visualizer_datapoint(
+        self,
+        payload: dict,
+        family: str,
+        *,
+        selected_point: dict[str, float] | None = None,
+    ) -> tuple[dict, list[int], int | None]:
+        run_config = payload.get("run_config")
+        if not isinstance(run_config, dict):
+            raise RuntimeError("Run config is missing from payload.")
+        datapoints = self._collect_payload_datapoints(payload)
+        if not datapoints:
+            raise RuntimeError("No datapoints were found in the run payload.")
+
+        baseline_id = f"{family}_baseline"
+        family_rows = [row for row in datapoints if str(row.get("variant_id") or "").strip().lower() == baseline_id]
+        if not family_rows:
+            family_rows = [row for row in datapoints if str(row.get("variant_id") or "").strip().lower().startswith(f"{family}_")]
+        if not family_rows:
+            raise RuntimeError(f"No datapoints were found for family '{family}'.")
+
+        def _row_sort_key(row: dict):
+            x_raw = row.get("x_value")
+            y_raw = row.get("y_value")
+            x = float(x_raw) if isinstance(x_raw, (int, float)) else float("inf")
+            y = float(y_raw) if isinstance(y_raw, (int, float)) else float("-inf")
+            return (x, y)
+
+        sorted_rows = sorted(family_rows, key=_row_sort_key)
+        row = sorted_rows[0]
+        if isinstance(selected_point, dict) and selected_point:
+            tol = 1e-9
+            for candidate in sorted_rows:
+                candidate_point = self._resolve_visualizer_point_from_row(run_config, candidate, family)
+                if not candidate_point:
+                    continue
+                matches = True
+                for key, target in selected_point.items():
+                    raw = candidate_point.get(key)
+                    if not isinstance(raw, (int, float)) or abs(float(raw) - float(target)) > tol:
+                        matches = False
+                        break
+                if matches:
+                    row = candidate
+                    break
+
+        point = self._resolve_visualizer_point_from_row(run_config, row, family)
+        if not point:
+            raise RuntimeError("Unable to determine visualization datapoint values from selected run row.")
+
+        iterations = max(1, int(run_config.get("iterations_per_datapoint") or 1))
+        point_idx = self._find_datapoint_index_from_run_config(run_config, row)
+        seed_raw = run_config.get("seed")
+        base_seed = None
+        try:
+            base_seed = int(seed_raw)
+        except Exception:
+            base_seed = None
+
+        seeds: list[int] = []
+        if point_idx is not None and base_seed is not None:
+            seeds = [int(base_seed + (point_idx * 100000) + idx) for idx in range(iterations)]
+        if not seeds:
+            row_seeds = row.get("seeds")
+            if isinstance(row_seeds, list):
+                for raw in row_seeds:
+                    try:
+                        seeds.append(int(raw))
+                    except Exception:
+                        continue
+            if len(seeds) < iterations:
+                start_seed = seeds[-1] + 1 if seeds else (base_seed if base_seed is not None else int(time.time()))
+                while len(seeds) < iterations:
+                    seeds.append(int(start_seed))
+                    start_seed += 1
+            seeds = seeds[:iterations]
+
+        return point, seeds, point_idx
+
+    def _find_datapoint_index_from_run_config(self, run_config: dict, row: dict) -> int | None:
+        stop_mode = str(run_config.get("stop_mode") or "").strip().lower()
+        if stop_mode == "timed":
+            return None
+        primary = str(run_config.get("primary_variable") or "").strip()
+        secondary = str(run_config.get("secondary_variable") or "").strip() or None
+        if not primary:
+            return None
+        x_raw = row.get("x_value")
+        y_raw = row.get("y_value")
+        if not isinstance(x_raw, (int, float)):
+            return None
+        x_ref = float(x_raw)
+        y_ref = float(y_raw) if isinstance(y_raw, (int, float)) else None
+
+        fixed_raw = run_config.get("fixed_values")
+        fixed_values = dict(fixed_raw) if isinstance(fixed_raw, dict) else {}
+        var_ranges_raw = run_config.get("var_ranges")
+        if not isinstance(var_ranges_raw, dict):
+            return None
+        primary_values = list(var_ranges_raw.get(primary) or [])
+        if not primary_values:
+            return None
+        secondary_values = list(var_ranges_raw.get(secondary) or []) if secondary else [None]
+        if secondary and not secondary_values:
+            return None
+
+        point_idx = 0
+        tol = 1e-9
+        for y in secondary_values:
+            for x in primary_values:
+                point = dict(fixed_values)
+                point[primary] = x
+                if secondary is not None:
+                    point[secondary] = y
+                try:
+                    x_val = float(point.get(primary))
+                except Exception:
+                    point_idx += 1
+                    continue
+                y_val = None
+                if secondary is not None:
+                    try:
+                        y_val = float(point.get(secondary))
+                    except Exception:
+                        y_val = None
+                if abs(x_val - x_ref) <= tol and ((secondary is None) or (y_ref is not None and y_val is not None and abs(y_val - y_ref) <= tol)):
+                    return point_idx
+                point_idx += 1
+        return None
+
+    def _build_visualizer_html(self, payload_json: str) -> str:
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Benchmark Visualizer</title>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.29.2/dist/cytoscape.min.js"></script>
+  <style>
+    body {{
+      margin: 0;
+      font-family: Segoe UI, Arial, sans-serif;
+      background: #f4f7fb;
+      color: #1f2d3d;
+    }}
+    .container {{
+      padding: 12px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }}
+    .graph-panel {{
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      background: #ffffff;
+      margin-top: 12px;
+      padding: 10px;
+    }}
+    .graph-panel-small {{
+      max-width: 600px;
+    }}
+    .chart-title {{
+      font-weight: 600;
+      margin-bottom: 8px;
+    }}
+    .graph-actions {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }}
+    .graph-note {{
+      color: #4b5563;
+      margin-bottom: 8px;
+      font-size: 0.92rem;
+    }}
+    .graph-canvas {{
+      height: 520px;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+    }}
+    .graph-canvas-small {{
+      height: 280px;
+    }}
+    .btn {{
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      border-radius: 6px;
+      padding: 4px 8px;
+      cursor: pointer;
+    }}
+    .btn:hover {{
+      background: #eef2f7;
+    }}
+    .solution-nav-block {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
+    .solution-controls, .iteration-controls {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }}
+    .solution-label, .solution-count-display {{
+      font-size: 0.9rem;
+    }}
+    #status-message .error {{
+      color: #b00020;
+      margin-top: 6px;
+    }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div id="status-message"></div>
+    <div class="graph-panel graph-panel-small" id="pattern-panel" hidden>
+      <div class="chart-title">Pattern Visualization</div>
+      <div class="graph-actions">
+        <button class="btn" id="pattern-center-btn" onclick="centerPatternGraph()" type="button">Center</button>
+      </div>
+      <div class="graph-note" id="pattern-note"></div>
+      <div class="graph-canvas graph-canvas-small" id="pattern-canvas"></div>
+    </div>
+    <div class="graph-panel" id="graph-panel" hidden>
+      <div class="chart-title">Graph Visualization</div>
+      <div class="graph-actions">
+        <button class="btn" id="graph-center-btn" onclick="centerMainGraph()" type="button">Center</button>
+        <div class="iteration-controls" id="iteration-controls">
+          <button class="btn" id="iteration-prev-btn" onclick="showPreviousIteration()" type="button">&lt;</button>
+          <span class="solution-label" id="iteration-label">Iteration 1</span>
+          <button class="btn" id="iteration-next-btn" onclick="showNextIteration()" type="button">&gt;</button>
+        </div>
+        <div class="solution-nav-block">
+          <span class="solution-count-display" id="solution-count-display" hidden>Solution Count: --</span>
+          <div class="solution-controls" id="solution-controls">
+            <button class="btn" id="solution-prev-btn" onclick="showPreviousSolution()" type="button">&lt;</button>
+            <span class="solution-label" id="solution-label">Solution 0</span>
+            <button class="btn" id="solution-next-btn" onclick="showNextSolution()" type="button">&gt;</button>
+          </div>
+          <span class="solution-cap-note" id="solution-cap-note" hidden><em>Visualizer caps at 2000 solutions</em></span>
+        </div>
+        <span class="solution-warning" id="solution-warning" hidden>No solutions found</span>
+      </div>
+      <div class="graph-note" id="graph-note"></div>
+      <div class="graph-canvas" id="graph-canvas"></div>
+    </div>
+  </div>
+  <script>
+    const config = {{}};
+    let graphInstance = null;
+    let patternInstance = null;
+    let graphHoverEdgeId = null;
+    let patternHoverEdgeId = null;
+    let visSolutions = [];
+    let currentSolutionIndex = 0;
+    let visIterations = [];
+    let currentIterationIndex = 0;
+    function updateInputModeVisibility() {{}}
+    function updateGeneratorFieldsForAlgorithm() {{}}
+    function updateGeneratorEstimate() {{}}
+    function updateRunButton() {{}}
+    window.__VIS_RESULT__ = {payload_json};
+  </script>
+  <script src="./07-visualization-api-bootstrap.js"></script>
+  <script>
+    window.addEventListener('load', () => {{
+      try {{
+        if (window.__VIS_RESULT__) {{
+          renderVisualization(window.__VIS_RESULT__);
+        }}
+      }} catch (err) {{
+        const el = document.getElementById('status-message');
+        if (el) {{
+          el.innerHTML = `<div class="error">${{String(err)}}</div>`;
+        }}
+      }}
+    }});
+  </script>
+</body>
+</html>
+"""
+
+    def _build_subgraph_visualization_iteration(
+        self,
+        *,
+        inputs: dict[str, Path],
+        outputs: dict[str, str],
+        label_lookup: dict[str, str],
+        iteration: int,
+        seed: int,
+        algorithm: str,
+        family: str,
+    ) -> dict:
+        if family == "vf3":
+            pattern_adj = parse_vf_graph(inputs["vf_pattern"])
+            target_adj = parse_vf_graph(inputs["vf_target"])
+        else:
+            pattern_adj = parse_lad_graph(inputs["lad_pattern"])
+            target_adj = parse_lad_graph(inputs["lad_target"])
+
+        pattern_n = len(pattern_adj)
+        target_n = len(target_adj)
+
+        target_edge_set: set[tuple[int, int]] = set()
+        for u, neighbors in enumerate(target_adj):
+            for v in neighbors:
+                key = edge_key(u, v)
+                if key is not None:
+                    target_edge_set.add(key)
+
+        pattern_edges: list[tuple[int, int]] = []
+        pattern_edge_set: set[tuple[int, int]] = set()
+        for u, neighbors in enumerate(pattern_adj):
+            for v in neighbors:
+                key = edge_key(u, v)
+                if key is None or key in pattern_edge_set:
+                    continue
+                pattern_edge_set.add(key)
+                pattern_edges.append(key)
+        pattern_edges.sort()
+
+        max_nodes = 4000
+        max_edges = 4000
+        allowed_nodes = set(range(min(target_n, max_nodes)))
+        sorted_target_edges = sorted(target_edge_set)
+        truncated = target_n > max_nodes or len(sorted_target_edges) > max_edges
+        limited_edges = sorted_target_edges[:max_edges]
+        limited_edge_set = set(limited_edges)
+
+        nodes = [{"data": {"id": str(i), "label": str(i)}} for i in range(min(target_n, max_nodes))]
+        edges = [{"data": {"id": f"{a}-{b}", "source": str(a), "target": str(b)}} for a, b in limited_edges]
+
+        solutions: list[dict] = []
+        seen_solution_keys: set[str] = set()
+        cap_reached = False
+        for variant_id, text in outputs.items():
+            parsed = normalize_mappings(
+                extract_mappings_from_text(text, limit=VISUALIZER_SOLUTION_CAP),
+                pattern_n,
+                target_n,
+                limit=VISUALIZER_SOLUTION_CAP,
+            )
+            label = label_lookup.get(variant_id, variant_id)
+            for mapping_index, mapping in enumerate(parsed):
+                mapping_arr: list[int | None] = [None] * pattern_n
+                for p, t in mapping.items():
+                    if 0 <= p < pattern_n and 0 <= t < target_n:
+                        mapping_arr[p] = t
+                key = json.dumps(mapping_arr)
+                if key in seen_solution_keys:
+                    continue
+                seen_solution_keys.add(key)
+
+                highlight_nodes = [str(t) for t in mapping_arr if isinstance(t, int) and t in allowed_nodes]
+                highlight_edges: list[str] = []
+                for a, b in pattern_edges:
+                    ta = mapping_arr[a]
+                    tb = mapping_arr[b]
+                    if not isinstance(ta, int) or not isinstance(tb, int):
+                        continue
+                    ek = edge_key(ta, tb)
+                    if ek is None:
+                        continue
+                    if ek in target_edge_set and ek in limited_edge_set:
+                        highlight_edges.append(f"{ek[0]}-{ek[1]}")
+                sol_name = label if mapping_index == 0 else f"{label} #{mapping_index + 1}"
+                solutions.append(
+                    {
+                        "name": sol_name,
+                        "mapping": mapping_arr,
+                        "highlight_nodes": highlight_nodes,
+                        "highlight_edges": highlight_edges,
+                    }
+                )
+                if len(solutions) >= VISUALIZER_SOLUTION_CAP:
+                    cap_reached = True
+                    break
+            if cap_reached:
+                break
+
+        first = solutions[0] if solutions else None
+        return {
+            "algorithm": str(algorithm or "").strip().lower(),
+            "seed": int(seed),
+            "iteration": int(iteration),
+            "node_count": target_n,
+            "edge_count": len(target_edge_set),
+            "nodes": nodes,
+            "edges": edges,
+            "highlight_nodes": (first.get("highlight_nodes") if first else []),
+            "highlight_edges": (first.get("highlight_edges") if first else []),
+            "pattern_node_count": pattern_n,
+            "pattern_nodes": (first.get("mapping") if first else []),
+            "pattern_edges": [[a, b] for a, b in pattern_edges],
+            "solutions": solutions,
+            "solution_cap_reached": bool(cap_reached),
+            "no_solutions": len(solutions) == 0,
+            "truncated": bool(truncated),
+        }
+
+    def _parse_dijkstra_input_for_visualizer(self, path: Path):
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        start_label = None
+        target_label = None
+        if lines and lines[0].lstrip().startswith("#"):
+            header = lines[0].strip()
+            m_start = re.search(r"start\s*=\s*([^\s#]+)", header, flags=re.IGNORECASE)
+            m_target = re.search(r"target\s*=\s*([^\s#]+)", header, flags=re.IGNORECASE)
+            if m_start:
+                start_label = m_start.group(1).strip()
+            if m_target:
+                target_label = m_target.group(1).strip()
+
+        csv_text = "\n".join(line for line in lines if not line.lstrip().startswith("#")).strip()
+        labels_in_order: list[str] = []
+        edges_raw: list[tuple[str, str]] = []
+        if csv_text:
+            reader = csv.DictReader(csv_text.splitlines())
+            for row in reader:
+                src = str(row.get("source") or "").strip()
+                dst = str(row.get("target") or "").strip()
+                if not src or not dst:
+                    continue
+                edges_raw.append((src, dst))
+                labels_in_order.append(src)
+                labels_in_order.append(dst)
+
+        unique_labels: list[str] = []
+        seen = set()
+        for label in labels_in_order:
+            key = label.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_labels.append(label)
+        if start_label and start_label.lower() not in seen:
+            unique_labels.append(start_label)
+            seen.add(start_label.lower())
+        if target_label and target_label.lower() not in seen:
+            unique_labels.append(target_label)
+            seen.add(target_label.lower())
+
+        label_to_id: dict[str, int] = {label: idx for idx, label in enumerate(unique_labels)}
+        label_to_id_lower: dict[str, int] = {label.lower(): idx for idx, label in enumerate(unique_labels)}
+
+        all_edges: set[tuple[int, int]] = set()
+        for src, dst in edges_raw:
+            u = label_to_id.get(src)
+            v = label_to_id.get(dst)
+            if u is None or v is None:
+                continue
+            ek = edge_key(u, v)
+            if ek is None:
+                continue
+            all_edges.add(ek)
+        return unique_labels, label_to_id, label_to_id_lower, all_edges, start_label, target_label
+
+    def _extract_dijkstra_path_nodes(self, output_text: str, label_to_id: dict[str, int], label_to_id_lower: dict[str, int], node_count: int):
+        lines = [str(line or "").strip() for line in str(output_text or "").replace("\r", "").split("\n")]
+        first = ""
+        for line in lines:
+            if not line:
+                continue
+            if re.match(r"(?i)^runtime\b", line):
+                continue
+            first = line
+            break
+        if not first:
+            return None
+        if re.search(r"no\s*path|path\s*not\s*found", first, flags=re.IGNORECASE):
+            return None
+        if ";" in first:
+            left, right = first.split(";", 1)
+            token = left.strip()
+            if token.upper() in {"INF", "INFINITY"} or token == "-1":
+                return None
+            path_part = right.strip()
+        else:
+            path_part = first
+        path_part = re.sub(r"\s*->\s*", " -> ", path_part)
+        raw_tokens = [tok.strip() for tok in re.split(r"[,\s]+", path_part) if tok.strip()]
+        path: list[int] = []
+        for raw in raw_tokens:
+            token = re.sub(r"^[\[\]{}()'\"`]+", "", raw)
+            token = re.sub(r"[\[\]{}()'\"`,;:]+$", "", token).strip()
+            if not token or token == "->":
+                continue
+            if token in label_to_id:
+                path.append(label_to_id[token])
+                continue
+            lower = token.lower()
+            if lower in label_to_id_lower:
+                path.append(label_to_id_lower[lower])
+                continue
+            try:
+                idx = int(token)
+            except Exception:
+                continue
+            if 0 <= idx < node_count:
+                path.append(idx)
+        if len(path) < 2:
+            return None
+        compact: list[int] = []
+        for value in path:
+            if not compact or compact[-1] != value:
+                compact.append(value)
+        return compact if len(compact) >= 2 else None
+
+    def _build_dijkstra_visualization_iteration(
+        self,
+        *,
+        inputs: dict[str, Path],
+        outputs: dict[str, str],
+        label_lookup: dict[str, str],
+        iteration: int,
+        seed: int,
+    ) -> dict:
+        labels, label_to_id, label_to_id_lower, all_edges, start_label, target_label = self._parse_dijkstra_input_for_visualizer(inputs["dijkstra_file"])
+        node_count = len(labels)
+        max_nodes = 4000
+        max_edges = 4000
+        allowed_nodes = set(range(min(node_count, max_nodes)))
+        truncated = node_count > max_nodes or len(all_edges) > max_edges
+        limited_edges = sorted(all_edges)[:max_edges]
+        limited_edge_set = set(limited_edges)
+        nodes = [{"data": {"id": str(i), "label": str(labels[i] if i < len(labels) else i)}} for i in range(min(node_count, max_nodes))]
+        edges = [{"data": {"id": f"{a}-{b}", "source": str(a), "target": str(b)}} for a, b in limited_edges]
+
+        solutions: list[dict] = []
+        for variant_id, text in outputs.items():
+            path_nodes = self._extract_dijkstra_path_nodes(text, label_to_id, label_to_id_lower, node_count)
+            if not path_nodes:
+                continue
+            highlight_nodes: list[int] = []
+            for n in path_nodes:
+                if n in allowed_nodes and (not highlight_nodes or highlight_nodes[-1] != n):
+                    highlight_nodes.append(n)
+            highlight_edges: list[str] = []
+            for idx in range(len(path_nodes) - 1):
+                ek = edge_key(path_nodes[idx], path_nodes[idx + 1])
+                if ek is None or ek not in limited_edge_set:
+                    continue
+                highlight_edges.append(f"{ek[0]}-{ek[1]}")
+            solutions.append(
+                {
+                    "name": label_lookup.get(variant_id, variant_id),
+                    "mapping": [],
+                    "highlight_nodes": highlight_nodes,
+                    "highlight_edges": highlight_edges,
+                    "path_labels": [labels[n] for n in path_nodes if 0 <= n < len(labels)],
+                }
+            )
+            if len(solutions) >= VISUALIZER_SOLUTION_CAP:
+                break
+
+        fallback_nodes: list[str] = []
+        if start_label is not None and start_label in label_to_id:
+            fallback_nodes.append(str(label_to_id[start_label]))
+        if target_label is not None and target_label in label_to_id:
+            target_id = str(label_to_id[target_label])
+            if target_id not in fallback_nodes:
+                fallback_nodes.append(target_id)
+        first = solutions[0] if solutions else None
+        payload = {
+            "algorithm": "dijkstra",
+            "seed": int(seed),
+            "iteration": int(iteration),
+            "node_count": node_count,
+            "edge_count": len(all_edges),
+            "nodes": nodes,
+            "edges": edges,
+            "highlight_nodes": (first.get("highlight_nodes") if first else fallback_nodes),
+            "highlight_edges": (first.get("highlight_edges") if first else []),
+            "pattern_node_count": 0,
+            "pattern_nodes": [],
+            "pattern_edges": [],
+            "solutions": solutions,
+            "solution_cap_reached": len(solutions) >= VISUALIZER_SOLUTION_CAP,
+            "no_solutions": len(solutions) == 0,
+            "truncated": bool(truncated),
+        }
+        if start_label is not None:
+            payload["start_label"] = start_label
+        if target_label is not None:
+            payload["target_label"] = target_label
+        if first and first.get("path_labels"):
+            payload["shortest_path"] = list(first.get("path_labels"))
+        return payload
 
     def _figure_for_tab(self, tab_key: str):
         mapping = {
@@ -3664,7 +6528,8 @@ class BenchmarkRunnerApp(tk.Tk):
             writer.writerow([
                 "variant_id", "variant_label", "x_value", "y_value", "runtime_median_ms", "runtime_stdev_ms", "runtime_samples_n",
                 "memory_median_kb", "memory_stdev_kb", "memory_samples_n", "completed_iterations", "requested_iterations",
-                "runtime_samples_json", "memory_samples_json", "seeds_json",
+                "outlier_filter_mode", "outlier_filter_min_samples", "runtime_samples_total_n", "memory_samples_total_n",
+                "runtime_samples_json", "memory_samples_json", "runtime_samples_raw_json", "memory_samples_raw_json", "seeds_json",
             ])
             for row in self._iter_payload_datapoints(payload):
                 writer.writerow([
@@ -3680,8 +6545,14 @@ class BenchmarkRunnerApp(tk.Tk):
                     row["memory_samples_n"],
                     row["completed_iterations"],
                     row["requested_iterations"],
+                    row.get("outlier_filter_mode", payload.get("run_config", {}).get("outlier_filter", "none")),
+                    row.get("outlier_filter_min_samples", payload.get("run_config", {}).get("outlier_filter_min_samples", DEFAULT_OUTLIER_MIN_SAMPLES)),
+                    row.get("runtime_samples_total_n", row.get("runtime_samples_n", 0)),
+                    row.get("memory_samples_total_n", row.get("memory_samples_n", 0)),
                     json.dumps(row.get("runtime_samples_ms", [])),
                     json.dumps(row.get("memory_samples_kb", [])),
+                    json.dumps(row.get("runtime_samples_raw_ms", row.get("runtime_samples_ms", []))),
+                    json.dumps(row.get("memory_samples_raw_kb", row.get("memory_samples_kb", []))),
                     json.dumps(row["seeds"]),
                 ])
 
@@ -3711,10 +6582,25 @@ class BenchmarkRunnerApp(tk.Tk):
 
 
 def main():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--visualizer-webview-url", dest="visualizer_webview_url", default=None)
+    parser.add_argument("--visualizer-webview-title", dest="visualizer_webview_title", default=APP_TITLE)
+    parser.add_argument("--visualizer-webview-fullscreen", dest="visualizer_webview_fullscreen", default="0")
+    args, _unknown = parser.parse_known_args()
+
+    if args.visualizer_webview_url:
+        fullscreen_flag = str(args.visualizer_webview_fullscreen).strip().lower() in {"1", "true", "yes", "on"}
+        return run_visualizer_webview_window(
+            url=str(args.visualizer_webview_url),
+            title=str(args.visualizer_webview_title or APP_TITLE),
+            fullscreen=fullscreen_flag,
+        )
+
     app = BenchmarkRunnerApp()
     app.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 

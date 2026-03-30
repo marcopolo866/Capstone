@@ -196,10 +196,17 @@ def package_runner(staged_files: list[Path]) -> list[Path]:
         "matplotlib.backends.backend_tkagg",
         "--hidden-import",
         "matplotlib.backends.backend_agg",
+        "--collect-submodules",
+        "webview",
         "desktop_runner/app.py",
     ]
     for file_path in staged_files:
         pyinstaller_cmd.extend(["--add-binary", f"{file_path}{os.pathsep}binaries"])
+
+    visualizer_js = REPO_ROOT / "js" / "app" / "07-visualization-api-bootstrap.js"
+    if not visualizer_js.is_file():
+        raise RuntimeError(f"Missing visualizer bootstrap script: {visualizer_js}")
+    pyinstaller_cmd.extend(["--add-data", f"{visualizer_js}{os.pathsep}js/app"])
 
     run_step("PyInstaller desktop runner bundle", pyinstaller_cmd, cwd=REPO_ROOT)
 

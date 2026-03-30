@@ -251,17 +251,18 @@ def compile_discovered_variants_for_family(catalog: dict, family: str, env: dict
             continue
 
         def _build() -> None:
+            suppress_diagnostics = env_truthy(env.get("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS", ""))
+            compile_flags = [
+                "g++",
+                "-std=c++17",
+                "-O3",
+            ]
+            if suppress_diagnostics:
+                compile_flags.append("-w")
+            else:
+                compile_flags.extend(["-Wall", "-Wextra"])
             run_cmd(
-                [
-                    "g++",
-                    "-std=c++17",
-                    "-O3",
-                    "-Wall",
-                    "-Wextra",
-                    source,
-                    "-o",
-                    binary,
-                ],
+                [*compile_flags, source, "-o", binary],
                 env=env,
             )
 
@@ -442,8 +443,15 @@ def main() -> int:
         print("BUILD_LOCAL_FAST enabled: skipping VF3 smoke + Glasgow parity checks")
     if portable_mode:
         print("BUILD_LOCAL_PORTABLE enabled: disabling Glasgow -march=native for portable binaries")
+    suppress_diagnostics = env_truthy(env.get("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS", ""))
+    if suppress_diagnostics:
+        print("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS enabled: suppressing warning/note diagnostics")
 
-    run_step("Updating submodules", lambda: run_cmd(["git", "submodule", "update", "--init", "--recursive"], env=env))
+    if env_truthy(env.get("BUILD_LOCAL_SKIP_SUBMODULE_UPDATE", "")):
+        print()
+        print("==> Skipping submodule update (BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1)")
+    else:
+        run_step("Updating submodules", lambda: run_cmd(["git", "submodule", "update", "--init", "--recursive"], env=env))
 
     solver_discovery = load_solver_discovery_module()
     catalog = solver_discovery.build_catalog(REPO_ROOT)
@@ -455,8 +463,8 @@ def main() -> int:
                 "g++",
                 "-std=c++17",
                 "-O3",
-                "-Wall",
-                "-Wextra",
+                *([] if not suppress_diagnostics else ["-w"]),
+                *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
                 "-I",
                 "baselines/nyaan-library",
                 "baselines/dijkstra_main.cpp",
@@ -469,6 +477,8 @@ def main() -> int:
     compile_discovered_variants_for_family(catalog, "dijkstra", env)
 
     vf3_cflags = "-std=c++11 -O2 -DNDEBUG -Wno-deprecated -fno-strict-aliasing -fwrapv"
+    if suppress_diagnostics:
+        vf3_cflags += " -w"
     if os.name == "nt":
         vf3_cflags += " -DWIN32 -include getopt.h"
 
@@ -496,14 +506,19 @@ def main() -> int:
     if not generator and is_msys_or_cygwin_shell():
         generator = "MinGW Makefiles"
 
+    cmake_cxx_flags = "-O3 -w" if suppress_diagnostics else "-O3"
+    cmake_c_flags = "-O3 -w" if suppress_diagnostics else "-O3"
     cmake_args = [
         "cmake",
+        *(["-Wno-dev"] if suppress_diagnostics else []),
         "-S",
         "baselines/glasgow-subgraph-solver",
         "-B",
         "baselines/glasgow-subgraph-solver/build",
         "-DCMAKE_BUILD_TYPE=Release",
-        "-DCMAKE_CXX_FLAGS=-O3",
+        f"-DCMAKE_CXX_FLAGS={cmake_cxx_flags}",
+        f"-DCMAKE_C_FLAGS={cmake_c_flags}",
+        *([] if not suppress_diagnostics else ["-DCMAKE_SUPPRESS_DEVELOPER_WARNINGS=ON"]),
         f"-DGCS_ENABLE_MARCH_NATIVE={'OFF' if portable_mode else 'ON'}",
     ]
     if generator:

@@ -95,11 +95,36 @@ jobs:
           if ! command -v cmake >/dev/null 2>&1; then
             missing+=("cmake")
           fi
+          if ! command -v ccache >/dev/null 2>&1; then
+            missing+=("ccache")
+          fi
           if (( ${#missing[@]} > 0 )); then
             brew install "${missing[@]}"
           else
             echo "All macOS system dependencies already installed"
           fi
+
+      - name: Restore compiler cache (macOS)
+        if: matrix.os_tag == 'macos'
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-macos-${{ hashFiles('src/**/*.cpp', 'baselines/**/*.cpp', 'scripts/build-local-core.py', 'scripts/solver_discovery.py') }}
+          restore-keys: |
+            ccache-macos-
+
+      - name: Configure ccache (macOS)
+        if: matrix.os_tag == 'macos'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ccache"
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=1024M" >> "$GITHUB_ENV"
+          ccache_libexec="$(brew --prefix)/opt/ccache/libexec"
+          if [ -d "$ccache_libexec" ]; then
+            echo "$ccache_libexec" >> "$GITHUB_PATH"
+          fi
+          ccache -z || true
 
       - name: Install Python dependencies
         run: |
@@ -116,6 +141,7 @@ jobs:
         shell: msys2 {0}
         run: |
           set -o pipefail
+          export BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1
           mingw_root_win="$(cygpath -w "$(dirname "$(dirname "$(which g++)")")")"
           echo "Resolved MinGW root: ${mingw_root_win}"
           echo "MINGW_ROOT=${mingw_root_win}" >> "$GITHUB_ENV"
@@ -125,7 +151,13 @@ jobs:
         if: matrix.os_tag != 'windows'
         run: |
           set -euo pipefail
+          export BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1
           python scripts/build-local.py --backend sh --fast 2>&1 | tee "logs/build-local-${{ matrix.os_tag }}.log"
+
+      - name: Show compiler cache stats (macOS)
+        if: always() && matrix.os_tag == 'macos'
+        run: |
+          ccache -s || true
 
       - name: Package desktop benchmark runner (Windows)
         if: matrix.os_tag == 'windows'

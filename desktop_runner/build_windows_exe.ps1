@@ -287,6 +287,10 @@ $pyArgs = @(
     "--name", "capstone-benchmark-runner",
     "--hidden-import", "matplotlib.backends.backend_tkagg",
     "--hidden-import", "matplotlib.backends.backend_agg",
+    "--hidden-import", "tkwebview2.tkwebview2",
+    "--hidden-import", "clr",
+    "--hidden-import", "webview.window",
+    "--hidden-import", "webview.platforms.edgechromium",
     "desktop_runner/app.py"
 )
 
@@ -294,6 +298,12 @@ $stagedFiles = Get-ChildItem -LiteralPath $stagingBin -File
 foreach ($file in $stagedFiles) {
     $pyArgs += @("--add-binary", "$($file.FullName);binaries")
 }
+
+$visualizerJs = Join-Path $repoRoot "js/app/07-visualization-api-bootstrap.js"
+if (-not (Test-Path -LiteralPath $visualizerJs -PathType Leaf)) {
+    throw "Missing visualizer bootstrap script: $visualizerJs"
+}
+$pyArgs += @("--add-data", "$visualizerJs;js/app")
 
 $exePath = Join-Path $repoRoot "dist/capstone-benchmark-runner.exe"
 if (Test-Path -LiteralPath $exePath -PathType Leaf) {
