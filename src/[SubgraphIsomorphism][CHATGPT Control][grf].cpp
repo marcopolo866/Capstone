@@ -3,6 +3,7 @@
 #include <fstream>
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 
 using namespace std;
 

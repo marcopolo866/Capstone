@@ -54,6 +54,49 @@ def ensure_command(name: str, env: dict[str, str]) -> str:
     return found
 
 
+def _temp_dir_usable(path_str: str) -> bool:
+    raw = str(path_str or "").strip()
+    if not raw:
+        return False
+    try:
+        path = Path(raw)
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".__tmp_probe__"
+        probe.write_text("ok", encoding="utf-8")
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
+
+
+def ensure_valid_temp_env(env: dict[str, str]) -> Path:
+    candidates: list[str] = []
+    for key in ("TMP", "TEMP", "TMPDIR"):
+        value = str(env.get(key) or "").strip()
+        if value:
+            candidates.append(value)
+
+    for candidate in candidates:
+        if _temp_dir_usable(candidate):
+            chosen = Path(candidate).resolve()
+            env["TMP"] = str(chosen)
+            env["TEMP"] = str(chosen)
+            env["TMPDIR"] = str(chosen)
+            return chosen
+
+    fallback = (REPO_ROOT / "dist" / "tmp").resolve()
+    fallback.mkdir(parents=True, exist_ok=True)
+    if not _temp_dir_usable(str(fallback)):
+        raise RuntimeError(f"Unable to provision a writable temp directory at: {fallback}")
+    env["TMP"] = str(fallback)
+    env["TEMP"] = str(fallback)
+    env["TMPDIR"] = str(fallback)
+    return fallback
+
+
 def prefer_msys2_toolchain(env: dict[str, str]) -> None:
     if os.name != "nt":
         return
@@ -231,42 +274,87 @@ def ensure_glasgow_compiler_runtime_on_path(build_dir: Path, env: dict[str, str]
             prepend_path(env, str(msys_usr))
 
 
-def compile_discovered_variants_for_family(catalog: dict, family: str, env: dict[str, str]) -> None:
+def _remove_binary_outputs(binary_rel: str) -> None:
+    raw = REPO_ROOT / str(binary_rel or "").strip()
+    if not str(binary_rel or "").strip():
+        return
+    candidates = [raw, raw.with_suffix(raw.suffix + ".exe")]
+    for candidate in candidates:
+        if candidate.is_file():
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+
+
+def _extract_compile_failure_reason(output: str, returncode: int) -> str:
+    lines = [line.strip() for line in str(output or "").splitlines() if line.strip()]
+    for line in lines:
+        if " error:" in line or line.lower().startswith("error:"):
+            return line
+    if lines:
+        return lines[-1]
+    return f"compiler exited with code {int(returncode)}"
+
+
+def compile_discovered_variants_for_family(catalog: dict, family: str, env: dict[str, str]) -> list[dict]:
     rows = [
         row
         for row in (catalog.get("variants") or [])
         if str(row.get("family", "")).strip().lower() == family
     ]
     rows.sort(key=lambda row: (str(row.get("llm_label", "")).lower(), str(row.get("variant_id", "")).lower()))
+    skipped: list[dict] = []
     if not rows:
         print()
         print(f"==> No discovered {family} variants in src/")
-        return
+        return skipped
 
     for row in rows:
         label = str(row.get("label") or row.get("variant_id") or "variant")
+        variant_id = str(row.get("variant_id") or "").strip()
         source = str(row.get("source_path") or "").strip()
         binary = str(row.get("binary_path") or "").strip()
         if not source or not binary:
             continue
 
-        def _build() -> None:
-            suppress_diagnostics = env_truthy(env.get("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS", ""))
-            compile_flags = [
-                "g++",
-                "-std=c++17",
-                "-O3",
-            ]
-            if suppress_diagnostics:
-                compile_flags.append("-w")
-            else:
-                compile_flags.extend(["-Wall", "-Wextra"])
-            run_cmd(
-                [*compile_flags, source, "-o", binary],
-                env=env,
+        print()
+        print(f"==> Building {label}")
+        suppress_diagnostics = env_truthy(env.get("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS", ""))
+        compile_flags = [
+            "g++",
+            "-std=c++17",
+            "-O3",
+        ]
+        if suppress_diagnostics:
+            compile_flags.append("-w")
+        else:
+            compile_flags.extend(["-Wall", "-Wextra"])
+        completed = subprocess.run(
+            [*compile_flags, source, "-o", binary],
+            cwd=str(REPO_ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if completed.returncode != 0:
+            reason = _extract_compile_failure_reason(completed.stdout, int(completed.returncode))
+            _remove_binary_outputs(binary)
+            print(f"Skipping {label} ({source}): {reason}")
+            skipped.append(
+                {
+                    "variant_id": variant_id,
+                    "label": label,
+                    "source_path": source,
+                    "binary_path": binary,
+                    "reason": reason,
+                }
             )
-
-        run_step(f"Building {label}", _build)
+            continue
+    return skipped
 
 
 def run_vf3_smoke_test(python_exe: str, env: dict[str, str]) -> None:
@@ -391,8 +479,17 @@ def maybe_run_glasgow_parity_check(python_exe: str, env: dict[str, str]) -> None
     run_step("Checking Glasgow parity", lambda: run_cmd([python_exe, "scripts/check-glasgow-parity.py"], env=env))
 
 
-def verify_expected_outputs(catalog: dict, solver_discovery) -> None:
+def verify_expected_outputs(catalog: dict, solver_discovery, skipped_variant_ids: set[str] | None = None) -> None:
+    skipped_ids = set(skipped_variant_ids or set())
     binary_rel_paths = set(solver_discovery.iter_binary_paths(catalog, include_baselines=True))
+    if skipped_ids:
+        skipped_paths = {
+            str(row.get("binary_path") or "").strip()
+            for row in (catalog.get("variants") or [])
+            if str(row.get("variant_id") or "").strip() in skipped_ids
+        }
+        skipped_paths = {p for p in skipped_paths if p}
+        binary_rel_paths = {p for p in binary_rel_paths if p not in skipped_paths}
     missing = [rel for rel in sorted(binary_rel_paths) if not output_exists(rel)]
     if missing:
         joined = "\n".join(missing)
@@ -422,6 +519,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     env = dict(os.environ)
+    chosen_tmp = ensure_valid_temp_env(env)
+    print(f"Using temp directory: {chosen_tmp}")
     prefer_msys2_toolchain(env)
 
     ensure_command("git", env)
@@ -474,7 +573,8 @@ def main() -> int:
             env=env,
         ),
     )
-    compile_discovered_variants_for_family(catalog, "dijkstra", env)
+    skipped_variants: list[dict] = []
+    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "dijkstra", env))
 
     vf3_cflags = "-std=c++11 -O2 -DNDEBUG -Wno-deprecated -fno-strict-aliasing -fwrapv"
     if suppress_diagnostics:
@@ -497,8 +597,8 @@ def main() -> int:
     else:
         run_step("VF3 baseline smoke test (small generated subgraph case)", lambda: run_vf3_smoke_test(python_exe, env))
 
-    compile_discovered_variants_for_family(catalog, "vf3", env)
-    compile_discovered_variants_for_family(catalog, "glasgow", env)
+    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "vf3", env))
+    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "glasgow", env))
 
     run_step("Patching Glasgow submodule for MinGW loooong/size_t ambiguity", patch_glasgow_submodule)
 
@@ -551,7 +651,21 @@ def main() -> int:
     else:
         maybe_run_glasgow_parity_check(python_exe, env)
 
-    verify_expected_outputs(catalog, solver_discovery)
+    verify_expected_outputs(
+        catalog,
+        solver_discovery,
+        skipped_variant_ids={str(item.get("variant_id") or "").strip() for item in skipped_variants},
+    )
+
+    if skipped_variants:
+        print()
+        print("Skipped LLM variants due to compile failures:")
+        for item in skipped_variants:
+            label = str(item.get("label") or item.get("variant_id") or "variant")
+            source_path = str(item.get("source_path") or "")
+            reason = str(item.get("reason") or "unknown error")
+            print(f"  - {label} ({source_path})")
+            print(f"    reason: {reason}")
 
     print()
     print("Local build complete.")

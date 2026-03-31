@@ -2244,38 +2244,32 @@ class BenchmarkRunnerApp(tk.Tk):
             return
 
         families = list(dict.fromkeys(v.family for v in variants))
-        role_rank = {"baseline": 0, "chatgpt": 1, "claude": 2, "copilot": 3, "gemini": 4}
 
-        def role_key(variant: SolverVariant):
-            token = variant.variant_id.rsplit("_", 1)[-1].strip().lower()
-            if token in role_rank:
-                return token
-            label_lower = variant.label.lower()
-            if "baseline" in label_lower:
-                return "baseline"
-            if "chatgpt" in label_lower:
-                return "chatgpt"
-            if "claude" in label_lower:
-                return "claude"
-            if "copilot" in label_lower:
-                return "copilot"
-            if "gemini" in label_lower:
-                return "gemini"
-            return token
+        family_label_prefix = {
+            "vf3": "VF3",
+            "glasgow": "Glasgow",
+            "dijkstra": "Dijkstra",
+        }
 
-        def role_label(role: str) -> str:
-            role = str(role or "").strip().lower()
-            if role == "baseline":
-                return "Baseline"
-            if role == "chatgpt":
-                return "ChatGPT"
-            if role == "claude":
-                return "Claude"
-            if role == "copilot":
-                return "Copilot"
-            if role == "gemini":
-                return "Gemini"
-            return " ".join(part.capitalize() for part in role.split("_") if part) or "Unknown"
+        def role_key_and_label(variant: SolverVariant) -> tuple[str, str]:
+            label = str(variant.label or "").strip()
+            lower_label = label.lower()
+            if "baseline" in lower_label or str(variant.variant_id).strip().lower().endswith("_baseline"):
+                return "baseline", "Baseline"
+
+            prefix = family_label_prefix.get(str(variant.family or "").strip().lower(), "")
+            role_text = label
+            if prefix:
+                prefix_space = f"{prefix} "
+                if label.lower().startswith(prefix_space.lower()):
+                    role_text = label[len(prefix_space):].strip()
+
+            if not role_text:
+                parts = str(variant.variant_id or "").split("_", 1)
+                role_text = parts[1].replace("_", " ").strip() if len(parts) > 1 else str(variant.variant_id or "").strip()
+            if not role_text:
+                role_text = "Unknown"
+            return role_text.lower(), role_text
 
         def family_label(family: str) -> str:
             f = str(family or "").strip().lower()
@@ -2287,12 +2281,18 @@ class BenchmarkRunnerApp(tk.Tk):
                 return "Dijkstra (.csv)"
             return f.title()
 
-        role_keys = sorted({role_key(v) for v in variants}, key=lambda r: (role_rank.get(r, 99), r))
-        by_family_role = {(v.family, role_key(v)): v for v in variants}
+        role_display: dict[str, str] = {}
+        by_family_role: dict[tuple[str, str], SolverVariant] = {}
+        for variant in variants:
+            key, display = role_key_and_label(variant)
+            role_display.setdefault(key, display)
+            by_family_role[(variant.family, key)] = variant
+
+        role_keys = sorted(role_display.keys(), key=lambda r: (0 if r == "baseline" else 1, role_display.get(r, r).lower()))
 
         ttk.Label(vars_frame, text="Family", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, padx=(0, 8), pady=(0, 6), sticky="w")
         for col, role in enumerate(role_keys, start=1):
-            ttk.Label(vars_frame, text=role_label(role), font=("Segoe UI", 9, "bold")).grid(row=0, column=col, padx=(0, 12), pady=(0, 6), sticky="w")
+            ttk.Label(vars_frame, text=role_display.get(role, role), font=("Segoe UI", 9, "bold")).grid(row=0, column=col, padx=(0, 12), pady=(0, 6), sticky="w")
 
         for row, family in enumerate(families, start=1):
             ttk.Label(vars_frame, text=family_label(family)).grid(row=row, column=0, padx=(0, 8), pady=(0, 6), sticky="w")
