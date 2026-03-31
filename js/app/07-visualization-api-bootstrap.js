@@ -332,6 +332,19 @@
                 if (Number.isFinite(Number(vis.node_count)) && Number.isFinite(Number(vis.edge_count))) {
                     noteParts.push(`Nodes: ${vis.node_count}, Edges: ${vis.edge_count}`);
                 }
+                if (String(vis.algorithm || '').trim().toLowerCase() === 'dijkstra') {
+                    const startNode = (vis.start_node ?? vis.start_label ?? '').toString().trim();
+                    const endNode = (vis.end_node ?? vis.target_label ?? '').toString().trim();
+                    const pathLenRaw = vis.shortest_path_length;
+                    const pathLen = Number.isFinite(Number(pathLenRaw)) ? Number(pathLenRaw) : null;
+                    const spParts = [];
+                    if (startNode) spParts.push(`Start: ${startNode}`);
+                    if (endNode) spParts.push(`End: ${endNode}`);
+                    if (pathLen !== null) spParts.push(`Path Length: ${pathLen}`);
+                    if (spParts.length) {
+                        noteParts.push(spParts.join(', '));
+                    }
+                }
                 if (vis.truncated) {
                     noteParts.push('Showing up to 4000 nodes and 4000 edges.');
                 }

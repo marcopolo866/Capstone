@@ -1,275 +1,212 @@
+#include <iostream>
 #include <vector>
-#include <unordered_set>
+#include <fstream>
 #include <algorithm>
-#include <climits>
-#include <cstdio>
-#include <cstdlib>
+#include <cstdint>
+#include <functional>
+#include <string>
+
 using namespace std;
 
-// ── Graph representation ──────────────────────────────────────────────────────
-
 struct Graph {
-    int n;
+    int n = 0;
     vector<int> label;
-    vector<vector<int>> out, in;
-    vector<unordered_set<int>> outSet, inSet;
-
-    void init(int _n) {
-        n = _n;
-        label.resize(n);
-        out.resize(n); in.resize(n);
-        outSet.resize(n); inSet.resize(n);
-    }
-
-    void addEdge(int u, int v) {
-        out[u].push_back(v);
-        in[v].push_back(u);
-        outSet[u].insert(v);
-        inSet[v].insert(u);
-    }
-
-    bool hasEdge(int u, int v) const { return outSet[u].count(v) > 0; }
-    int outDeg(int u) const { return (int)out[u].size(); }
-    int inDeg(int u)  const { return (int)in[u].size(); }
+    vector<vector<int>> out;
+    vector<vector<int>> in;
 };
 
-Graph readGraph(const char* path) {
-    FILE* f = fopen(path, "r");
-    if (!f) { fprintf(stderr, "Cannot open %s\n", path); exit(1); }
-    int n; fscanf(f, "%d", &n);
-    Graph g; g.init(n);
-    for (int i = 0; i < n; i++) {
-        int id, lbl; fscanf(f, "%d %d", &id, &lbl);
+static bool read_graph(const string &filename, Graph &g) {
+    ifstream fin(filename);
+    if (!fin) return false;
+    if (!(fin >> g.n)) return false;
+    if (g.n < 0 || g.n > 1000000) return false;
+
+    g.label.assign(g.n, 0);
+    g.out.assign(g.n, {});
+    g.in.assign(g.n, {});
+
+    for (int i = 0; i < g.n; i++) {
+        int id = -1, lbl = 0;
+        if (!(fin >> id >> lbl)) return false;
+        if (id < 0 || id >= g.n) return false;
         g.label[id] = lbl;
     }
-    for (int i = 0; i < n; i++) {
-        int k; fscanf(f, "%d", &k);
+
+    for (int i = 0; i < g.n; i++) {
+        int k = 0;
+        if (!(fin >> k)) return false;
+        if (k < 0) return false;
         for (int j = 0; j < k; j++) {
-            int u, v; fscanf(f, "%d %d", &u, &v);
-            g.addEdge(u, v);
+            int u = -1, v = -1;
+            if (!(fin >> u >> v)) return false;
+            if (u < 0 || u >= g.n || v < 0 || v >= g.n) return false;
+            g.out[u].push_back(v);
+            g.in[v].push_back(u);
         }
     }
-    fclose(f);
-    return g;
+
+    // Sort adjacency for binary search
+    for (int i = 0; i < g.n; i++) {
+        sort(g.out[i].begin(), g.out[i].end());
+        sort(g.in[i].begin(), g.in[i].end());
+    }
+
+    return true;
 }
 
-// ── Matching order ────────────────────────────────────────────────────────────
-// Greedy: at each step pick the unordered node with most connections
-// to already-ordered nodes. Tie-break: highest total degree.
+// Binary search edge existence
+inline bool has_edge(const vector<vector<int>> &adj, int u, int v) {
+    const auto &vec = adj[u];
+    return binary_search(vec.begin(), vec.end(), v);
+}
 
-vector<int> computeMatchingOrder(const Graph& H) {
-    int n = H.n;
-    vector<bool> inOrder(n, false);
-    vector<int> order;
-    order.reserve(n);
-    vector<int> connScore(n, 0);
+int main(int argc, char **argv) {
+    bool first_only = false;
+    vector<string> positional;
+    positional.reserve(static_cast<size_t>(max(0, argc - 1)));
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i] ? string(argv[i]) : string();
+        if (arg == "--non-induced") continue; // backwards-compatible no-op
+        if (arg == "--induced") continue; // all solvers are non-induced
+        if (arg == "--first-only") { first_only = true; continue; }
+        positional.push_back(arg);
+    }
 
-    auto totalDeg = [&](int u) { return H.outDeg(u) + H.inDeg(u); };
+    if (positional.size() != 2) {
+        cerr << "Usage: ./solver pattern target\n";
+        return 1;
+    }
 
-    int start = 0;
-    for (int i = 1; i < n; i++)
-        if (totalDeg(i) > totalDeg(start)) start = i;
+    Graph H, G;
+    if (!read_graph(positional[0], H) || !read_graph(positional[1], G)) {
+        cerr << "Failed to parse graph input(s).\n";
+        return 1;
+    }
 
-    auto addNode = [&](int u) {
-        order.push_back(u); inOrder[u] = true;
-        for (int v : H.out[u]) if (!inOrder[v]) connScore[v]++;
-        for (int v : H.in[u])  if (!inOrder[v]) connScore[v]++;
-    };
+    const int nH = H.n;
+    const int nG = G.n;
 
-    addNode(start);
-    while ((int)order.size() < n) {
+    // Precompute degrees
+    vector<int> H_out_deg(nH), H_in_deg(nH);
+    vector<int> G_out_deg(nG), G_in_deg(nG);
+
+    for (int i = 0; i < nH; i++) {
+        H_out_deg[i] = H.out[i].size();
+        H_in_deg[i] = H.in[i].size();
+    }
+    for (int i = 0; i < nG; i++) {
+        G_out_deg[i] = G.out[i].size();
+        G_in_deg[i] = G.in[i].size();
+    }
+
+    // Initial candidate sets
+    vector<vector<int>> candidates(nH);
+    for (int u = 0; u < nH; u++) {
+        for (int v = 0; v < nG; v++) {
+            if (H.label[u] == G.label[v] &&
+                H_out_deg[u] <= G_out_deg[v] &&
+                H_in_deg[u] <= G_in_deg[v]) {
+                candidates[u].push_back(v);
+            }
+        }
+    }
+
+    vector<int> mapping(nH, -1);
+    vector<bool> used(nG, false);
+
+    int64_t total = 0;
+
+    // Order selection: smallest domain
+    auto select_node = [&](const vector<vector<int>> &cand) {
         int best = -1;
-        for (int u = 0; u < n; u++) {
-            if (inOrder[u]) continue;
-            if (best == -1 ||
-                connScore[u] > connScore[best] ||
-                (connScore[u] == connScore[best] && totalDeg(u) > totalDeg(best)))
-                best = u;
+        size_t best_size = SIZE_MAX;
+        for (int i = 0; i < nH; i++) {
+            if (mapping[i] == -1) {
+                if (cand[i].size() < best_size) {
+                    best_size = cand[i].size();
+                    best = i;
+                }
+            }
         }
-        addNode(best);
-    }
-    return order;
-}
-
-// ── Solver ────────────────────────────────────────────────────────────────────
-
-struct Solver {
-    const Graph& H;
-    const Graph& G;
-    int hn, gn;
-
-    vector<int> order;
-    vector<int> posInOrder;
-
-    // For each depth d, precomputed relationship to all j < d:
-    struct DepthInfo {
-        vector<int> pred;  // j where order[j]->order[d] in H
-        vector<int> succ;  // j where order[d]->order[j] in H
-        vector<int> none;  // j where no edge in H (neither direction)
-        // "both" edges: j appears in both pred and succ
+        return best;
     };
-    vector<DepthInfo> di;
 
-    vector<int> hToG;
-    vector<bool> used;
-    long long count;
+    // Recursive search
+    function<bool(vector<vector<int>> &)> dfs =
+    [&](vector<vector<int>> &cand) {
 
-    Solver(const Graph& _H, const Graph& _G)
-        : H(_H), G(_G), hn(_H.n), gn(_G.n), count(0)
-    {
-        order = computeMatchingOrder(H);
-        posInOrder.resize(hn);
-        for (int i = 0; i < hn; i++) posInOrder[order[i]] = i;
-
-        di.resize(hn);
-        for (int i = 0; i < hn; i++) {
-            int u = order[i];
-            for (int j = 0; j < i; j++) {
-                int v = order[j];
-                bool vu = H.hasEdge(v, u);
-                bool uv = H.hasEdge(u, v);
-                if (vu) di[i].pred.push_back(j);
-                if (uv) di[i].succ.push_back(j);
-                if (!vu && !uv) di[i].none.push_back(j);
-            }
+        int u = select_node(cand);
+        if (u == -1) {
+            total++;
+            return first_only;
         }
 
-        hToG.resize(hn, -1);
-        used.resize(gn, false);
-    }
+        auto current_candidates = cand[u];
 
-    bool getCandidates(int depth, vector<int>& cands) {
-        int hu = order[depth];
-        int lbl     = H.label[hu];
-        int needOut = H.outDeg(hu);
-        int needIn  = H.inDeg(hu);
+        for (int v : current_candidates) {
+            if (used[v]) continue;
 
-        const auto& pp = di[depth].pred;
-        const auto& ps = di[depth].succ;
+            bool ok = true;
 
-        if (pp.empty() && ps.empty()) {
-            for (int gv = 0; gv < gn; gv++) {
-                if (!used[gv] && G.label[gv] == lbl &&
-                    G.outDeg(gv) >= needOut && G.inDeg(gv) >= needIn)
-                    cands.push_back(gv);
-            }
-        } else {
-            // Find smallest anchoring set
-            int bestJ = -1;
-            int bestSz = INT_MAX;
-            bool bestIsPred = true;
+            // Check consistency with assigned nodes
+            for (int u2 = 0; u2 < nH && ok; u2++) {
+                if (mapping[u2] != -1) {
+                    int v2 = mapping[u2];
 
-            for (int j : pp) {
-                int sz = (int)G.out[hToG[order[j]]].size();
-                if (sz < bestSz) { bestSz = sz; bestJ = j; bestIsPred = true; }
-            }
-            for (int j : ps) {
-                int sz = (int)G.in[hToG[order[j]]].size();
-                if (sz < bestSz) { bestSz = sz; bestJ = j; bestIsPred = false; }
-            }
-
-            if (bestIsPred) {
-                int gj = hToG[order[bestJ]];
-                for (int gv : G.out[gj]) {
-                    if (!used[gv] && G.label[gv] == lbl &&
-                        G.outDeg(gv) >= needOut && G.inDeg(gv) >= needIn)
-                        cands.push_back(gv);
-                }
-            } else {
-                int gj = hToG[order[bestJ]];
-                for (int gv : G.in[gj]) {
-                    if (!used[gv] && G.label[gv] == lbl &&
-                        G.outDeg(gv) >= needOut && G.inDeg(gv) >= needIn)
-                        cands.push_back(gv);
+                    // Edge preservation
+                    if (has_edge(H.out, u, u2) && !has_edge(G.out, v, v2)) ok = false;
+                    if (has_edge(H.out, u2, u) && !has_edge(G.out, v2, v)) ok = false;
                 }
             }
-            if (cands.empty()) return false;
 
-            // Intersect with remaining pred constraints
-            for (int j : pp) {
-                if (j == bestJ && bestIsPred) continue;
-                int gj = hToG[order[j]];
-                size_t w = 0;
-                for (size_t r = 0; r < cands.size(); r++)
-                    if (G.hasEdge(gj, cands[r])) cands[w++] = cands[r];
-                cands.resize(w);
-                if (cands.empty()) return false;
+            if (!ok) continue;
+
+            // Save state
+            mapping[u] = v;
+            used[v] = true;
+
+            vector<vector<int>> new_cand = cand;
+
+            // Forward pruning
+            for (int u2 = 0; u2 < nH; u2++) {
+                if (mapping[u2] != -1) continue;
+
+                vector<int> filtered;
+                for (int v2 : new_cand[u2]) {
+                    if (used[v2]) continue;
+
+                    bool keep = true;
+
+                    // Check edge constraints with new mapping
+                    if (has_edge(H.out, u, u2) && !has_edge(G.out, v, v2)) keep = false;
+                    if (has_edge(H.out, u2, u) && !has_edge(G.out, v2, v)) keep = false;
+
+                    if (keep) filtered.push_back(v2);
+                }
+
+                new_cand[u2].swap(filtered);
+
+                if (new_cand[u2].empty()) {
+                    ok = false;
+                    break;
+                }
             }
 
-            // Intersect with remaining succ constraints
-            for (int j : ps) {
-                if (j == bestJ && !bestIsPred) continue;
-                int gj = hToG[order[j]];
-                size_t w = 0;
-                for (size_t r = 0; r < cands.size(); r++)
-                    if (G.hasEdge(cands[r], gj)) cands[w++] = cands[r];
-                cands.resize(w);
-                if (cands.empty()) return false;
+            if (ok && dfs(new_cand)) {
+                mapping[u] = -1;
+                used[v] = false;
+                return true;
             }
-        }
-        return !cands.empty();
-    }
 
-    // Check node-induced constraint: no extra edges in G not in H.
-    // getCandidates already enforced all required edges (pred + succ).
-    // We only need to check "no-edge" pairs and "reverse" of one-directional edges.
-    bool checkInduced(int depth, int gv) {
-        int hu = order[depth];
-
-        // No-edge pairs: neither direction
-        for (int j : di[depth].none) {
-            int gj = hToG[order[j]];
-            if (G.hasEdge(gv, gj) || G.hasEdge(gj, gv)) return false;
+            mapping[u] = -1;
+            used[v] = false;
         }
 
-        // One-directional pred edges (v->u in H, not u->v):
-        // getCandidates ensured G.hasEdge(gj, gv). Check ~G.hasEdge(gv, gj).
-        for (int j : di[depth].pred) {
-            int hv = order[j];
-            if (!H.hasEdge(hu, hv)) { // only one direction (hv->hu)
-                if (G.hasEdge(gv, hToG[hv])) return false;
-            }
-            // If both directions, succ will handle the other check
-        }
+        return false;
+    };
 
-        // One-directional succ edges (u->v in H, not v->u):
-        // getCandidates ensured G.hasEdge(gv, gj). Check ~G.hasEdge(gj, gv).
-        for (int j : di[depth].succ) {
-            int hv = order[j];
-            if (!H.hasEdge(hv, hu)) { // only one direction (hu->hv)
-                if (G.hasEdge(hToG[hv], gv)) return false;
-            }
-        }
+    dfs(candidates);
 
-        return true;
-    }
-
-    void search(int depth) {
-        if (depth == hn) { count++; return; }
-
-        vector<int> cands;
-        cands.reserve(64);
-        if (!getCandidates(depth, cands)) return;
-
-        int hu = order[depth];
-        for (int gv : cands) {
-            if (!checkInduced(depth, gv)) continue;
-            hToG[hu] = gv;
-            used[gv] = true;
-            search(depth + 1);
-            used[gv] = false;
-        }
-        hToG[hu] = -1;
-    }
-
-    long long solve() { count = 0; search(0); return count; }
-};
-
-int main(int argc, char* argv[]) {
-    if (argc < 3) { fprintf(stderr, "Usage: %s <pattern> <target>\n", argv[0]); return 1; }
-    Graph H = readGraph(argv[1]);
-    Graph G = readGraph(argv[2]);
-    Solver solver(H, G);
-    printf("%lld\n", solver.solve());
+    cout << total << "\n";
     return 0;
 }

@@ -1,241 +1,212 @@
 #include <iostream>
 #include <vector>
 #include <fstream>
-#include <cstdint>
 #include <algorithm>
+#include <cstdint>
+#include <functional>
 #include <string>
 
 using namespace std;
 
-// ----------- Bitset (dynamic, fast) -----------
-struct Bitset {
-    vector<uint64_t> w;
-    int n;
-
-    Bitset() {}
-    Bitset(int n_) : n(n_), w((n_ + 63) >> 6, 0) {}
-
-    inline void set(int i) { w[i >> 6] |= (1ULL << (i & 63)); }
-    inline void reset(int i) { w[i >> 6] &= ~(1ULL << (i & 63)); }
-    inline bool test(int i) const { return (w[i >> 6] >> (i & 63)) & 1ULL; }
-
-    inline void fill() {
-        for (auto &x : w) x = ~0ULL;
-        trim();
-    }
-
-    inline void clear() {
-        for (auto &x : w) x = 0;
-    }
-
-    inline void trim() {
-        int extra = (w.size() << 6) - n;
-        if (extra > 0)
-            w.back() &= (~0ULL >> extra);
-    }
-
-    inline int count() const {
-        int c = 0;
-        for (auto x : w) c += __builtin_popcountll(x);
-        return c;
-    }
-
-    inline bool empty() const {
-        for (auto x : w) if (x) return false;
-        return true;
-    }
-
-    inline void intersect(const Bitset &o) {
-        for (size_t i = 0; i < w.size(); i++) w[i] &= o.w[i];
-    }
-
-    inline void subtract(const Bitset &o) {
-        for (size_t i = 0; i < w.size(); i++) w[i] &= ~o.w[i];
-    }
-};
-
-// ----------- Graph -----------
 struct Graph {
-    int n;
+    int n = 0;
     vector<int> label;
-    vector<Bitset> out, in;
+    vector<vector<int>> out;
+    vector<vector<int>> in;
 };
 
-Graph read_graph(const string &path) {
-    ifstream fin(path);
-    Graph g;
-    fin >> g.n;
-    g.label.resize(g.n);
+static bool read_graph(const string &filename, Graph &g) {
+    ifstream fin(filename);
+    if (!fin) return false;
+    if (!(fin >> g.n)) return false;
+    if (g.n < 0 || g.n > 1000000) return false;
+
+    g.label.assign(g.n, 0);
+    g.out.assign(g.n, {});
+    g.in.assign(g.n, {});
 
     for (int i = 0; i < g.n; i++) {
-        int id, l;
-        fin >> id >> l;
-        g.label[id] = l;
+        int id = -1, lbl = 0;
+        if (!(fin >> id >> lbl)) return false;
+        if (id < 0 || id >= g.n) return false;
+        g.label[id] = lbl;
     }
 
-    g.out.assign(g.n, Bitset(g.n));
-    g.in.assign(g.n, Bitset(g.n));
-
     for (int i = 0; i < g.n; i++) {
-        int k;
-        fin >> k;
+        int k = 0;
+        if (!(fin >> k)) return false;
+        if (k < 0) return false;
         for (int j = 0; j < k; j++) {
-            int u, v;
-            fin >> u >> v;
-            g.out[u].set(v);
-            g.in[v].set(u);
+            int u = -1, v = -1;
+            if (!(fin >> u >> v)) return false;
+            if (u < 0 || u >= g.n || v < 0 || v >= g.n) return false;
+            g.out[u].push_back(v);
+            g.in[v].push_back(u);
         }
     }
 
-    return g;
-}
-
-// ----------- Solver State -----------
-Graph H, G;
-
-vector<Bitset> cand;   // candidate sets
-vector<int> matchH;    // H -> G
-vector<int> matchG;    // G -> H
-
-long long solution_count = 0;
-
-// ----------- Initial Filtering -----------
-void initial_filter() {
-    for (int u = 0; u < H.n; u++) {
-        for (int v = 0; v < G.n; v++) {
-            if (H.label[u] != G.label[v]) continue;
-
-            // degree pruning
-            if (H.out[u].count() > G.out[v].count()) continue;
-            if (H.in[u].count() > G.in[v].count()) continue;
-
-            cand[u].set(v);
-        }
-    }
-}
-
-// ----------- Propagation -----------
-bool propagate() {
-    bool changed = true;
-
-    while (changed) {
-        changed = false;
-
-        for (int u = 0; u < H.n; u++) {
-            if (matchH[u] != -1) continue;
-
-            Bitset newC = cand[u];
-
-            // enforce adjacency with matched nodes
-            for (int v = 0; v < H.n; v++) {
-                if (matchH[v] == -1) continue;
-
-                int gv = matchH[v];
-
-                if (H.out[u].test(v)) {
-                    newC.intersect(G.in[gv]);
-                } else {
-                    newC.subtract(G.in[gv]);
-                }
-
-                if (H.out[v].test(u)) {
-                    newC.intersect(G.out[gv]);
-                } else {
-                    newC.subtract(G.out[gv]);
-                }
-            }
-
-            if (newC.empty()) return false;
-
-            // detect change
-            for (size_t i = 0; i < newC.w.size(); i++) {
-                if (newC.w[i] != cand[u].w[i]) {
-                    cand[u] = newC;
-                    changed = true;
-                    break;
-                }
-            }
-        }
+    // Sort adjacency for binary search
+    for (int i = 0; i < g.n; i++) {
+        sort(g.out[i].begin(), g.out[i].end());
+        sort(g.in[i].begin(), g.in[i].end());
     }
 
     return true;
 }
 
-// ----------- Select Next Variable -----------
-int select_node() {
-    int best = -1;
-    int bestSize = 1e9;
-
-    for (int i = 0; i < H.n; i++) {
-        if (matchH[i] != -1) continue;
-
-        int sz = cand[i].count();
-        if (sz < bestSize) {
-            bestSize = sz;
-            best = i;
-        }
-    }
-
-    return best;
+// Binary search edge existence
+inline bool has_edge(const vector<vector<int>> &adj, int u, int v) {
+    const auto &vec = adj[u];
+    return binary_search(vec.begin(), vec.end(), v);
 }
 
-// ----------- DFS -----------
-void dfs() {
-    if (!propagate()) return;
-
-    int u = select_node();
-    if (u == -1) {
-        solution_count++;
-        return;
+int main(int argc, char **argv) {
+    bool first_only = false;
+    vector<string> positional;
+    positional.reserve(static_cast<size_t>(max(0, argc - 1)));
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i] ? string(argv[i]) : string();
+        if (arg == "--non-induced") continue; // backwards-compatible no-op
+        if (arg == "--induced") continue; // all solvers are non-induced
+        if (arg == "--first-only") { first_only = true; continue; }
+        positional.push_back(arg);
     }
 
-    Bitset options = cand[u];
-
-    for (int v = 0; v < G.n; v++) {
-        if (!options.test(v)) continue;
-        if (matchG[v] != -1) continue;
-
-        // save state
-        auto cand_backup = cand;
-        auto matchH_backup = matchH;
-        auto matchG_backup = matchG;
-
-        // assign
-        matchH[u] = v;
-        matchG[v] = u;
-
-        // enforce injectivity
-        for (int i = 0; i < H.n; i++) {
-            if (i != u) cand[i].reset(v);
-        }
-
-        dfs();
-
-        // restore
-        cand = cand_backup;
-        matchH = matchH_backup;
-        matchG = matchG_backup;
-    }
-}
-
-// ----------- Main -----------
-int main(int argc, char** argv) {
-    if (argc != 3) {
+    if (positional.size() != 2) {
         cerr << "Usage: ./solver pattern target\n";
         return 1;
     }
 
-    H = read_graph(argv[1]);
-    G = read_graph(argv[2]);
+    Graph H, G;
+    if (!read_graph(positional[0], H) || !read_graph(positional[1], G)) {
+        cerr << "Failed to parse graph input(s).\n";
+        return 1;
+    }
 
-    cand.assign(H.n, Bitset(G.n));
-    matchH.assign(H.n, -1);
-    matchG.assign(G.n, -1);
+    const int nH = H.n;
+    const int nG = G.n;
 
-    initial_filter();
+    // Precompute degrees
+    vector<int> H_out_deg(nH), H_in_deg(nH);
+    vector<int> G_out_deg(nG), G_in_deg(nG);
 
-    dfs();
+    for (int i = 0; i < nH; i++) {
+        H_out_deg[i] = H.out[i].size();
+        H_in_deg[i] = H.in[i].size();
+    }
+    for (int i = 0; i < nG; i++) {
+        G_out_deg[i] = G.out[i].size();
+        G_in_deg[i] = G.in[i].size();
+    }
 
-    cout << solution_count << "\n";
+    // Initial candidate sets
+    vector<vector<int>> candidates(nH);
+    for (int u = 0; u < nH; u++) {
+        for (int v = 0; v < nG; v++) {
+            if (H.label[u] == G.label[v] &&
+                H_out_deg[u] <= G_out_deg[v] &&
+                H_in_deg[u] <= G_in_deg[v]) {
+                candidates[u].push_back(v);
+            }
+        }
+    }
+
+    vector<int> mapping(nH, -1);
+    vector<bool> used(nG, false);
+
+    int64_t total = 0;
+
+    // Order selection: smallest domain
+    auto select_node = [&](const vector<vector<int>> &cand) {
+        int best = -1;
+        size_t best_size = SIZE_MAX;
+        for (int i = 0; i < nH; i++) {
+            if (mapping[i] == -1) {
+                if (cand[i].size() < best_size) {
+                    best_size = cand[i].size();
+                    best = i;
+                }
+            }
+        }
+        return best;
+    };
+
+    // Recursive search
+    function<bool(vector<vector<int>> &)> dfs =
+    [&](vector<vector<int>> &cand) {
+
+        int u = select_node(cand);
+        if (u == -1) {
+            total++;
+            return first_only;
+        }
+
+        auto current_candidates = cand[u];
+
+        for (int v : current_candidates) {
+            if (used[v]) continue;
+
+            bool ok = true;
+
+            // Check consistency with assigned nodes
+            for (int u2 = 0; u2 < nH && ok; u2++) {
+                if (mapping[u2] != -1) {
+                    int v2 = mapping[u2];
+
+                    // Edge preservation
+                    if (has_edge(H.out, u, u2) && !has_edge(G.out, v, v2)) ok = false;
+                    if (has_edge(H.out, u2, u) && !has_edge(G.out, v2, v)) ok = false;
+                }
+            }
+
+            if (!ok) continue;
+
+            // Save state
+            mapping[u] = v;
+            used[v] = true;
+
+            vector<vector<int>> new_cand = cand;
+
+            // Forward pruning
+            for (int u2 = 0; u2 < nH; u2++) {
+                if (mapping[u2] != -1) continue;
+
+                vector<int> filtered;
+                for (int v2 : new_cand[u2]) {
+                    if (used[v2]) continue;
+
+                    bool keep = true;
+
+                    // Check edge constraints with new mapping
+                    if (has_edge(H.out, u, u2) && !has_edge(G.out, v, v2)) keep = false;
+                    if (has_edge(H.out, u2, u) && !has_edge(G.out, v2, v)) keep = false;
+
+                    if (keep) filtered.push_back(v2);
+                }
+
+                new_cand[u2].swap(filtered);
+
+                if (new_cand[u2].empty()) {
+                    ok = false;
+                    break;
+                }
+            }
+
+            if (ok && dfs(new_cand)) {
+                mapping[u] = -1;
+                used[v] = false;
+                return true;
+            }
+
+            mapping[u] = -1;
+            used[v] = false;
+        }
+
+        return false;
+    };
+
+    dfs(candidates);
+
+    cout << total << "\n";
     return 0;
 }

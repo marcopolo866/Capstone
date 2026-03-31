@@ -2,168 +2,211 @@
 #include <vector>
 #include <fstream>
 #include <algorithm>
-#include <map>
-#include <set>
+#include <cstdint>
+#include <functional>
+#include <string>
 
-/**
- * High-Performance Induced Subgraph Isomorphism Solver
- * * Strategy:
- * 1. Pre-filtering: Degree and Label consistency.
- * 2. Bitset-based Candidate sets: Using std::vector<bool> for memory-efficient 
- * intersection and pruning.
- * 3. Dynamic Ordering: Smallest Candidate Set First (SCSF) at each step.
- * 4. Constraint Propagation: When u is mapped to v, all neighbors of u
- * must map to neighbors of v (and non-neighbors to non-neighbors).
- */
+using namespace std;
 
 struct Graph {
-    int n;
-    std::vector<int> labels;
-    std::vector<std::vector<int>> adj; // Outgoing
-    std::vector<std::vector<int>> rev_adj; // Incoming
-    std::vector<std::vector<bool>> matrix; // For O(1) edge lookup
-
-    Graph(int nodes) : n(nodes), labels(nodes, 0), adj(nodes), rev_adj(nodes), 
-                       matrix(nodes, std::vector<bool>(nodes, false)) {}
+    int n = 0;
+    vector<int> label;
+    vector<vector<int>> out;
+    vector<vector<int>> in;
 };
 
-Graph load_graph(const std::string& filename) {
-    std::ifstream infile(filename);
-    if (!infile.is_open()) exit(1);
-    int n;
-    infile >> n;
-    Graph g(n);
-    for (int i = 0; i < n; ++i) {
-        int id, label;
-        infile >> id >> label;
-        g.labels[id] = label;
+static bool read_graph(const string &filename, Graph &g) {
+    ifstream fin(filename);
+    if (!fin) return false;
+    if (!(fin >> g.n)) return false;
+    if (g.n < 0 || g.n > 1000000) return false;
+
+    g.label.assign(g.n, 0);
+    g.out.assign(g.n, {});
+    g.in.assign(g.n, {});
+
+    for (int i = 0; i < g.n; i++) {
+        int id = -1, lbl = 0;
+        if (!(fin >> id >> lbl)) return false;
+        if (id < 0 || id >= g.n) return false;
+        g.label[id] = lbl;
     }
-    for (int i = 0; i < n; ++i) {
-        int k;
-        infile >> k;
-        for (int j = 0; j < k; ++j) {
-            int u, v;
-            infile >> u >> v;
-            g.adj[u].push_back(v);
-            g.rev_adj[v].push_back(u);
-            g.matrix[u][v] = true;
+
+    for (int i = 0; i < g.n; i++) {
+        int k = 0;
+        if (!(fin >> k)) return false;
+        if (k < 0) return false;
+        for (int j = 0; j < k; j++) {
+            int u = -1, v = -1;
+            if (!(fin >> u >> v)) return false;
+            if (u < 0 || u >= g.n || v < 0 || v >= g.n) return false;
+            g.out[u].push_back(v);
+            g.in[v].push_back(u);
         }
     }
-    return g;
+
+    // Sort adjacency for binary search
+    for (int i = 0; i < g.n; i++) {
+        sort(g.out[i].begin(), g.out[i].end());
+        sort(g.in[i].begin(), g.in[i].end());
+    }
+
+    return true;
 }
 
-struct Solver {
-    const Graph& H;
-    const Graph& G;
-    long long total_count = 0;
+// Binary search edge existence
+inline bool has_edge(const vector<vector<int>> &adj, int u, int v) {
+    const auto &vec = adj[u];
+    return binary_search(vec.begin(), vec.end(), v);
+}
 
-    // candidate_sets[h_node][g_node] == true if g_node is a possible match
-    std::vector<std::vector<bool>> candidate_sets;
-    std::vector<int> mapping; // h_node -> g_node (-1 if unmapped)
-    std::vector<bool> g_used; // g_node is already mapped
+int main(int argc, char **argv) {
+    bool first_only = false;
+    vector<string> positional;
+    positional.reserve(static_cast<size_t>(max(0, argc - 1)));
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i] ? string(argv[i]) : string();
+        if (arg == "--non-induced") continue; // backwards-compatible no-op
+        if (arg == "--induced") continue; // all solvers are non-induced
+        if (arg == "--first-only") { first_only = true; continue; }
+        positional.push_back(arg);
+    }
 
-    Solver(const Graph& h, const Graph& g) 
-        : H(h), G(g), candidate_sets(h.n, std::vector<bool>(g.n, false)), 
-          mapping(h.n, -1), g_used(g.n, false) {}
+    if (positional.size() != 2) {
+        cerr << "Usage: ./solver pattern target\n";
+        return 1;
+    }
 
-    // Initial pruning: check labels and degrees (in/out)
-    bool initial_refinement() {
-        if (H.n > G.n) return false;
-        for (int i = 0; i < H.n; ++i) {
-            int valid_count = 0;
-            for (int j = 0; j < G.n; ++j) {
-                if (H.labels[i] == G.labels[j] &&
-                    H.adj[i].size() <= G.adj[j].size() &&
-                    H.rev_adj[i].size() <= G.rev_adj[j].size()) {
-                    candidate_sets[i][j] = true;
-                    valid_count++;
-                }
+    Graph H, G;
+    if (!read_graph(positional[0], H) || !read_graph(positional[1], G)) {
+        cerr << "Failed to parse graph input(s).\n";
+        return 1;
+    }
+
+    const int nH = H.n;
+    const int nG = G.n;
+
+    // Precompute degrees
+    vector<int> H_out_deg(nH), H_in_deg(nH);
+    vector<int> G_out_deg(nG), G_in_deg(nG);
+
+    for (int i = 0; i < nH; i++) {
+        H_out_deg[i] = H.out[i].size();
+        H_in_deg[i] = H.in[i].size();
+    }
+    for (int i = 0; i < nG; i++) {
+        G_out_deg[i] = G.out[i].size();
+        G_in_deg[i] = G.in[i].size();
+    }
+
+    // Initial candidate sets
+    vector<vector<int>> candidates(nH);
+    for (int u = 0; u < nH; u++) {
+        for (int v = 0; v < nG; v++) {
+            if (H.label[u] == G.label[v] &&
+                H_out_deg[u] <= G_out_deg[v] &&
+                H_in_deg[u] <= G_in_deg[v]) {
+                candidates[u].push_back(v);
             }
-            if (valid_count == 0) return false;
         }
-        return true;
     }
 
-    // Induced constraint check: compares edges between mapped nodes
-    bool is_induced_valid(int h_idx, int g_idx) {
-        for (int prev_h = 0; prev_h < H.n; ++prev_h) {
-            int prev_g = mapping[prev_h];
-            if (prev_g == -1) continue;
+    vector<int> mapping(nH, -1);
+    vector<bool> used(nG, false);
 
-            // Edge Preservation H -> G
-            if (H.matrix[h_idx][prev_h] && !G.matrix[g_idx][prev_g]) return false;
-            if (H.matrix[prev_h][h_idx] && !G.matrix[prev_g][g_idx]) return false;
+    int64_t total = 0;
 
-            // Induced check (Extra edge in G not in H)
-            if (G.matrix[g_idx][prev_g] && !H.matrix[h_idx][prev_h]) return false;
-            if (G.matrix[prev_g][g_idx] && !H.matrix[prev_h][h_idx]) return false;
-        }
-        return true;
-    }
-
-    void solve() {
-        if (!initial_refinement()) {
-            std::cout << 0 << std::endl;
-            return;
-        }
-        backtrack(0);
-        std::cout << total_count << std::endl;
-    }
-
-    void backtrack(int matched_count) {
-        if (matched_count == H.n) {
-            total_count++;
-            return;
-        }
-
-        // 1. Dynamic Search Order: Select h_node with smallest candidate set
-        int best_h = -1;
-        int min_candidates = G.n + 1;
-
-        for (int i = 0; i < H.n; ++i) {
+    // Order selection: smallest domain
+    auto select_node = [&](const vector<vector<int>> &cand) {
+        int best = -1;
+        size_t best_size = SIZE_MAX;
+        for (int i = 0; i < nH; i++) {
             if (mapping[i] == -1) {
-                int count = 0;
-                for (int j = 0; j < G.n; ++j) {
-                    if (candidate_sets[i][j] && !g_used[j]) count++;
-                }
-                if (count == 0) return; // Early prune
-                if (count < min_candidates) {
-                    min_candidates = count;
-                    best_h = i;
+                if (cand[i].size() < best_size) {
+                    best_size = cand[i].size();
+                    best = i;
                 }
             }
         }
+        return best;
+    };
 
-        // 2. Try candidates for best_h
-        for (int v = 0; v < G.n; ++v) {
-            if (candidate_sets[best_h][v] && !g_used[v]) {
-                if (is_induced_valid(best_h, v)) {
-                    // Local propagation logic:
-                    // Check if neighbors of best_h can still find matches in neighbors of v
-                    // Since this is induced, we must also satisfy degree/label constraints
-                    
-                    mapping[best_h] = v;
-                    g_used[v] = true;
+    // Recursive search
+    function<bool(vector<vector<int>> &)> dfs =
+    [&](vector<vector<int>> &cand) {
 
-                    backtrack(matched_count + 1);
+        int u = select_node(cand);
+        if (u == -1) {
+            total++;
+            return first_only;
+        }
 
-                    // Reset state
-                    mapping[best_h] = -1;
-                    g_used[v] = false;
+        auto current_candidates = cand[u];
+
+        for (int v : current_candidates) {
+            if (used[v]) continue;
+
+            bool ok = true;
+
+            // Check consistency with assigned nodes
+            for (int u2 = 0; u2 < nH && ok; u2++) {
+                if (mapping[u2] != -1) {
+                    int v2 = mapping[u2];
+
+                    // Edge preservation
+                    if (has_edge(H.out, u, u2) && !has_edge(G.out, v, v2)) ok = false;
+                    if (has_edge(H.out, u2, u) && !has_edge(G.out, v2, v)) ok = false;
                 }
             }
+
+            if (!ok) continue;
+
+            // Save state
+            mapping[u] = v;
+            used[v] = true;
+
+            vector<vector<int>> new_cand = cand;
+
+            // Forward pruning
+            for (int u2 = 0; u2 < nH; u2++) {
+                if (mapping[u2] != -1) continue;
+
+                vector<int> filtered;
+                for (int v2 : new_cand[u2]) {
+                    if (used[v2]) continue;
+
+                    bool keep = true;
+
+                    // Check edge constraints with new mapping
+                    if (has_edge(H.out, u, u2) && !has_edge(G.out, v, v2)) keep = false;
+                    if (has_edge(H.out, u2, u) && !has_edge(G.out, v2, v)) keep = false;
+
+                    if (keep) filtered.push_back(v2);
+                }
+
+                new_cand[u2].swap(filtered);
+
+                if (new_cand[u2].empty()) {
+                    ok = false;
+                    break;
+                }
+            }
+
+            if (ok && dfs(new_cand)) {
+                mapping[u] = -1;
+                used[v] = false;
+                return true;
+            }
+
+            mapping[u] = -1;
+            used[v] = false;
         }
-    }
-};
 
-int main(int argc, char* argv[]) {
-    if (argc < 3) return 1;
+        return false;
+    };
 
-    Graph h = load_graph(argv[1]);
-    Graph g = load_graph(argv[2]);
+    dfs(candidates);
 
-    Solver solver(h, g);
-    solver.solve();
-
+    cout << total << "\n";
     return 0;
 }

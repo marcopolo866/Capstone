@@ -67,6 +67,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         string arg = argv[i] ? string(argv[i]) : string();
         if (arg == "--non-induced") continue; // backwards-compatible no-op
+        if (arg == "--induced") continue; // all solvers are non-induced
         if (arg == "--first-only") { first_only = true; continue; }
         positional.push_back(arg);
     }
@@ -155,10 +156,6 @@ int main(int argc, char **argv) {
                     // Edge preservation
                     if (has_edge(H.out, u, u2) && !has_edge(G.out, v, v2)) ok = false;
                     if (has_edge(H.out, u2, u) && !has_edge(G.out, v2, v)) ok = false;
-
-                    // Node-induced constraint
-                    if (!has_edge(H.out, u, u2) && has_edge(G.out, v, v2)) ok = false;
-                    if (!has_edge(H.out, u2, u) && has_edge(G.out, v2, v)) ok = false;
                 }
             }
 
@@ -183,9 +180,6 @@ int main(int argc, char **argv) {
                     // Check edge constraints with new mapping
                     if (has_edge(H.out, u, u2) && !has_edge(G.out, v, v2)) keep = false;
                     if (has_edge(H.out, u2, u) && !has_edge(G.out, v2, v)) keep = false;
-
-                    if (!has_edge(H.out, u, u2) && has_edge(G.out, v, v2)) keep = false;
-                    if (!has_edge(H.out, u2, u) && has_edge(G.out, v2, v)) keep = false;
 
                     if (keep) filtered.push_back(v2);
                 }

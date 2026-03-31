@@ -6542,7 +6542,21 @@ class BenchmarkRunnerApp(tk.Tk):
 
         iteration_num = int(current.get("iteration") or (self.visualizer_iteration_index + 1))
         seed_val = current.get("seed")
-        fig.suptitle(f"Iteration {iteration_num} | Seed {seed_val}", fontsize=11)
+        title = f"Iteration {iteration_num} | Seed {seed_val}"
+        if str(current.get("algorithm") or "").strip().lower() == "dijkstra":
+            start_node = current.get("start_node", current.get("start_label"))
+            end_node = current.get("end_node", current.get("target_label"))
+            path_len = current.get("shortest_path_length")
+            meta_parts: list[str] = []
+            if start_node is not None and str(start_node).strip() != "":
+                meta_parts.append(f"Start: {start_node}")
+            if end_node is not None and str(end_node).strip() != "":
+                meta_parts.append(f"End: {end_node}")
+            if isinstance(path_len, (int, float)):
+                meta_parts.append(f"Path Length: {int(path_len)}")
+            if meta_parts:
+                title += "\n" + " | ".join(meta_parts)
+        fig.suptitle(title, fontsize=11)
         if not solutions:
             fig.text(0.5, 0.02, "No solutions found for this iteration.", ha="center", va="bottom", color="#B00020")
         fig.tight_layout(rect=(0.0, 0.04, 1.0, 0.95))
@@ -6807,12 +6821,55 @@ class BenchmarkRunnerApp(tk.Tk):
             except Exception:
                 pass
 
-        top_bar = ttk.Frame(popup)
+        page_wrap = ttk.Frame(popup)
+        page_wrap.pack(fill=tk.BOTH, expand=True)
+        page_canvas = tk.Canvas(page_wrap, highlightthickness=0, borderwidth=0)
+        page_scroll_y = ttk.Scrollbar(page_wrap, orient=tk.VERTICAL, command=page_canvas.yview)
+        page_canvas.configure(yscrollcommand=page_scroll_y.set)
+        page_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        page_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+
+        page_frame = ttk.Frame(page_canvas)
+        self.visualizer_fullscreen_scroll_window = page_canvas.create_window((0, 0), window=page_frame, anchor="nw")
+        self.visualizer_fullscreen_scroll_canvas = page_canvas
+        self.visualizer_fullscreen_scroll_xbar = None
+        self.visualizer_fullscreen_scroll_ybar = page_scroll_y
+        page_frame.bind("<Configure>", self._refresh_visualizer_fullscreen_scrollregion)
+
+        def _on_fullscreen_page_canvas_configure(evt):
+            if self.visualizer_fullscreen_scroll_canvas is None:
+                return
+            if self.visualizer_fullscreen_scroll_window is None:
+                return
+            try:
+                self.visualizer_fullscreen_scroll_canvas.itemconfigure(
+                    self.visualizer_fullscreen_scroll_window,
+                    width=max(1, int(evt.width)),
+                )
+            except Exception:
+                pass
+            self._refresh_visualizer_fullscreen_scrollregion()
+
+        page_canvas.bind("<Configure>", _on_fullscreen_page_canvas_configure)
+
+        def _on_fullscreen_mousewheel(evt):
+            canvas = self.visualizer_fullscreen_scroll_canvas
+            if canvas is None:
+                return
+            delta = int(getattr(evt, "delta", 0))
+            if delta:
+                canvas.yview_scroll(int(-delta / 120), "units")
+
+        popup.bind("<MouseWheel>", _on_fullscreen_mousewheel)
+        popup.bind("<Button-4>", lambda _evt: self.visualizer_fullscreen_scroll_canvas and self.visualizer_fullscreen_scroll_canvas.yview_scroll(-1, "units"))
+        popup.bind("<Button-5>", lambda _evt: self.visualizer_fullscreen_scroll_canvas and self.visualizer_fullscreen_scroll_canvas.yview_scroll(1, "units"))
+
+        top_bar = ttk.Frame(page_frame)
         top_bar.pack(fill=tk.X)
         ttk.Label(top_bar, text="Press Esc to exit fullscreen visualizer").pack(side=tk.LEFT, padx=8, pady=6)
         ttk.Button(top_bar, text="Close", command=self._close_visualizer_fullscreen_popup).pack(side=tk.RIGHT, padx=8, pady=4)
 
-        controls = ttk.Frame(popup, padding=(10, 6, 10, 4))
+        controls = ttk.Frame(page_frame, padding=(10, 6, 10, 4))
         controls.pack(fill=tk.X)
         ttk.Label(controls, text="Datapoint Selection:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 2))
         for var_id in ("n", "k", "density"):
@@ -6921,24 +6978,8 @@ class BenchmarkRunnerApp(tk.Tk):
         )
         self.visualizer_fullscreen_global_autoplay_btn.pack(anchor="w", pady=(4, 2))
 
-        host_wrap = ttk.Frame(popup)
-        host_wrap.pack(fill=tk.BOTH, expand=True)
-        host_wrap.grid_rowconfigure(0, weight=1)
-        host_wrap.grid_columnconfigure(0, weight=1)
-        fs_scroll_canvas = tk.Canvas(host_wrap, highlightthickness=0, borderwidth=0)
-        fs_scroll_ybar = ttk.Scrollbar(host_wrap, orient=tk.VERTICAL, command=fs_scroll_canvas.yview)
-        fs_scroll_xbar = ttk.Scrollbar(host_wrap, orient=tk.HORIZONTAL, command=fs_scroll_canvas.xview)
-        fs_scroll_canvas.configure(yscrollcommand=fs_scroll_ybar.set, xscrollcommand=fs_scroll_xbar.set)
-        fs_scroll_canvas.grid(row=0, column=0, sticky="nsew")
-        fs_scroll_ybar.grid(row=0, column=1, sticky="ns")
-        fs_scroll_xbar.grid(row=1, column=0, sticky="ew")
-        host = ttk.Frame(fs_scroll_canvas)
-        self.visualizer_fullscreen_scroll_window = fs_scroll_canvas.create_window((0, 0), window=host, anchor="nw")
-        self.visualizer_fullscreen_scroll_canvas = fs_scroll_canvas
-        self.visualizer_fullscreen_scroll_xbar = fs_scroll_xbar
-        self.visualizer_fullscreen_scroll_ybar = fs_scroll_ybar
-        host.bind("<Configure>", self._refresh_visualizer_fullscreen_scrollregion)
-        fs_scroll_canvas.bind("<Configure>", self._refresh_visualizer_fullscreen_scrollregion)
+        host = ttk.Frame(page_frame)
+        host.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
         self.visualizer_fullscreen_popup = popup
         self.visualizer_fullscreen_host = host
@@ -7889,6 +7930,7 @@ class BenchmarkRunnerApp(tk.Tk):
                     "highlight_nodes": highlight_nodes,
                     "highlight_edges": highlight_edges,
                     "path_labels": [labels[n] for n in path_nodes if 0 <= n < len(labels)],
+                    "path_length": max(0, len(path_nodes) - 1),
                 }
             )
             if len(solutions) >= VISUALIZER_SOLUTION_CAP:
@@ -7922,10 +7964,15 @@ class BenchmarkRunnerApp(tk.Tk):
         }
         if start_label is not None:
             payload["start_label"] = start_label
+            payload["start_node"] = start_label
         if target_label is not None:
             payload["target_label"] = target_label
+            payload["end_node"] = target_label
         if first and first.get("path_labels"):
             payload["shortest_path"] = list(first.get("path_labels"))
+            payload["shortest_path_length"] = int(max(0, len(first.get("path_labels")) - 1))
+        elif first and isinstance(first.get("path_length"), int):
+            payload["shortest_path_length"] = int(first.get("path_length"))
         return payload
 
     def _figure_for_tab(self, tab_key: str):

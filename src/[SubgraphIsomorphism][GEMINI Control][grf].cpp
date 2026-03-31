@@ -2,159 +2,211 @@
 #include <vector>
 #include <fstream>
 #include <algorithm>
-#include <numeric>
+#include <cstdint>
+#include <functional>
+#include <string>
 
 using namespace std;
 
 struct Graph {
-    int n;
-    vector<int> labels;
-    vector<vector<int>> adj;
-    vector<vector<int>> rev_adj;
-    vector<vector<bool>> matrix; // For O(1) induced check
-
-    Graph(const string& filename) {
-        ifstream infile(filename);
-        if (!infile) exit(1);
-        infile >> n;
-        labels.resize(n);
-        adj.resize(n);
-        rev_adj.resize(n);
-        matrix.resize(n, vector<bool>(n, false));
-
-        for (int i = 0; i < n; ++i) {
-            int id, label;
-            infile >> id >> label;
-            labels[id] = label;
-        }
-        for (int i = 0; i < n; ++i) {
-            int k;
-            infile >> k;
-            while (k--) {
-                int u, v;
-                infile >> u >> v;
-                adj[u].push_back(v);
-                rev_adj[v].push_back(u);
-                matrix[u][v] = true;
-            }
-        }
-    }
+    int n = 0;
+    vector<int> label;
+    vector<vector<int>> out;
+    vector<vector<int>> in;
 };
 
-struct Solver {
-    const Graph &H, &G;
-    long long count = 0;
-    vector<int> mapping;     // H node -> G node
-    vector<int> reverse_map; // G node -> H node
-    vector<int> order;       // Search order of H nodes
+static bool read_graph(const string &filename, Graph &g) {
+    ifstream fin(filename);
+    if (!fin) return false;
+    if (!(fin >> g.n)) return false;
+    if (g.n < 0 || g.n > 1000000) return false;
 
-    Solver(const Graph& h, const Graph& g) : H(h), G(g) {
-        mapping.assign(H.n, -1);
-        reverse_map.assign(G.n, -1);
-        compute_order();
+    g.label.assign(g.n, 0);
+    g.out.assign(g.n, {});
+    g.in.assign(g.n, {});
+
+    for (int i = 0; i < g.n; i++) {
+        int id = -1, lbl = 0;
+        if (!(fin >> id >> lbl)) return false;
+        if (id < 0 || id >= g.n) return false;
+        g.label[id] = lbl;
     }
 
-    // Heuristic: Pick next node with most connections to already picked nodes
-    void compute_order() {
-        vector<bool> visited(H.n, false);
-        for (int i = 0; i < H.n; ++i) {
-            int best_node = -1;
-            int max_connections = -1;
-            int max_degree = -1;
-
-            for (int j = 0; j < H.n; ++j) {
-                if (visited[j]) continue;
-                int connections = 0;
-                for (int neighbor : H.adj[j]) if (visited[neighbor]) connections++;
-                for (int neighbor : H.rev_adj[j]) if (visited[neighbor]) connections++;
-                
-                int degree = (int)H.adj[j].size() + (int)H.rev_adj[j].size();
-                if (connections > max_connections || (connections == max_connections && degree > max_degree)) {
-                    max_connections = connections;
-                    max_degree = degree;
-                    best_node = j;
-                }
-            }
-            order.push_back(best_node);
-            visited[best_node] = true;
+    for (int i = 0; i < g.n; i++) {
+        int k = 0;
+        if (!(fin >> k)) return false;
+        if (k < 0) return false;
+        for (int j = 0; j < k; j++) {
+            int u = -1, v = -1;
+            if (!(fin >> u >> v)) return false;
+            if (u < 0 || u >= g.n || v < 0 || v >= g.n) return false;
+            g.out[u].push_back(v);
+            g.in[v].push_back(u);
         }
     }
 
-    bool is_feasible(int h_idx, int g_node, int current_depth) {
-        int h_node = order[current_depth];
-
-        // Label and Degree Pruning
-        if (H.labels[h_node] != G.labels[g_node]) return false;
-        if (H.adj[h_node].size() > G.adj[g_node].size()) return false;
-        if (H.rev_adj[h_node].size() > G.rev_adj[g_node].size()) return false;
-
-        // Induced Subgraph Check
-        for (int i = 0; i < current_depth; ++i) {
-            int prev_h = order[i];
-            int prev_g = mapping[prev_h];
-
-            // Edge H(prev->curr) must match G(prev->curr)
-            if (H.matrix[prev_h][h_node] != G.matrix[prev_g][g_node]) return false;
-            // Edge H(curr->prev) must match G(curr->prev)
-            if (H.matrix[h_node][prev_h] != G.matrix[g_node][prev_g]) return false;
-        }
-        return true;
+    // Sort adjacency for binary search
+    for (int i = 0; i < g.n; i++) {
+        sort(g.out[i].begin(), g.out[i].end());
+        sort(g.in[i].begin(), g.in[i].end());
     }
 
-    void backtrack(int depth) {
-        if (depth == H.n) {
-            count++;
-            return;
-        }
+    return true;
+}
 
-        int h_node = order[depth];
-        
-        // Refined candidate selection: 
-        // If h_node has an edge from a previously mapped node, only check neighbors of that node in G.
-        int anchor_h = -1;
-        for(int i=0; i < depth; ++i) {
-            if(H.matrix[order[i]][h_node]) { anchor_h = order[i]; break; }
-        }
+// Binary search edge existence
+inline bool has_edge(const vector<vector<int>> &adj, int u, int v) {
+    const auto &vec = adj[u];
+    return binary_search(vec.begin(), vec.end(), v);
+}
 
-        if (anchor_h != -1) {
-            int anchor_g = mapping[anchor_h];
-            for (int g_cand : G.adj[anchor_g]) {
-                if (reverse_map[g_cand] == -1 && is_feasible(h_node, g_cand, depth)) {
-                    mapping[h_node] = g_cand;
-                    reverse_map[g_cand] = h_node;
-                    backtrack(depth + 1);
-                    reverse_map[g_cand] = -1;
-                    mapping[h_node] = -1;
-                }
-            }
-        } else {
-            // No incoming edges from mapped nodes (could be start of component or isolated)
-            for (int g_cand = 0; g_cand < G.n; ++g_cand) {
-                if (reverse_map[g_cand] == -1 && is_feasible(h_node, g_cand, depth)) {
-                    mapping[h_node] = g_cand;
-                    reverse_map[g_cand] = h_node;
-                    backtrack(depth + 1);
-                    reverse_map[g_cand] = -1;
-                    mapping[h_node] = -1;
-                }
+int main(int argc, char **argv) {
+    bool first_only = false;
+    vector<string> positional;
+    positional.reserve(static_cast<size_t>(max(0, argc - 1)));
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i] ? string(argv[i]) : string();
+        if (arg == "--non-induced") continue; // backwards-compatible no-op
+        if (arg == "--induced") continue; // all solvers are non-induced
+        if (arg == "--first-only") { first_only = true; continue; }
+        positional.push_back(arg);
+    }
+
+    if (positional.size() != 2) {
+        cerr << "Usage: ./solver pattern target\n";
+        return 1;
+    }
+
+    Graph H, G;
+    if (!read_graph(positional[0], H) || !read_graph(positional[1], G)) {
+        cerr << "Failed to parse graph input(s).\n";
+        return 1;
+    }
+
+    const int nH = H.n;
+    const int nG = G.n;
+
+    // Precompute degrees
+    vector<int> H_out_deg(nH), H_in_deg(nH);
+    vector<int> G_out_deg(nG), G_in_deg(nG);
+
+    for (int i = 0; i < nH; i++) {
+        H_out_deg[i] = H.out[i].size();
+        H_in_deg[i] = H.in[i].size();
+    }
+    for (int i = 0; i < nG; i++) {
+        G_out_deg[i] = G.out[i].size();
+        G_in_deg[i] = G.in[i].size();
+    }
+
+    // Initial candidate sets
+    vector<vector<int>> candidates(nH);
+    for (int u = 0; u < nH; u++) {
+        for (int v = 0; v < nG; v++) {
+            if (H.label[u] == G.label[v] &&
+                H_out_deg[u] <= G_out_deg[v] &&
+                H_in_deg[u] <= G_in_deg[v]) {
+                candidates[u].push_back(v);
             }
         }
     }
-};
 
-int main(int argc, char** argv) {
-    if (argc < 3) return 1;
-    Graph H(argv[1]);
-    Graph G(argv[2]);
+    vector<int> mapping(nH, -1);
+    vector<bool> used(nG, false);
 
-    if (H.n > G.n) {
-        cout << 0 << endl;
-        return 0;
-    }
+    int64_t total = 0;
 
-    Solver solver(H, G);
-    solver.backtrack(0);
-    cout << solver.count << endl;
+    // Order selection: smallest domain
+    auto select_node = [&](const vector<vector<int>> &cand) {
+        int best = -1;
+        size_t best_size = SIZE_MAX;
+        for (int i = 0; i < nH; i++) {
+            if (mapping[i] == -1) {
+                if (cand[i].size() < best_size) {
+                    best_size = cand[i].size();
+                    best = i;
+                }
+            }
+        }
+        return best;
+    };
 
+    // Recursive search
+    function<bool(vector<vector<int>> &)> dfs =
+    [&](vector<vector<int>> &cand) {
+
+        int u = select_node(cand);
+        if (u == -1) {
+            total++;
+            return first_only;
+        }
+
+        auto current_candidates = cand[u];
+
+        for (int v : current_candidates) {
+            if (used[v]) continue;
+
+            bool ok = true;
+
+            // Check consistency with assigned nodes
+            for (int u2 = 0; u2 < nH && ok; u2++) {
+                if (mapping[u2] != -1) {
+                    int v2 = mapping[u2];
+
+                    // Edge preservation
+                    if (has_edge(H.out, u, u2) && !has_edge(G.out, v, v2)) ok = false;
+                    if (has_edge(H.out, u2, u) && !has_edge(G.out, v2, v)) ok = false;
+                }
+            }
+
+            if (!ok) continue;
+
+            // Save state
+            mapping[u] = v;
+            used[v] = true;
+
+            vector<vector<int>> new_cand = cand;
+
+            // Forward pruning
+            for (int u2 = 0; u2 < nH; u2++) {
+                if (mapping[u2] != -1) continue;
+
+                vector<int> filtered;
+                for (int v2 : new_cand[u2]) {
+                    if (used[v2]) continue;
+
+                    bool keep = true;
+
+                    // Check edge constraints with new mapping
+                    if (has_edge(H.out, u, u2) && !has_edge(G.out, v, v2)) keep = false;
+                    if (has_edge(H.out, u2, u) && !has_edge(G.out, v2, v)) keep = false;
+
+                    if (keep) filtered.push_back(v2);
+                }
+
+                new_cand[u2].swap(filtered);
+
+                if (new_cand[u2].empty()) {
+                    ok = false;
+                    break;
+                }
+            }
+
+            if (ok && dfs(new_cand)) {
+                mapping[u] = -1;
+                used[v] = false;
+                return true;
+            }
+
+            mapping[u] = -1;
+            used[v] = false;
+        }
+
+        return false;
+    };
+
+    dfs(candidates);
+
+    cout << total << "\n";
     return 0;
 }
