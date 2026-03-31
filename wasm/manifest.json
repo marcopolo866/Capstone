@@ -2,8 +2,8 @@
   "schema_version": 1,
   "workflow": "Build WASM Modules",
   "workflow_file": ".github/workflows/build-wasm.yml",
-  "generated_at_utc": "2026-03-30T21:42:59Z",
-  "git_sha": "fa439d7b5b7568370319bf3a6d499879ce2e506c",
+  "generated_at_utc": "2026-03-31T02:11:01Z",
+  "git_sha": "7af3de7274f61b6590b30473824910de9e94830e",
   "git_ref_name": "main",
   "modules": {
     "dijkstra_baseline": {
@@ -25,6 +25,41 @@
       "scriptPath": "wasm/dijkstra_gemini.js",
       "wasmPath": "wasm/dijkstra_gemini.wasm",
       "factoryName": "createDijkstraGeminiModule"
+    },
+    "vf3_chatgpt": {
+      "scriptPath": "wasm/vf3_chatgpt.js",
+      "wasmPath": "wasm/vf3_chatgpt.wasm",
+      "factoryName": "createVf3ChatgptModule"
+    },
+    "glasgow_chatgpt": {
+      "scriptPath": "wasm/glasgow_chatgpt.js",
+      "wasmPath": "wasm/glasgow_chatgpt.wasm",
+      "factoryName": "createGlasgowChatgptModule"
+    },
+    "vf3_claude": {
+      "scriptPath": "wasm/vf3_claude.js",
+      "wasmPath": "wasm/vf3_claude.wasm",
+      "factoryName": "createVf3ClaudeModule"
+    },
+    "glasgow_claude": {
+      "scriptPath": "wasm/glasgow_claude.js",
+      "wasmPath": "wasm/glasgow_claude.wasm",
+      "factoryName": "createGlasgowClaudeModule"
+    },
+    "vf3_copilot": {
+      "scriptPath": "wasm/vf3_copilot.js",
+      "wasmPath": "wasm/vf3_copilot.wasm",
+      "factoryName": "createVf3CopilotModule"
+    },
+    "vf3_gemini": {
+      "scriptPath": "wasm/vf3_gemini.js",
+      "wasmPath": "wasm/vf3_gemini.wasm",
+      "factoryName": "createVf3GeminiModule"
+    },
+    "glasgow_gemini": {
+      "scriptPath": "wasm/glasgow_gemini.js",
+      "wasmPath": "wasm/glasgow_gemini.wasm",
+      "factoryName": "createGlasgowGeminiModule"
     },
     "glasgow_baseline": {
       "scriptPath": "wasm/glasgow_baseline.js",
@@ -79,6 +114,76 @@
       "algorithm": "dijkstra",
       "label": "Dijkstra Gemini",
       "binary_path": "src/dijkstra_gemini",
+      "role": "variant",
+      "llm_key": "gemini",
+      "llm_label": "Gemini"
+    },
+    {
+      "variant_id": "vf3_chatgpt",
+      "family": "vf3",
+      "algorithm": "vf3",
+      "label": "VF3 Chatgpt",
+      "binary_path": "src/vf3_chatgpt",
+      "role": "variant",
+      "llm_key": "chatgpt",
+      "llm_label": "Chatgpt"
+    },
+    {
+      "variant_id": "glasgow_chatgpt",
+      "family": "glasgow",
+      "algorithm": "glasgow",
+      "label": "Glasgow Chatgpt",
+      "binary_path": "src/glasgow_chatgpt",
+      "role": "variant",
+      "llm_key": "chatgpt",
+      "llm_label": "Chatgpt"
+    },
+    {
+      "variant_id": "vf3_claude",
+      "family": "vf3",
+      "algorithm": "vf3",
+      "label": "VF3 Claude",
+      "binary_path": "src/vf3_claude",
+      "role": "variant",
+      "llm_key": "claude",
+      "llm_label": "Claude"
+    },
+    {
+      "variant_id": "glasgow_claude",
+      "family": "glasgow",
+      "algorithm": "glasgow",
+      "label": "Glasgow Claude",
+      "binary_path": "src/glasgow_claude",
+      "role": "variant",
+      "llm_key": "claude",
+      "llm_label": "Claude"
+    },
+    {
+      "variant_id": "vf3_copilot",
+      "family": "vf3",
+      "algorithm": "vf3",
+      "label": "VF3 Copilot",
+      "binary_path": "src/vf3_copilot",
+      "role": "variant",
+      "llm_key": "copilot",
+      "llm_label": "Copilot"
+    },
+    {
+      "variant_id": "vf3_gemini",
+      "family": "vf3",
+      "algorithm": "vf3",
+      "label": "VF3 Gemini",
+      "binary_path": "src/vf3_gemini",
+      "role": "variant",
+      "llm_key": "gemini",
+      "llm_label": "Gemini"
+    },
+    {
+      "variant_id": "glasgow_gemini",
+      "family": "glasgow",
+      "algorithm": "glasgow",
+      "label": "Glasgow Gemini",
+      "binary_path": "src/glasgow_gemini",
       "role": "variant",
       "llm_key": "gemini",
       "llm_label": "Gemini"
