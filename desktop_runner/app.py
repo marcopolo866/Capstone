@@ -8,6 +8,7 @@ import concurrent.futures
 import datetime as dt
 import importlib.util
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -27,6 +28,11 @@ import psutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+
+try:
+    import winreg  # type: ignore
+except Exception:
+    winreg = None  # type: ignore
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.collections import LineCollection
@@ -52,6 +58,61 @@ DEFAULT_3D_ELEV = 30.0
 # Keep x=min and y=min corner toward the viewer in the default isometric view.
 DEFAULT_3D_AZIM = -135.0
 LOG_COLOR_TAGS = ("info", "error", "warn", "success", "notice")
+
+THEME_PALETTES = {
+    "light": {
+        "bg": "#F4F6F8",
+        "panel_bg": "#FFFFFF",
+        "fg": "#1F2933",
+        "muted_fg": "#5F6B76",
+        "border": "#D6DCE3",
+        "input_bg": "#FFFFFF",
+        "button_bg": "#E8EDF3",
+        "button_active_bg": "#DCE5EE",
+        "tab_bg": "#E8EDF3",
+        "tab_selected_bg": "#FFFFFF",
+        "accent": "#0B5CAD",
+        "text_bg": "#FFFFFF",
+        "text_fg": "#222222",
+        "select_bg": "#CCE2F8",
+        "select_fg": "#102A43",
+        "tooltip_bg": "#FFFBE6",
+        "tooltip_fg": "#222222",
+        "value_active_fg": "#222222",
+        "value_disabled_fg": "#888888",
+        "log_info": "#222222",
+        "log_warn": "#9A6700",
+        "log_error": "#B00020",
+        "log_success": "#0A7D32",
+        "log_notice": "#0B5CAD",
+    },
+    "dark": {
+        "bg": "#1B1E24",
+        "panel_bg": "#242933",
+        "fg": "#E6EAF0",
+        "muted_fg": "#B7C0CC",
+        "border": "#3A4352",
+        "input_bg": "#1F2430",
+        "button_bg": "#313949",
+        "button_active_bg": "#3A4458",
+        "tab_bg": "#2B3240",
+        "tab_selected_bg": "#3A4458",
+        "accent": "#4FA3FF",
+        "text_bg": "#171B22",
+        "text_fg": "#E6EAF0",
+        "select_bg": "#2D4E78",
+        "select_fg": "#EAF2FF",
+        "tooltip_bg": "#2A2F3A",
+        "tooltip_fg": "#E6EAF0",
+        "value_active_fg": "#E6EAF0",
+        "value_disabled_fg": "#8694A6",
+        "log_info": "#E6EAF0",
+        "log_warn": "#F6C667",
+        "log_error": "#FF8A9A",
+        "log_success": "#67D99A",
+        "log_notice": "#7BC0FF",
+    },
+}
 
 
 def resource_root() -> Path:
@@ -371,6 +432,7 @@ def parse_dijkstra_distance(output_text: str) -> str | None:
 
 
 VISUALIZER_SOLUTION_CAP = 2000
+VISUALIZER_PREFETCH_RADIUS = 10
 
 
 def parse_int_tokens(line: str) -> list[int]:
@@ -1158,6 +1220,11 @@ class BenchmarkRunnerApp(tk.Tk):
         self.title(APP_TITLE)
         self.geometry(f"{DEFAULT_WIDTH}x{DEFAULT_HEIGHT}")
         self.minsize(1200, 840)
+        self.style = ttk.Style(self)
+        self.current_theme_mode = self._detect_system_theme_mode()
+        self.current_theme_palette = THEME_PALETTES.get(self.current_theme_mode, THEME_PALETTES["light"])
+        self.theme_toggle_label_var = tk.StringVar(value="")
+        self.theme_toggle_btn: ttk.Button | None = None
 
         self.binary_paths = build_binary_path_map()
         self.stop_event = threading.Event()
@@ -1199,10 +1266,17 @@ class BenchmarkRunnerApp(tk.Tk):
         self.visualizer_nav_value_labels: dict[str, tk.Widget] = {}
         self.visualizer_nav_prev_buttons: dict[str, tk.Widget] = {}
         self.visualizer_nav_next_buttons: dict[str, tk.Widget] = {}
+        self.visualizer_nav_jump_buttons: dict[str, dict[int, tk.Widget]] = {}
         self.visualizer_nav_rows: dict[str, tk.Widget] = {}
         self.visualizer_graph_canvas: FigureCanvasTkAgg | None = None
         self.visualizer_graph_fig: Figure | None = None
         self.visualizer_loaded_result: dict | None = None
+        self.visualizer_active_context_key: str | None = None
+        self.visualizer_bundle_cache_mem: dict[str, dict] = {}
+        self.visualizer_cache_lock = threading.Lock()
+        self.visualizer_prefetch_thread: threading.Thread | None = None
+        self.visualizer_prefetch_context_key: str | None = None
+        self.visualizer_prefetch_center_index: int | None = None
         self.visualizer_iterations: list[dict] = []
         self.visualizer_iteration_index = 0
         self.visualizer_solution_index = 0
@@ -1211,12 +1285,286 @@ class BenchmarkRunnerApp(tk.Tk):
         self.visualizer_solution_count_var = tk.StringVar(value="Solution Count: --")
         self.visualizer_no_solution_var = tk.StringVar(value="")
         self.visualizer_is_loading = False
+        self.visualizer_autoplay_keys = ("iteration", "solution", "var_n", "var_k", "var_density")
+        self.visualizer_autoplay_active: dict[str, bool] = {k: False for k in self.visualizer_autoplay_keys}
+        self.visualizer_autoplay_label_vars: dict[str, tk.StringVar] = {
+            k: tk.StringVar(value="Play") for k in self.visualizer_autoplay_keys
+        }
+        self.visualizer_autoplay_global_label_var = tk.StringVar(value="Start All")
+        self.visualizer_autoplay_after_id: str | None = None
+        self.visualizer_autoplay_current_key: str | None = None
+        self.visualizer_autoplay_cycle_start_index: int | None = None
+        self.visualizer_autoplay_cycle_steps = 0
+        self.visualizer_autoplay_last_key: str | None = None
+        self.visualizer_nav_play_buttons: dict[str, ttk.Button] = {}
+        self.visualizer_iter_play_btn: ttk.Button | None = None
+        self.visualizer_sol_play_btn: ttk.Button | None = None
+        self.visualizer_global_autoplay_btn: ttk.Button | None = None
+        self.visualizer_iter_back10_btn: ttk.Button | None = None
+        self.visualizer_iter_back5_btn: ttk.Button | None = None
+        self.visualizer_iter_prev_btn: ttk.Button | None = None
+        self.visualizer_iter_next_btn: ttk.Button | None = None
+        self.visualizer_iter_fwd5_btn: ttk.Button | None = None
+        self.visualizer_iter_fwd10_btn: ttk.Button | None = None
+        self.visualizer_sol_back10_btn: ttk.Button | None = None
+        self.visualizer_sol_back5_btn: ttk.Button | None = None
+        self.visualizer_sol_prev_btn: ttk.Button | None = None
+        self.visualizer_sol_next_btn: ttk.Button | None = None
+        self.visualizer_sol_fwd5_btn: ttk.Button | None = None
+        self.visualizer_sol_fwd10_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_popup: tk.Toplevel | None = None
+        self.visualizer_fullscreen_canvas: FigureCanvasTkAgg | None = None
+        self.visualizer_fullscreen_fig: Figure | None = None
+        self.visualizer_fullscreen_host: ttk.Frame | None = None
+        self.visualizer_fullscreen_nav_rows: dict[str, ttk.Frame] = {}
+        self.visualizer_fullscreen_nav_name_labels: dict[str, ttk.Label] = {}
+        self.visualizer_fullscreen_nav_prev_buttons: dict[str, ttk.Button] = {}
+        self.visualizer_fullscreen_nav_next_buttons: dict[str, ttk.Button] = {}
+        self.visualizer_fullscreen_nav_jump_buttons: dict[str, dict[int, ttk.Button]] = {}
+        self.visualizer_fullscreen_nav_play_buttons: dict[str, ttk.Button] = {}
+        self.visualizer_fullscreen_iter_play_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_sol_play_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_global_autoplay_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_iter_back10_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_iter_back5_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_iter_prev_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_iter_next_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_iter_fwd5_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_iter_fwd10_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_sol_back10_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_sol_back5_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_sol_prev_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_sol_next_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_sol_fwd5_btn: ttk.Button | None = None
+        self.visualizer_fullscreen_sol_fwd10_btn: ttk.Button | None = None
 
         self._build_state()
         self._build_ui()
+        self._apply_theme(self.current_theme_mode)
+        self.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self._on_tab_changed()
         self.after(0, self._apply_default_window_state)
         self.after(120, self._set_default_body_split)
+
+    def _detect_system_theme_mode(self) -> str:
+        # Windows: 0 means dark apps, 1 means light apps.
+        if sys.platform.startswith("win") and winreg is not None:
+            try:
+                key_path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                    value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+                return "light" if int(value) != 0 else "dark"
+            except Exception:
+                pass
+
+        # macOS: key exists and equals "Dark" when dark mode is enabled.
+        if sys.platform == "darwin":
+            try:
+                res = subprocess.run(
+                    ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+                if res.returncode == 0 and "dark" in (res.stdout or "").strip().lower():
+                    return "dark"
+            except Exception:
+                pass
+            return "light"
+
+        # Linux: prefer GNOME color-scheme, then GTK theme name hint.
+        if sys.platform.startswith("linux"):
+            try:
+                res = subprocess.run(
+                    ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+                raw = (res.stdout or "").strip().lower()
+                if "dark" in raw:
+                    return "dark"
+                if "light" in raw:
+                    return "light"
+            except Exception:
+                pass
+            try:
+                res = subprocess.run(
+                    ["gsettings", "get", "org.gnome.desktop.interface", "gtk-theme"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+                raw = (res.stdout or "").strip().lower()
+                if "dark" in raw:
+                    return "dark"
+            except Exception:
+                pass
+
+        return "light"
+
+    def _theme_palette(self) -> dict[str, str]:
+        return self.current_theme_palette or THEME_PALETTES["light"]
+
+    def _toggle_theme_mode(self):
+        next_mode = "dark" if self.current_theme_mode == "light" else "light"
+        self._apply_theme(next_mode)
+
+    def _apply_log_tag_colors(self):
+        if not hasattr(self, "log_box"):
+            return
+        palette = self._theme_palette()
+        try:
+            self.log_box.tag_configure("info", foreground=palette["log_info"])
+            self.log_box.tag_configure("error", foreground=palette["log_error"])
+            self.log_box.tag_configure("warn", foreground=palette["log_warn"])
+            self.log_box.tag_configure("success", foreground=palette["log_success"])
+            self.log_box.tag_configure("notice", foreground=palette["log_notice"])
+        except Exception:
+            pass
+
+    def _apply_theme(self, mode: str):
+        mode_key = "dark" if str(mode).strip().lower() == "dark" else "light"
+        self.current_theme_mode = mode_key
+        self.current_theme_palette = THEME_PALETTES.get(mode_key, THEME_PALETTES["light"])
+        palette = self._theme_palette()
+
+        try:
+            theme_names = set(self.style.theme_names())
+            if "clam" in theme_names:
+                self.style.theme_use("clam")
+        except Exception:
+            pass
+
+        self.configure(bg=palette["bg"])
+        try:
+            self.tk_setPalette(
+                background=palette["bg"],
+                foreground=palette["fg"],
+                activeBackground=palette["button_active_bg"],
+                activeForeground=palette["fg"],
+                highlightColor=palette["accent"],
+                selectBackground=palette["select_bg"],
+                selectForeground=palette["select_fg"],
+            )
+        except Exception:
+            pass
+
+        self.style.configure(".", background=palette["bg"], foreground=palette["fg"])
+        self.style.configure("TFrame", background=palette["bg"])
+        self.style.configure("TLabelframe", background=palette["bg"])
+        self.style.configure("TLabelframe.Label", background=palette["bg"], foreground=palette["fg"])
+        self.style.configure("TLabel", background=palette["bg"], foreground=palette["fg"])
+        self.style.configure("Muted.TLabel", background=palette["bg"], foreground=palette["muted_fg"])
+        self.style.configure(
+            "TButton",
+            background=palette["button_bg"],
+            foreground=palette["fg"],
+        )
+        self.style.map(
+            "TButton",
+            background=[("active", palette["button_active_bg"]), ("disabled", palette["button_bg"])],
+            foreground=[("disabled", palette["muted_fg"])],
+        )
+        self.style.configure(
+            "ThemeToggle.TButton",
+            background=palette["button_bg"],
+            foreground=palette["fg"],
+            font=("Segoe UI", 9, "bold"),
+            padding=(8, 4),
+        )
+        self.style.map(
+            "ThemeToggle.TButton",
+            background=[("active", palette["button_active_bg"])],
+        )
+        self.style.configure("TCheckbutton", background=palette["bg"], foreground=palette["fg"])
+        self.style.configure("TRadiobutton", background=palette["bg"], foreground=palette["fg"])
+        self.style.configure(
+            "TEntry",
+            fieldbackground=palette["input_bg"],
+            foreground=palette["fg"],
+            insertcolor=palette["fg"],
+        )
+        self.style.configure(
+            "TCombobox",
+            fieldbackground=palette["input_bg"],
+            foreground=palette["fg"],
+            selectbackground=palette["select_bg"],
+            selectforeground=palette["select_fg"],
+        )
+        self.style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", palette["input_bg"])],
+            foreground=[("readonly", palette["fg"])],
+            selectbackground=[("readonly", palette["select_bg"])],
+            selectforeground=[("readonly", palette["select_fg"])],
+        )
+        self.style.configure("TNotebook", background=palette["bg"])
+        self.style.configure("TNotebook.Tab", background=palette["tab_bg"], foreground=palette["fg"])
+        self.style.map(
+            "TNotebook.Tab",
+            background=[("selected", palette["tab_selected_bg"]), ("active", palette["button_active_bg"])],
+            foreground=[("selected", palette["fg"])],
+        )
+        self.style.configure("TPanedwindow", background=palette["bg"])
+
+        self.theme_toggle_label_var.set("Light Mode" if mode_key == "dark" else "Dark Mode")
+        if self.theme_toggle_btn is not None:
+            try:
+                self.theme_toggle_btn.configure(style="ThemeToggle.TButton")
+            except Exception:
+                pass
+
+        if hasattr(self, "_scroll_canvas"):
+            try:
+                self._scroll_canvas.configure(bg=palette["panel_bg"])
+            except Exception:
+                pass
+        if hasattr(self, "log_box"):
+            try:
+                self.log_box.configure(
+                    bg=palette["text_bg"],
+                    fg=palette["text_fg"],
+                    insertbackground=palette["text_fg"],
+                    selectbackground=palette["select_bg"],
+                    selectforeground=palette["select_fg"],
+                )
+            except Exception:
+                pass
+            self._apply_log_tag_colors()
+        if hasattr(self, "parallel_status_label") and self.parallel_status_label is not None:
+            try:
+                self.parallel_status_label.configure(foreground=palette["muted_fg"], style="Muted.TLabel")
+            except Exception:
+                pass
+        if hasattr(self, "outlier_filter_blurb") and self.outlier_filter_blurb is not None:
+            try:
+                self.outlier_filter_blurb.configure(foreground=palette["muted_fg"], style="Muted.TLabel")
+            except Exception:
+                pass
+        if hasattr(self, "visualizer_embed_note") and self.visualizer_embed_note is not None:
+            try:
+                self.visualizer_embed_note.configure(foreground=palette["muted_fg"], style="Muted.TLabel")
+            except Exception:
+                pass
+        if hasattr(self, "visualizer_status_label") and self.visualizer_status_label is not None:
+            try:
+                self.visualizer_status_label.configure(foreground=palette["muted_fg"], style="Muted.TLabel")
+            except Exception:
+                pass
+        if hasattr(self, "visualizer_solution_count_label") and self.visualizer_solution_count_label is not None:
+            try:
+                self.visualizer_solution_count_label.configure(foreground=palette["muted_fg"], style="Muted.TLabel")
+            except Exception:
+                pass
+        if hasattr(self, "visualizer_no_solution_label") and self.visualizer_no_solution_label is not None:
+            try:
+                self.visualizer_no_solution_label.configure(foreground=palette["log_error"])
+            except Exception:
+                pass
 
     def _build_state(self):
         self.tab_id_var = tk.StringVar(value="subgraph")
@@ -1276,15 +1624,26 @@ class BenchmarkRunnerApp(tk.Tk):
         outer = ttk.Frame(self)
         outer.pack(fill=tk.BOTH, expand=True)
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
+
+        top_bar = ttk.Frame(outer, padding=(8, 6, 8, 2))
+        top_bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        top_bar.columnconfigure(0, weight=1)
+        self.theme_toggle_btn = ttk.Button(
+            top_bar,
+            textvariable=self.theme_toggle_label_var,
+            command=self._toggle_theme_mode,
+            style="ThemeToggle.TButton",
+        )
+        self.theme_toggle_btn.grid(row=0, column=1, sticky="e")
 
         self._scroll_canvas = tk.Canvas(outer, highlightthickness=0)
         v_scroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=self._scroll_canvas.yview)
         h_scroll = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=self._scroll_canvas.xview)
         self._scroll_canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-        self._scroll_canvas.grid(row=0, column=0, sticky="nsew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
+        self._scroll_canvas.grid(row=1, column=0, sticky="nsew")
+        v_scroll.grid(row=1, column=1, sticky="ns")
+        h_scroll.grid(row=2, column=0, sticky="ew")
 
         root = ttk.Frame(self._scroll_canvas, padding=10)
         self._scroll_window = self._scroll_canvas.create_window((0, 0), window=root, anchor="nw")
@@ -1372,7 +1731,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.parallel_status_label = ttk.Label(
             right_col,
             text=f"Detected logical CPU threads: {self.detected_logical_cores}",
-            foreground="#555555",
+            style="Muted.TLabel",
         )
         self.parallel_status_label.grid(row=4, column=0, columnspan=2, pady=(8, 0), sticky="w")
         ttk.Label(right_col, text="Failure Policy").grid(row=5, column=0, pady=(8, 0), sticky="w")
@@ -1404,7 +1763,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.outlier_filter_blurb = ttk.Label(
             right_col,
             text="",
-            foreground="#666666",
+            style="Muted.TLabel",
             wraplength=260,
             justify=tk.LEFT,
         )
@@ -1497,11 +1856,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.run_log_timer_label = ttk.Label(log_header, text="", font=("Consolas", 10, "bold"))
         self.log_box = ScrolledText(log_container, height=16, wrap=tk.WORD)
         self.log_box.pack(fill=tk.BOTH, expand=True)
-        self.log_box.tag_configure("info", foreground="#222222")
-        self.log_box.tag_configure("error", foreground="#B00020")
-        self.log_box.tag_configure("warn", foreground="#9A6700")
-        self.log_box.tag_configure("success", foreground="#0A7D32")
-        self.log_box.tag_configure("notice", foreground="#0B5CAD")
+        self._apply_log_tag_colors()
         self.log_box.configure(state=tk.DISABLED)
         body.add(log_container, weight=1)
 
@@ -1654,16 +2009,33 @@ class BenchmarkRunnerApp(tk.Tk):
             row.pack(fill=tk.X, pady=(1, 1))
             lbl = ttk.Label(row, text=f"{self._axis_label(var_id)}:", width=12)
             lbl.pack(side=tk.LEFT)
+            back10_btn = ttk.Button(row, text="<<<", width=4, command=lambda v=var_id: self._shift_visualizer_variable(v, -10))
+            back10_btn.pack(side=tk.LEFT)
+            back5_btn = ttk.Button(row, text="<<", width=4, command=lambda v=var_id: self._shift_visualizer_variable(v, -5))
+            back5_btn.pack(side=tk.LEFT, padx=(2, 0))
             prev_btn = ttk.Button(row, text="<", width=3, command=lambda v=var_id: self._shift_visualizer_variable(v, -1))
-            prev_btn.pack(side=tk.LEFT)
+            prev_btn.pack(side=tk.LEFT, padx=(2, 0))
             value_var = tk.StringVar(value="--")
             value_label = tk.Label(row, textvariable=value_var, width=16, anchor="center", fg="#666666")
             value_label.pack(side=tk.LEFT, padx=(6, 6))
             next_btn = ttk.Button(row, text=">", width=3, command=lambda v=var_id: self._shift_visualizer_variable(v, 1))
             next_btn.pack(side=tk.LEFT)
+            fwd5_btn = ttk.Button(row, text=">>", width=4, command=lambda v=var_id: self._shift_visualizer_variable(v, 5))
+            fwd5_btn.pack(side=tk.LEFT, padx=(2, 0))
+            fwd10_btn = ttk.Button(row, text=">>>", width=4, command=lambda v=var_id: self._shift_visualizer_variable(v, 10))
+            fwd10_btn.pack(side=tk.LEFT, padx=(2, 0))
             count_var = tk.StringVar(value="(0/0)")
             count_label = ttk.Label(row, textvariable=count_var, foreground="#666666")
             count_label.pack(side=tk.LEFT, padx=(8, 0))
+            auto_key = f"var_{var_id}"
+            play_btn = ttk.Button(
+                row,
+                textvariable=self.visualizer_autoplay_label_vars[auto_key],
+                width=6,
+                command=lambda k=auto_key: self._toggle_visualizer_autoplay(k),
+                state=tk.DISABLED,
+            )
+            play_btn.pack(side=tk.LEFT, padx=(8, 0))
             self.visualizer_nav_rows[var_id] = row
             self.visualizer_nav_display_vars[var_id] = value_var
             self.visualizer_nav_count_vars[var_id] = count_var
@@ -1671,21 +2043,86 @@ class BenchmarkRunnerApp(tk.Tk):
             self.visualizer_nav_value_labels[var_id] = value_label
             self.visualizer_nav_prev_buttons[var_id] = prev_btn
             self.visualizer_nav_next_buttons[var_id] = next_btn
+            self.visualizer_nav_play_buttons[var_id] = play_btn
+            self.visualizer_nav_jump_buttons[var_id] = {
+                -10: back10_btn,
+                -5: back5_btn,
+                -1: prev_btn,
+                1: next_btn,
+                5: fwd5_btn,
+                10: fwd10_btn,
+            }
 
         vis_iter_sol_frame = ttk.Frame(vis_wrap)
         vis_iter_sol_frame.pack(fill=tk.X, pady=(6, 6))
         ttk.Label(vis_iter_sol_frame, text="Iteration:", width=10).pack(side=tk.LEFT)
-        self.visualizer_iter_prev_btn = ttk.Button(vis_iter_sol_frame, text="<", width=3, command=self._visualizer_prev_iteration, state=tk.DISABLED)
+        self.visualizer_iter_back10_btn = ttk.Button(
+            vis_iter_sol_frame, text="<<<", width=4, command=lambda: self._visualizer_shift_iteration(-10), state=tk.DISABLED
+        )
+        self.visualizer_iter_back10_btn.pack(side=tk.LEFT)
+        self.visualizer_iter_back5_btn = ttk.Button(
+            vis_iter_sol_frame, text="<<", width=4, command=lambda: self._visualizer_shift_iteration(-5), state=tk.DISABLED
+        )
+        self.visualizer_iter_back5_btn.pack(side=tk.LEFT, padx=(2, 0))
+        self.visualizer_iter_prev_btn = ttk.Button(
+            vis_iter_sol_frame, text="<", width=3, command=lambda: self._visualizer_shift_iteration(-1), state=tk.DISABLED
+        )
         self.visualizer_iter_prev_btn.pack(side=tk.LEFT)
         ttk.Label(vis_iter_sol_frame, textvariable=self.visualizer_iteration_label_var, width=20).pack(side=tk.LEFT, padx=(6, 6))
-        self.visualizer_iter_next_btn = ttk.Button(vis_iter_sol_frame, text=">", width=3, command=self._visualizer_next_iteration, state=tk.DISABLED)
-        self.visualizer_iter_next_btn.pack(side=tk.LEFT, padx=(0, 12))
+        self.visualizer_iter_next_btn = ttk.Button(
+            vis_iter_sol_frame, text=">", width=3, command=lambda: self._visualizer_shift_iteration(1), state=tk.DISABLED
+        )
+        self.visualizer_iter_next_btn.pack(side=tk.LEFT)
+        self.visualizer_iter_fwd5_btn = ttk.Button(
+            vis_iter_sol_frame, text=">>", width=4, command=lambda: self._visualizer_shift_iteration(5), state=tk.DISABLED
+        )
+        self.visualizer_iter_fwd5_btn.pack(side=tk.LEFT, padx=(2, 0))
+        self.visualizer_iter_fwd10_btn = ttk.Button(
+            vis_iter_sol_frame, text=">>>", width=4, command=lambda: self._visualizer_shift_iteration(10), state=tk.DISABLED
+        )
+        self.visualizer_iter_fwd10_btn.pack(side=tk.LEFT, padx=(2, 12))
         ttk.Label(vis_iter_sol_frame, text="Solution:", width=10).pack(side=tk.LEFT)
-        self.visualizer_sol_prev_btn = ttk.Button(vis_iter_sol_frame, text="<", width=3, command=self._visualizer_prev_solution, state=tk.DISABLED)
+        self.visualizer_sol_back10_btn = ttk.Button(
+            vis_iter_sol_frame, text="<<<", width=4, command=lambda: self._visualizer_shift_solution(-10), state=tk.DISABLED
+        )
+        self.visualizer_sol_back10_btn.pack(side=tk.LEFT)
+        self.visualizer_sol_back5_btn = ttk.Button(
+            vis_iter_sol_frame, text="<<", width=4, command=lambda: self._visualizer_shift_solution(-5), state=tk.DISABLED
+        )
+        self.visualizer_sol_back5_btn.pack(side=tk.LEFT, padx=(2, 0))
+        self.visualizer_sol_prev_btn = ttk.Button(
+            vis_iter_sol_frame, text="<", width=3, command=lambda: self._visualizer_shift_solution(-1), state=tk.DISABLED
+        )
         self.visualizer_sol_prev_btn.pack(side=tk.LEFT)
         ttk.Label(vis_iter_sol_frame, textvariable=self.visualizer_solution_label_var, width=28).pack(side=tk.LEFT, padx=(6, 6))
-        self.visualizer_sol_next_btn = ttk.Button(vis_iter_sol_frame, text=">", width=3, command=self._visualizer_next_solution, state=tk.DISABLED)
+        self.visualizer_sol_next_btn = ttk.Button(
+            vis_iter_sol_frame, text=">", width=3, command=lambda: self._visualizer_shift_solution(1), state=tk.DISABLED
+        )
         self.visualizer_sol_next_btn.pack(side=tk.LEFT)
+        self.visualizer_sol_fwd5_btn = ttk.Button(
+            vis_iter_sol_frame, text=">>", width=4, command=lambda: self._visualizer_shift_solution(5), state=tk.DISABLED
+        )
+        self.visualizer_sol_fwd5_btn.pack(side=tk.LEFT, padx=(2, 0))
+        self.visualizer_sol_fwd10_btn = ttk.Button(
+            vis_iter_sol_frame, text=">>>", width=4, command=lambda: self._visualizer_shift_solution(10), state=tk.DISABLED
+        )
+        self.visualizer_sol_fwd10_btn.pack(side=tk.LEFT, padx=(2, 0))
+        self.visualizer_iter_play_btn = ttk.Button(
+            vis_iter_sol_frame,
+            textvariable=self.visualizer_autoplay_label_vars["iteration"],
+            width=6,
+            command=lambda: self._toggle_visualizer_autoplay("iteration"),
+            state=tk.DISABLED,
+        )
+        self.visualizer_iter_play_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self.visualizer_sol_play_btn = ttk.Button(
+            vis_iter_sol_frame,
+            textvariable=self.visualizer_autoplay_label_vars["solution"],
+            width=6,
+            command=lambda: self._toggle_visualizer_autoplay("solution"),
+            state=tk.DISABLED,
+        )
+        self.visualizer_sol_play_btn.pack(side=tk.LEFT, padx=(8, 0))
 
         vis_controls = ttk.Frame(vis_wrap)
         vis_controls.pack(fill=tk.X, pady=(2, 4))
@@ -1710,33 +2147,43 @@ class BenchmarkRunnerApp(tk.Tk):
             state=tk.DISABLED,
         )
         self.visualizer_fullscreen_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self.visualizer_global_autoplay_btn = ttk.Button(
+            vis_controls,
+            textvariable=self.visualizer_autoplay_global_label_var,
+            command=self._toggle_visualizer_autoplay_all,
+            state=tk.DISABLED,
+        )
+        self.visualizer_global_autoplay_btn.pack(side=tk.LEFT, padx=(8, 0))
         self.visualizer_embed_note = ttk.Label(
             vis_wrap,
             text="Open External uses the website visualizer in your browser.",
-            foreground="#666666",
+            style="Muted.TLabel",
             wraplength=760,
             justify=tk.LEFT,
         )
         self.visualizer_embed_note.pack(anchor="w", pady=(0, 4))
-        ttk.Label(
+        self.visualizer_status_label = ttk.Label(
             vis_wrap,
             textvariable=self.visualizer_status_var,
-            foreground="#555555",
+            style="Muted.TLabel",
             wraplength=760,
             justify=tk.LEFT,
-        ).pack(anchor="w", pady=(0, 6))
-        ttk.Label(
+        )
+        self.visualizer_status_label.pack(anchor="w", pady=(0, 6))
+        self.visualizer_solution_count_label = ttk.Label(
             vis_wrap,
             textvariable=self.visualizer_solution_count_var,
-            foreground="#555555",
+            style="Muted.TLabel",
             justify=tk.LEFT,
-        ).pack(anchor="w", pady=(0, 2))
-        ttk.Label(
+        )
+        self.visualizer_solution_count_label.pack(anchor="w", pady=(0, 2))
+        self.visualizer_no_solution_label = ttk.Label(
             vis_wrap,
             textvariable=self.visualizer_no_solution_var,
             foreground="#B00020",
             justify=tk.LEFT,
-        ).pack(anchor="w", pady=(0, 6))
+        )
+        self.visualizer_no_solution_label.pack(anchor="w", pady=(0, 6))
         self.visualizer_host_frame = ttk.Frame(vis_wrap)
         self.visualizer_host_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -2137,6 +2584,17 @@ class BenchmarkRunnerApp(tk.Tk):
             self.run_log_timer_label.configure(text="")
             self._set_run_timer_visible(False)
 
+    def _deactivate_visualizer_autoplay(self, reset_last_key: bool = False):
+        self._stop_visualizer_autoplay_timer()
+        for key in self.visualizer_autoplay_active:
+            self.visualizer_autoplay_active[key] = False
+        self.visualizer_autoplay_current_key = None
+        self.visualizer_autoplay_cycle_start_index = None
+        self.visualizer_autoplay_cycle_steps = 0
+        if reset_last_key:
+            self.visualizer_autoplay_last_key = None
+        self._update_visualizer_autoplay_controls()
+
     def _start_run_timer(self, time_limit_minutes: float | None):
         self._stop_run_timer(hide=False)
         if time_limit_minutes is None:
@@ -2154,6 +2612,37 @@ class BenchmarkRunnerApp(tk.Tk):
         self.live_log_lines = {}
         self.log_box.configure(state=tk.DISABLED)
 
+    def _visualizer_cache_root(self) -> Path | None:
+        if not self.session_output_dir:
+            return None
+        return self.session_output_dir / "visualizer_cache"
+
+    def _flush_visualizer_caches(self, delete_disk: bool = True):
+        try:
+            self._close_visualizer_fullscreen_popup()
+        except Exception:
+            pass
+        with self.visualizer_cache_lock:
+            self.visualizer_bundle_cache_mem.clear()
+            self.visualizer_active_context_key = None
+            self.visualizer_prefetch_context_key = None
+            self.visualizer_prefetch_center_index = None
+        self._deactivate_visualizer_autoplay(reset_last_key=True)
+        if delete_disk:
+            root = self._visualizer_cache_root()
+            if root is not None and root.exists():
+                try:
+                    shutil.rmtree(root, ignore_errors=True)
+                except Exception:
+                    pass
+
+    def _on_app_close(self):
+        self._flush_visualizer_caches(delete_disk=True)
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
     def _clear_graphs(self, announce: bool = False):
         had_graphs = any([
             self.runtime_canvas is not None,
@@ -2167,6 +2656,7 @@ class BenchmarkRunnerApp(tk.Tk):
             self.last_memory_3d_fig is not None,
             self.visualizer_graph_fig is not None,
         ])
+        self._deactivate_visualizer_autoplay()
 
         for canvas_attr in ("runtime_canvas", "memory_canvas", "runtime_3d_canvas", "memory_3d_canvas"):
             canvas = getattr(self, canvas_attr)
@@ -2632,6 +3122,7 @@ class BenchmarkRunnerApp(tk.Tk):
 
         self.stop_event.clear()
         self.pause_event.clear()
+        self._flush_visualizer_caches(delete_disk=True)
         self.session_output_dir = make_session_output_dir()
         self.last_run_payload = None
         self._reset_visualizer_selection_state()
@@ -2676,6 +3167,8 @@ class BenchmarkRunnerApp(tk.Tk):
         self.load_visualizer_btn.configure(state=tk.DISABLED)
         self.open_visualizer_btn.configure(state=tk.DISABLED)
         self.visualizer_fullscreen_btn.configure(state=tk.DISABLED)
+        if self.visualizer_global_autoplay_btn is not None:
+            self.visualizer_global_autoplay_btn.configure(state=tk.DISABLED)
         self.visualizer_status_var.set("Run in progress. Visualizer will be available after completion.")
 
         self.worker_thread = threading.Thread(target=self._run_worker, args=(config,), daemon=True)
@@ -3676,6 +4169,7 @@ class BenchmarkRunnerApp(tk.Tk):
             self.open_visualizer_btn.configure(state=tk.DISABLED)
             self.visualizer_fullscreen_btn.configure(state=tk.DISABLED)
             self.visualizer_status_var.set("No run payload available yet.")
+        self._update_visualizer_autoplay_controls()
 
     def _run_solver_variant(
         self,
@@ -4537,6 +5031,7 @@ class BenchmarkRunnerApp(tk.Tk):
         key = self._drilldown_point_key(metric, row)
         text = self._drilldown_text_for_row(row, metric)
         x_root, y_root = self._drilldown_pointer_position(event)
+        palette = self._theme_palette()
 
         if mode == "hover" and self.drilldown_popup_mode == "click":
             return
@@ -4556,8 +5051,8 @@ class BenchmarkRunnerApp(tk.Tk):
                 text=text,
                 justify=tk.LEFT,
                 anchor="w",
-                bg="#fffbe6",
-                fg="#222222",
+                bg=palette["tooltip_bg"],
+                fg=palette["tooltip_fg"],
                 relief="solid",
                 bd=1,
                 padx=8,
@@ -4582,6 +5077,16 @@ class BenchmarkRunnerApp(tk.Tk):
             body = ScrolledText(popup, height=16, wrap=tk.WORD)
             body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
             body.insert("1.0", text)
+            try:
+                body.configure(
+                    bg=palette["text_bg"],
+                    fg=palette["text_fg"],
+                    insertbackground=palette["text_fg"],
+                    selectbackground=palette["select_bg"],
+                    selectforeground=palette["select_fg"],
+                )
+            except Exception:
+                pass
             body.configure(state=tk.DISABLED)
             self._place_popup_near_pointer(popup, x_root, y_root, offset_x=20, offset_y=20)
 
@@ -4713,6 +5218,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.visualizer_nav_values = {"n": [], "k": [], "density": []}
         self.visualizer_nav_index = {"n": 0, "k": 0, "density": 0}
         self.visualizer_loaded_result = None
+        self.visualizer_active_context_key = None
         self.visualizer_iterations = []
         self.visualizer_iteration_index = 0
         self.visualizer_solution_index = 0
@@ -4720,6 +5226,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.visualizer_solution_label_var.set("Solution --")
         self.visualizer_solution_count_var.set("Solution Count: --")
         self.visualizer_no_solution_var.set("")
+        self._deactivate_visualizer_autoplay(reset_last_key=True)
         if self.last_run_payload and isinstance(self.last_run_payload, dict):
             run_cfg = self.last_run_payload.get("run_config")
         else:
@@ -4748,6 +5255,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.visualizer_solution_count_var.set("Solution Count: --")
         self.visualizer_no_solution_var.set("")
         self._update_visualizer_iteration_solution_controls()
+        self._refresh_visualizer_fullscreen_canvas()
 
     def _visualizer_vars_for_tab(self, run_config: dict) -> list[str]:
         tab_id = str(run_config.get("tab_id") or "").strip().lower()
@@ -4850,16 +5358,22 @@ class BenchmarkRunnerApp(tk.Tk):
                 self.visualizer_nav_count_vars[var_id].set("(0/0)")
 
             enabled = (len(values) > 1) and (not self.visualizer_is_loading)
-            self.visualizer_nav_prev_buttons[var_id].configure(state=(tk.NORMAL if enabled and idx > 0 else tk.DISABLED))
-            self.visualizer_nav_next_buttons[var_id].configure(
-                state=(tk.NORMAL if enabled and idx < (len(values) - 1) else tk.DISABLED)
-            )
+            jump_buttons = self.visualizer_nav_jump_buttons.get(var_id, {})
+            for delta, button in jump_buttons.items():
+                target = idx + int(delta)
+                valid = enabled and 0 <= target < len(values)
+                button.configure(state=(tk.NORMAL if valid else tk.DISABLED))
             value_widget = self.visualizer_nav_value_labels.get(var_id)
             if value_widget is not None:
                 try:
-                    value_widget.configure(fg=("#222222" if len(values) > 1 else "#888888"))
+                    palette = self._theme_palette()
+                    value_widget.configure(
+                        fg=(palette["value_active_fg"] if len(values) > 1 else palette["value_disabled_fg"])
+                    )
                 except Exception:
                     pass
+        self._sync_visualizer_fullscreen_controls(run_config)
+        self._update_visualizer_autoplay_controls()
 
     def _selected_visualizer_point(self, run_config: dict | None = None) -> dict[str, float] | None:
         if run_config is None:
@@ -4892,6 +5406,467 @@ class BenchmarkRunnerApp(tk.Tk):
                 return item
         return None
 
+    def _visualizer_available_autoplay_keys(self, run_config: dict | None = None) -> list[str]:
+        if run_config is None and isinstance(self.last_run_payload, dict):
+            raw = self.last_run_payload.get("run_config")
+            run_config = raw if isinstance(raw, dict) else None
+        vars_for_tab = self._visualizer_vars_for_tab(run_config) if isinstance(run_config, dict) else []
+        out: list[str] = []
+        if "n" in vars_for_tab:
+            out.append("var_n")
+        if "k" in vars_for_tab:
+            out.append("var_k")
+        if "density" in vars_for_tab:
+            out.append("var_density")
+        out.append("iteration")
+        out.append("solution")
+        return out
+
+    def _visualizer_autoplay_range(self, key: str) -> int:
+        if key.startswith("var_"):
+            var_id = key[4:]
+            return len(self.visualizer_nav_values.get(var_id, []))
+        if key == "iteration":
+            return len(self.visualizer_iterations)
+        if key == "solution":
+            return len(self._current_visualizer_solutions())
+        return 0
+
+    def _visualizer_autoplay_index(self, key: str) -> int:
+        if key.startswith("var_"):
+            var_id = key[4:]
+            return int(self.visualizer_nav_index.get(var_id, 0))
+        if key == "iteration":
+            return int(self.visualizer_iteration_index)
+        if key == "solution":
+            return int(self.visualizer_solution_index)
+        return 0
+
+    def _visualizer_ordered_autoplay_candidates(self) -> list[str]:
+        run_cfg = self.last_run_payload.get("run_config") if isinstance(self.last_run_payload, dict) else None
+        available = set(self._visualizer_available_autoplay_keys(run_cfg if isinstance(run_cfg, dict) else None))
+        active = [
+            key
+            for key, enabled in self.visualizer_autoplay_active.items()
+            if enabled and key in available and self._visualizer_autoplay_range(key) > 1
+        ]
+        if not active:
+            return []
+        out: list[str] = []
+        if "solution" in active:
+            out.append("solution")
+            active.remove("solution")
+        if "iteration" in active:
+            out.append("iteration")
+            active.remove("iteration")
+        active.sort(key=lambda k: (self._visualizer_autoplay_range(k), k))
+        out.extend(active)
+        return out
+
+    def _visualizer_select_next_autoplay_key(self) -> str | None:
+        ordered = self._visualizer_ordered_autoplay_candidates()
+        if not ordered:
+            return None
+        last = self.visualizer_autoplay_last_key
+        if last in ordered:
+            idx = ordered.index(last)
+            return ordered[(idx + 1) % len(ordered)]
+        return ordered[0]
+
+    def _visualizer_step_forward_autoplay(self, key: str) -> tuple[bool, bool]:
+        total = self._visualizer_autoplay_range(key)
+        if total <= 1:
+            return False, False
+        old = self._visualizer_autoplay_index(key)
+        new = (old + 1) % total
+        wrapped = bool(new <= old)
+        if key.startswith("var_"):
+            if self.visualizer_is_loading:
+                return False, False
+            var_id = key[4:]
+            self.visualizer_nav_index[var_id] = int(new)
+            run_config = self.last_run_payload.get("run_config") if isinstance(self.last_run_payload, dict) else None
+            self._update_visualizer_nav_controls(run_config if isinstance(run_config, dict) else None)
+            self._on_visualizer_variable_changed()
+            return True, wrapped
+        if key == "iteration":
+            self.visualizer_iteration_index = int(new)
+            self.visualizer_solution_index = 0
+            self._render_visualizer_current_iteration()
+            return True, wrapped
+        if key == "solution":
+            self.visualizer_solution_index = int(new)
+            self._render_visualizer_current_iteration()
+            return True, wrapped
+        return False, False
+
+    def _start_visualizer_autoplay_timer(self):
+        if self.visualizer_autoplay_after_id is None:
+            self.visualizer_autoplay_after_id = self.after(500, self._visualizer_autoplay_tick)
+
+    def _stop_visualizer_autoplay_timer(self):
+        if self.visualizer_autoplay_after_id is not None:
+            try:
+                self.after_cancel(self.visualizer_autoplay_after_id)
+            except Exception:
+                pass
+            self.visualizer_autoplay_after_id = None
+
+    def _visualizer_autoplay_tick(self):
+        self.visualizer_autoplay_after_id = None
+        if not any(self.visualizer_autoplay_active.values()):
+            self.visualizer_autoplay_current_key = None
+            self.visualizer_autoplay_cycle_start_index = None
+            self.visualizer_autoplay_cycle_steps = 0
+            self._update_visualizer_autoplay_controls()
+            return
+
+        if self.visualizer_is_loading:
+            self._update_visualizer_autoplay_controls()
+            if any(self.visualizer_autoplay_active.values()):
+                self._start_visualizer_autoplay_timer()
+            return
+
+        ordered = self._visualizer_ordered_autoplay_candidates()
+        self.visualizer_autoplay_current_key = None
+        self.visualizer_autoplay_cycle_start_index = None
+        self.visualizer_autoplay_cycle_steps = 0
+        self.visualizer_autoplay_last_key = None
+        if ordered:
+            # Nested carry model:
+            # solution increments every tick; iteration increments only when
+            # solution wraps; variables increment only when all higher-priority
+            # keys wrap in that same tick.
+            carry = True
+            for key in ordered:
+                if not carry:
+                    break
+                moved, wrapped = self._visualizer_step_forward_autoplay(key)
+                if not moved:
+                    break
+                carry = bool(wrapped)
+
+        self._update_visualizer_autoplay_controls()
+        if any(self.visualizer_autoplay_active.values()):
+            self._start_visualizer_autoplay_timer()
+
+    def _update_visualizer_autoplay_controls(self):
+        run_cfg = self.last_run_payload.get("run_config") if isinstance(self.last_run_payload, dict) else None
+        available = set(self._visualizer_available_autoplay_keys(run_cfg if isinstance(run_cfg, dict) else None))
+
+        def _apply_button_state(btn, enabled: bool):
+            if btn is not None:
+                btn.configure(state=(tk.NORMAL if enabled else tk.DISABLED))
+
+        for key in self.visualizer_autoplay_keys:
+            active = bool(self.visualizer_autoplay_active.get(key))
+            var = self.visualizer_autoplay_label_vars.get(key)
+            if var is not None:
+                var.set("Pause" if active else "Play")
+            rng = self._visualizer_autoplay_range(key)
+            is_available = key in available
+            enabled = bool(active or (is_available and rng > 1))
+            if key.startswith("var_"):
+                v = key[4:]
+                _apply_button_state(self.visualizer_nav_play_buttons.get(v), enabled)
+                _apply_button_state(self.visualizer_fullscreen_nav_play_buttons.get(v), enabled)
+            elif key == "iteration":
+                _apply_button_state(self.visualizer_iter_play_btn, enabled)
+                _apply_button_state(self.visualizer_fullscreen_iter_play_btn, enabled)
+            elif key == "solution":
+                _apply_button_state(self.visualizer_sol_play_btn, enabled)
+                _apply_button_state(self.visualizer_fullscreen_sol_play_btn, enabled)
+
+        any_active = any(self.visualizer_autoplay_active.values())
+        global_enabled = bool(self.last_run_payload and self.visualizer_point_rows)
+        self.visualizer_autoplay_global_label_var.set("Stop All" if any_active else "Start All")
+        _apply_button_state(self.visualizer_global_autoplay_btn, global_enabled)
+        _apply_button_state(self.visualizer_fullscreen_global_autoplay_btn, global_enabled)
+
+        if any_active and global_enabled:
+            self._start_visualizer_autoplay_timer()
+        else:
+            self._stop_visualizer_autoplay_timer()
+            self.visualizer_autoplay_current_key = None
+            self.visualizer_autoplay_cycle_start_index = None
+            self.visualizer_autoplay_cycle_steps = 0
+
+    def _toggle_visualizer_autoplay(self, key: str):
+        if key not in self.visualizer_autoplay_active:
+            return
+        active = bool(self.visualizer_autoplay_active.get(key))
+        if active:
+            self.visualizer_autoplay_active[key] = False
+            if self.visualizer_autoplay_current_key == key:
+                self.visualizer_autoplay_last_key = key
+                self.visualizer_autoplay_current_key = None
+                self.visualizer_autoplay_cycle_start_index = None
+                self.visualizer_autoplay_cycle_steps = 0
+        else:
+            if self._visualizer_autoplay_range(key) <= 1:
+                return
+            self.visualizer_autoplay_active[key] = True
+            self.visualizer_autoplay_current_key = None
+            self.visualizer_autoplay_cycle_start_index = None
+            self.visualizer_autoplay_cycle_steps = 0
+        self._update_visualizer_autoplay_controls()
+
+    def _toggle_visualizer_autoplay_all(self):
+        any_active = any(self.visualizer_autoplay_active.values())
+        if any_active:
+            for key in self.visualizer_autoplay_active:
+                self.visualizer_autoplay_active[key] = False
+            self.visualizer_autoplay_current_key = None
+            self.visualizer_autoplay_cycle_start_index = None
+            self.visualizer_autoplay_cycle_steps = 0
+            self._update_visualizer_autoplay_controls()
+            return
+
+        run_cfg = self.last_run_payload.get("run_config") if isinstance(self.last_run_payload, dict) else None
+        available = set(self._visualizer_available_autoplay_keys(run_cfg if isinstance(run_cfg, dict) else None))
+        for key in self.visualizer_autoplay_active:
+            self.visualizer_autoplay_active[key] = key in available and self._visualizer_autoplay_range(key) > 1
+        self.visualizer_autoplay_current_key = None
+        self.visualizer_autoplay_cycle_start_index = None
+        self.visualizer_autoplay_cycle_steps = 0
+        self.visualizer_autoplay_last_key = None
+        self._update_visualizer_autoplay_controls()
+
+    def _visualizer_mapping_variants(self, run_config: dict, selected_family: str) -> list[str]:
+        tab_id = str(run_config.get("tab_id") or "").strip().lower()
+        if tab_id == "subgraph":
+            baseline = "vf3_baseline"
+            path = self.binary_paths.get(baseline)
+            if path is None or not path.exists():
+                raise RuntimeError("VF3 baseline binary is required for subgraph visualizer mappings.")
+            return [baseline]
+        if tab_id == "shortest_path":
+            baseline = "dijkstra_baseline"
+            path = self.binary_paths.get(baseline)
+            if path is None or not path.exists():
+                raise RuntimeError("Dijkstra baseline binary is required for shortest-path visualizer mappings.")
+            return [baseline]
+        return self._visualizer_variants_for_family(run_config, selected_family)
+
+    def _visualizer_cache_key(
+        self,
+        run_config: dict,
+        *,
+        selected_family: str,
+        datapoint: dict,
+        seeds: list[int],
+    ) -> str:
+        payload = {
+            "tab_id": run_config.get("tab_id"),
+            "family": selected_family,
+            "k_mode": run_config.get("k_mode"),
+            "point": {
+                "n": datapoint.get("n"),
+                "k": datapoint.get("k"),
+                "k_nodes": datapoint.get("k_nodes"),
+                "density": datapoint.get("density"),
+            },
+            "seeds": list(seeds),
+            "cap": int(VISUALIZER_SOLUTION_CAP),
+        }
+        raw = json.dumps(payload, sort_keys=True, default=serialize_for_json)
+        return hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()
+
+    def _visualizer_iteration_cache_path(self, context: dict, iteration_index: int) -> Path:
+        cache_dir = Path(context["cache_dir"])
+        return cache_dir / f"iter_{int(iteration_index) + 1:06d}.json"
+
+    def _load_visualizer_iteration_from_disk(self, context: dict, iteration_index: int) -> dict | None:
+        path = self._visualizer_iteration_cache_path(context, iteration_index)
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _save_visualizer_iteration_to_disk(self, context: dict, iteration_index: int, payload: dict):
+        path = self._visualizer_iteration_cache_path(context, iteration_index)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, default=serialize_for_json) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    def _compute_visualizer_iteration_payload(self, context: dict, iteration_index: int) -> dict:
+        run_config = context["run_config"]
+        selected_family = str(context["selected_family"])
+        visualization_algo = str(context["visualization_algo"])
+        datapoint = dict(context["datapoint"])
+        seeds = list(context["seeds"])
+        label_lookup = dict(context["label_lookup"])
+        timeout_seconds = float(context["timeout_seconds"])
+        variant_ids = list(context["variant_ids"])
+        cache_dir = Path(context["cache_dir"])
+
+        seed = int(seeds[iteration_index])
+        iter_dir = cache_dir / "inputs" / f"iter_{iteration_index + 1:03d}"
+        iter_dir.mkdir(parents=True, exist_ok=True)
+
+        if selected_family == "dijkstra":
+            inputs = {
+                "dijkstra_file": generate_dijkstra_inputs(
+                    iter_dir,
+                    int(round(float(datapoint["n"]))),
+                    float(datapoint["density"]),
+                    int(seed),
+                )
+            }
+        else:
+            inputs = generate_subgraph_inputs(
+                iter_dir,
+                int(round(float(datapoint["n"]))),
+                int(round(float(datapoint["k_nodes"]))),
+                float(datapoint["density"]),
+                int(seed),
+            )
+
+        outputs: dict[str, str] = {}
+        for variant_id in variant_ids:
+            command = self._build_visualizer_variant_command(variant_id, inputs)
+            binary = self.binary_paths.get(variant_id)
+            if binary is None:
+                outputs[variant_id] = ""
+                continue
+            try:
+                outputs[variant_id] = self._run_visualizer_command(
+                    command,
+                    cwd=binary.parent,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception as exc:
+                outputs[variant_id] = ""
+                self._append_log_threadsafe(
+                    f"Visualizer capture warning ({variant_id}, iter {iteration_index + 1}): {exc}",
+                    level="warn",
+                )
+
+        # Fallback rerun for subgraph mappings in VF3 baseline mode.
+        if selected_family != "dijkstra" and "vf3_baseline" in outputs:
+            parsed_try = normalize_mappings(
+                extract_mappings_from_text(outputs.get("vf3_baseline", ""), limit=VISUALIZER_SOLUTION_CAP),
+                int(round(float(datapoint.get("k_nodes", 0)))),
+                int(round(float(datapoint.get("n", 0)))),
+                limit=1,
+            )
+            if not parsed_try:
+                baseline_binary = self.binary_paths.get("vf3_baseline")
+                if baseline_binary is not None:
+                    try:
+                        rerun_command = [
+                            str(baseline_binary),
+                            "-u",
+                            "-s",
+                            "-r",
+                            "0",
+                            str(inputs["vf_pattern"]),
+                            str(inputs["vf_target"]),
+                        ]
+                        rerun_out = self._run_visualizer_command(
+                            rerun_command,
+                            cwd=baseline_binary.parent,
+                            timeout_seconds=max(60.0, timeout_seconds),
+                        )
+                        if rerun_out.strip():
+                            outputs["vf3_baseline"] = rerun_out
+                    except Exception as exc:
+                        self._append_log_threadsafe(
+                            f"Visualizer fallback VF3 rerun warning (iter {iteration_index + 1}): {exc}",
+                            level="warn",
+                        )
+
+        if selected_family == "dijkstra":
+            iteration_payload = self._build_dijkstra_visualization_iteration(
+                inputs=inputs,
+                outputs=outputs,
+                label_lookup=label_lookup,
+                iteration=iteration_index + 1,
+                seed=int(seed),
+            )
+        else:
+            iteration_payload = self._build_subgraph_visualization_iteration(
+                inputs=inputs,
+                outputs=outputs,
+                label_lookup=label_lookup,
+                iteration=iteration_index + 1,
+                seed=int(seed),
+                algorithm=visualization_algo,
+                family=("vf3" if selected_family != "dijkstra" else selected_family),
+            )
+        return iteration_payload
+
+    def _ensure_visualizer_iteration_cached(self, context: dict, iteration_index: int) -> dict | None:
+        seeds = list(context.get("seeds") or [])
+        idx = int(iteration_index)
+        if idx < 0 or idx >= len(seeds):
+            return None
+
+        with self.visualizer_cache_lock:
+            mem_map = context.setdefault("mem_iterations", {})
+            cached = mem_map.get(idx)
+        if isinstance(cached, dict):
+            return cached
+
+        disk_payload = self._load_visualizer_iteration_from_disk(context, idx)
+        if isinstance(disk_payload, dict):
+            with self.visualizer_cache_lock:
+                context.setdefault("mem_iterations", {})[idx] = disk_payload
+            return disk_payload
+
+        payload = self._compute_visualizer_iteration_payload(context, idx)
+        with self.visualizer_cache_lock:
+            context.setdefault("mem_iterations", {})[idx] = payload
+        self._save_visualizer_iteration_to_disk(context, idx, payload)
+        return payload
+
+    def _prefetch_visualizer_window(self, context: dict, center_index: int):
+        seeds = list(context.get("seeds") or [])
+        if not seeds:
+            return
+        low = max(0, int(center_index) - int(VISUALIZER_PREFETCH_RADIUS))
+        high = min(len(seeds) - 1, int(center_index) + int(VISUALIZER_PREFETCH_RADIUS))
+        for idx in range(low, high + 1):
+            try:
+                self._ensure_visualizer_iteration_cached(context, idx)
+            except Exception:
+                continue
+
+    def _start_visualizer_prefetch(self, context_key: str, center_index: int):
+        with self.visualizer_cache_lock:
+            self.visualizer_prefetch_context_key = str(context_key)
+            self.visualizer_prefetch_center_index = int(center_index)
+            running = self.visualizer_prefetch_thread is not None and self.visualizer_prefetch_thread.is_alive()
+            if running:
+                return
+
+        def _worker():
+            while True:
+                with self.visualizer_cache_lock:
+                    request_key = self.visualizer_prefetch_context_key
+                    request_center = self.visualizer_prefetch_center_index
+                    context = self.visualizer_bundle_cache_mem.get(str(request_key or ""))
+                    self.visualizer_prefetch_context_key = None
+                    self.visualizer_prefetch_center_index = None
+                if not request_key or request_center is None or context is None:
+                    break
+                self._prefetch_visualizer_window(context, int(request_center))
+                with self.visualizer_cache_lock:
+                    if self.visualizer_prefetch_context_key is None:
+                        break
+            with self.visualizer_cache_lock:
+                self.visualizer_prefetch_thread = None
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        with self.visualizer_cache_lock:
+            self.visualizer_prefetch_thread = thread
+        thread.start()
+
     def _shift_visualizer_variable(self, var_id: str, delta: int):
         if self.visualizer_is_loading:
             return
@@ -4922,6 +5897,7 @@ class BenchmarkRunnerApp(tk.Tk):
         if item is None:
             self.visualizer_status_var.set("No datapoint was recorded for this variable combination.")
             self.visualizer_no_solution_var.set("No datapoint was recorded for this variable combination.")
+            self.visualizer_active_context_key = None
             self._clear_visualizer_render()
             return
         self.visualizer_no_solution_var.set("")
@@ -4962,6 +5938,7 @@ class BenchmarkRunnerApp(tk.Tk):
         if self._find_visualizer_item_for_selected_point(selected_point) is None:
             self.visualizer_status_var.set("No datapoint was recorded for this variable combination.")
             self.visualizer_no_solution_var.set("No datapoint was recorded for this variable combination.")
+            self.visualizer_active_context_key = None
             self._clear_visualizer_render()
             return
         self.visualizer_is_loading = True
@@ -4981,16 +5958,125 @@ class BenchmarkRunnerApp(tk.Tk):
         )
         worker.start()
 
+    def _prepare_visualizer_native_payload(
+        self,
+        payload: dict,
+        *,
+        selected_point: dict[str, float],
+    ) -> tuple[str, dict, str]:
+        if not self.session_output_dir:
+            raise RuntimeError("Session output directory is unavailable.")
+        run_config = payload.get("run_config")
+        if not isinstance(run_config, dict):
+            raise RuntimeError("Run config is missing from benchmark payload.")
+        tab_id = str(run_config.get("tab_id") or "").strip().lower()
+        if tab_id not in {"subgraph", "shortest_path"}:
+            raise RuntimeError(f"Unsupported tab for visualizer: {tab_id}")
+
+        selected_family, view_label, visualization_algo = self._visualizer_family_context(run_config)
+        datapoint, seeds, point_idx = self._select_visualizer_datapoint(
+            payload,
+            selected_family,
+            selected_point=selected_point,
+        )
+        variant_ids = self._visualizer_mapping_variants(run_config, selected_family)
+        label_lookup = self._variant_label_lookup(run_config)
+        solver_timeout = run_config.get("solver_timeout_seconds")
+        timeout_seconds = float(solver_timeout) if isinstance(solver_timeout, (int, float)) and float(solver_timeout) > 0 else 45.0
+
+        cache_key = self._visualizer_cache_key(
+            run_config,
+            selected_family=selected_family,
+            datapoint=datapoint,
+            seeds=seeds,
+        )
+        cache_root = self._visualizer_cache_root()
+        if cache_root is None:
+            raise RuntimeError("Visualizer cache root is unavailable.")
+        cache_dir = cache_root / cache_key
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        with self.visualizer_cache_lock:
+            context = self.visualizer_bundle_cache_mem.get(cache_key)
+            if context is None:
+                context = {
+                    "cache_key": cache_key,
+                    "run_config": run_config,
+                    "selected_family": selected_family,
+                    "view_label": view_label,
+                    "visualization_algo": visualization_algo,
+                    "datapoint": dict(datapoint),
+                    "point_idx": point_idx,
+                    "seeds": list(seeds),
+                    "variant_ids": list(variant_ids),
+                    "label_lookup": dict(label_lookup),
+                    "timeout_seconds": float(timeout_seconds),
+                    "cache_dir": str(cache_dir),
+                    "mem_iterations": {},
+                }
+                self.visualizer_bundle_cache_mem[cache_key] = context
+
+        seeds_len = len(seeds)
+        if seeds_len <= 0:
+            raise RuntimeError("No visualization iterations were generated.")
+        center_index = max(0, min(int(self.visualizer_iteration_index), seeds_len - 1))
+        self._prefetch_visualizer_window(context, center_index)
+        self._start_visualizer_prefetch(cache_key, center_index)
+
+        iterations_payloads: list[dict] = []
+        mem_map = context.get("mem_iterations", {})
+        for idx in range(seeds_len):
+            entry = mem_map.get(idx)
+            if isinstance(entry, dict):
+                iterations_payloads.append(entry)
+            else:
+                iterations_payloads.append({"_lazy_idx": idx, "iteration": idx + 1})
+
+        first_payload = None
+        for entry in iterations_payloads:
+            if isinstance(entry, dict) and "_lazy_idx" not in entry:
+                first_payload = entry
+                break
+        if first_payload is None:
+            first_payload = self._ensure_visualizer_iteration_cached(context, center_index)
+            if not isinstance(first_payload, dict):
+                raise RuntimeError("Failed to prepare visualizer iteration payload.")
+            iterations_payloads[center_index] = first_payload
+
+        visualization_root = dict(first_payload)
+        visualization_root["visualization_iterations"] = iterations_payloads
+        visualization_result = {
+            "algorithm": visualization_algo,
+            "status": "completed",
+            "visualization": visualization_root,
+        }
+
+        point_text = f"N={int(round(float(datapoint['n'])))} density={float(datapoint['density']):.4f}"
+        if selected_family != "dijkstra":
+            point_text += f" k_nodes={int(round(float(datapoint['k_nodes'])))}"
+        note = (
+            f"Prepared {view_label} visualizer datapoint"
+            f" ({point_text}, iterations={len(seeds)}, point_index={point_idx + 1 if point_idx is not None else 'n/a'})."
+        )
+        return note, visualization_result, cache_key
+
     def _open_visualizer_worker(self, payload: dict, mode: str, selected_point: dict[str, float]):
         error: Exception | None = None
         html_path: Path | None = None
         status_note = ""
         visualization_result: dict | None = None
+        context_key: str | None = None
         try:
-            html_path, status_note, visualization_result = self._build_visualizer_bundle(payload, selected_point=selected_point)
             if mode == "external":
+                html_path, status_note, visualization_result = self._build_visualizer_bundle(payload, selected_point=selected_point)
                 webbrowser.open_new_tab(html_path.resolve().as_uri())
-            self._append_log_threadsafe(f"Prepared visualizer: {html_path}", level="notice")
+                self._append_log_threadsafe(f"Prepared visualizer: {html_path}", level="notice")
+            else:
+                status_note, visualization_result, context_key = self._prepare_visualizer_native_payload(
+                    payload,
+                    selected_point=selected_point,
+                )
+                self._append_log_threadsafe("Prepared visualizer data from cache/baseline mappings.", level="notice")
         except Exception as exc:
             error = exc
             self._append_log_threadsafe(f"Failed to open visualizer: {exc}", level="error")
@@ -5008,6 +6094,8 @@ class BenchmarkRunnerApp(tk.Tk):
                 if not mode == "embed":
                     messagebox.showerror(APP_TITLE, f"Failed to open visualizer:\n{error}")
             else:
+                if context_key:
+                    self.visualizer_active_context_key = str(context_key)
                 if mode == "external":
                     self.visualizer_status_var.set(status_note or "Visualizer opened externally.")
                 elif mode == "fullscreen":
@@ -5025,7 +6113,22 @@ class BenchmarkRunnerApp(tk.Tk):
             return None
         self.visualizer_iteration_index = max(0, min(int(self.visualizer_iteration_index), len(self.visualizer_iterations) - 1))
         payload = self.visualizer_iterations[self.visualizer_iteration_index]
-        return payload if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        lazy_idx = payload.get("_lazy_idx")
+        if isinstance(lazy_idx, int):
+            context = None
+            with self.visualizer_cache_lock:
+                if self.visualizer_active_context_key:
+                    context = self.visualizer_bundle_cache_mem.get(self.visualizer_active_context_key)
+            if isinstance(context, dict):
+                realized = self._ensure_visualizer_iteration_cached(context, int(lazy_idx))
+                if isinstance(realized, dict):
+                    self.visualizer_iterations[self.visualizer_iteration_index] = realized
+                    self._start_visualizer_prefetch(str(context.get("cache_key", "")), int(lazy_idx))
+                    return realized
+            return None
+        return payload
 
     def _current_visualizer_solutions(self) -> list[dict]:
         iteration_payload = self._current_visualizer_iteration_payload()
@@ -5037,24 +6140,47 @@ class BenchmarkRunnerApp(tk.Tk):
         return [entry for entry in raw if isinstance(entry, dict)]
 
     def _update_visualizer_iteration_solution_controls(self):
+        def _set_button_state(btn, enabled: bool):
+            if btn is not None:
+                btn.configure(state=(tk.NORMAL if enabled else tk.DISABLED))
+
+        def _update_jump_states(button_map: dict[int, ttk.Button | None], index: int, total: int):
+            for delta, btn in button_map.items():
+                target = int(index) + int(delta)
+                _set_button_state(btn, 0 <= target < total)
+
+        iter_buttons = {
+            -10: self.visualizer_iter_back10_btn,
+            -5: self.visualizer_iter_back5_btn,
+            -1: self.visualizer_iter_prev_btn,
+            1: self.visualizer_iter_next_btn,
+            5: self.visualizer_iter_fwd5_btn,
+            10: self.visualizer_iter_fwd10_btn,
+        }
+        sol_buttons = {
+            -10: self.visualizer_sol_back10_btn,
+            -5: self.visualizer_sol_back5_btn,
+            -1: self.visualizer_sol_prev_btn,
+            1: self.visualizer_sol_next_btn,
+            5: self.visualizer_sol_fwd5_btn,
+            10: self.visualizer_sol_fwd10_btn,
+        }
+
         total_iterations = len(self.visualizer_iterations)
         if total_iterations <= 0:
             self.visualizer_iteration_label_var.set("Iteration --")
             self.visualizer_solution_label_var.set("Solution --")
             self.visualizer_solution_count_var.set("Solution Count: --")
             self.visualizer_no_solution_var.set("")
-            self.visualizer_iter_prev_btn.configure(state=tk.DISABLED)
-            self.visualizer_iter_next_btn.configure(state=tk.DISABLED)
-            self.visualizer_sol_prev_btn.configure(state=tk.DISABLED)
-            self.visualizer_sol_next_btn.configure(state=tk.DISABLED)
+            _update_jump_states(iter_buttons, 0, 0)
+            _update_jump_states(sol_buttons, 0, 0)
+            self._sync_visualizer_fullscreen_controls()
+            self._update_visualizer_autoplay_controls()
             return
 
         self.visualizer_iteration_index = max(0, min(int(self.visualizer_iteration_index), total_iterations - 1))
         self.visualizer_iteration_label_var.set(f"Iteration {self.visualizer_iteration_index + 1} of {total_iterations}")
-        self.visualizer_iter_prev_btn.configure(state=(tk.NORMAL if self.visualizer_iteration_index > 0 else tk.DISABLED))
-        self.visualizer_iter_next_btn.configure(
-            state=(tk.NORMAL if self.visualizer_iteration_index < (total_iterations - 1) else tk.DISABLED)
-        )
+        _update_jump_states(iter_buttons, int(self.visualizer_iteration_index), int(total_iterations))
 
         solutions = self._current_visualizer_solutions()
         total_solutions = len(solutions)
@@ -5063,8 +6189,9 @@ class BenchmarkRunnerApp(tk.Tk):
             self.visualizer_solution_label_var.set("Solution 0 of 0")
             self.visualizer_solution_count_var.set("Solution Count: 0")
             self.visualizer_no_solution_var.set("No solutions found for this selection.")
-            self.visualizer_sol_prev_btn.configure(state=tk.DISABLED)
-            self.visualizer_sol_next_btn.configure(state=tk.DISABLED)
+            _update_jump_states(sol_buttons, 0, 0)
+            self._sync_visualizer_fullscreen_controls()
+            self._update_visualizer_autoplay_controls()
             return
 
         self.visualizer_solution_index = max(0, min(int(self.visualizer_solution_index), total_solutions - 1))
@@ -5081,37 +6208,45 @@ class BenchmarkRunnerApp(tk.Tk):
         cap_note = " (capped)" if bool(current_iter.get("solution_cap_reached")) else ""
         self.visualizer_solution_count_var.set(f"Solution Count: {total_solutions}{cap_note}")
         self.visualizer_no_solution_var.set("")
-        self.visualizer_sol_prev_btn.configure(state=(tk.NORMAL if self.visualizer_solution_index > 0 else tk.DISABLED))
-        self.visualizer_sol_next_btn.configure(
-            state=(tk.NORMAL if self.visualizer_solution_index < (total_solutions - 1) else tk.DISABLED)
-        )
+        _update_jump_states(sol_buttons, int(self.visualizer_solution_index), int(total_solutions))
+        self._sync_visualizer_fullscreen_controls()
+        self._update_visualizer_autoplay_controls()
+
+    def _visualizer_shift_iteration(self, delta: int):
+        total = len(self.visualizer_iterations)
+        if total <= 0:
+            return
+        old = int(self.visualizer_iteration_index)
+        new = max(0, min(old + int(delta), total - 1))
+        if new == old:
+            return
+        self.visualizer_iteration_index = new
+        self.visualizer_solution_index = 0
+        self._render_visualizer_current_iteration()
+
+    def _visualizer_shift_solution(self, delta: int):
+        solutions = self._current_visualizer_solutions()
+        total = len(solutions)
+        if total <= 0:
+            return
+        old = int(self.visualizer_solution_index)
+        new = max(0, min(old + int(delta), total - 1))
+        if new == old:
+            return
+        self.visualizer_solution_index = new
+        self._render_visualizer_current_iteration()
 
     def _visualizer_prev_iteration(self):
-        if self.visualizer_iteration_index <= 0:
-            return
-        self.visualizer_iteration_index -= 1
-        self.visualizer_solution_index = 0
-        self._render_visualizer_current_iteration()
+        self._visualizer_shift_iteration(-1)
 
     def _visualizer_next_iteration(self):
-        if self.visualizer_iteration_index >= len(self.visualizer_iterations) - 1:
-            return
-        self.visualizer_iteration_index += 1
-        self.visualizer_solution_index = 0
-        self._render_visualizer_current_iteration()
+        self._visualizer_shift_iteration(1)
 
     def _visualizer_prev_solution(self):
-        if self.visualizer_solution_index <= 0:
-            return
-        self.visualizer_solution_index -= 1
-        self._render_visualizer_current_iteration()
+        self._visualizer_shift_solution(-1)
 
     def _visualizer_next_solution(self):
-        solutions = self._current_visualizer_solutions()
-        if self.visualizer_solution_index >= len(solutions) - 1:
-            return
-        self.visualizer_solution_index += 1
-        self._render_visualizer_current_iteration()
+        self._visualizer_shift_solution(1)
 
     def _visualizer_circle_positions(self, node_ids: list[str]) -> dict[str, tuple[float, float]]:
         n = len(node_ids)
@@ -5210,9 +6345,14 @@ class BenchmarkRunnerApp(tk.Tk):
         ax.set_ylim(-1.15, 1.15)
         ax.set_axis_off()
 
-    def _build_visualizer_native_figure(self) -> Figure | None:
+    def _build_visualizer_native_figure(self, target_fig: Figure | None = None) -> Figure | None:
         current = self._current_visualizer_iteration_payload()
         if not current:
+            if target_fig is not None:
+                try:
+                    target_fig.clear()
+                except Exception:
+                    pass
             return None
         solutions = self._current_visualizer_solutions()
         if solutions:
@@ -5240,7 +6380,16 @@ class BenchmarkRunnerApp(tk.Tk):
         pattern_edges_raw = current.get("pattern_edges") if isinstance(current.get("pattern_edges"), list) else []
         has_pattern = pattern_count > 0 and len(pattern_edges_raw) > 0
 
-        fig = Figure(figsize=(11.0, 6.2), dpi=100)
+        fig = target_fig if target_fig is not None else Figure(figsize=(11.0, 6.2), dpi=100)
+        try:
+            fig.clear()
+        except Exception:
+            pass
+        try:
+            fig.set_size_inches(11.0, 6.2, forward=False)
+            fig.set_dpi(100)
+        except Exception:
+            pass
         if has_pattern:
             ax_pattern = fig.add_subplot(1, 2, 1)
             ax_graph = fig.add_subplot(1, 2, 2)
@@ -5316,26 +6465,43 @@ class BenchmarkRunnerApp(tk.Tk):
         return fig
 
     def _render_visualizer_current_iteration(self):
-        fig = self._build_visualizer_native_figure()
         self._update_visualizer_iteration_solution_controls()
+        if self.visualizer_active_context_key:
+            self._start_visualizer_prefetch(self.visualizer_active_context_key, int(self.visualizer_iteration_index))
+        if self.visualizer_graph_canvas is None:
+            fig = self._build_visualizer_native_figure(None)
+        else:
+            fig = self._build_visualizer_native_figure(self.visualizer_graph_fig)
         if fig is None:
             self._clear_visualizer_render()
             return
         self.visualizer_graph_fig = fig
-        self.visualizer_graph_canvas = self._render_figure_in_frame(
-            self.visualizer_host_frame,
-            fig,
-            self.visualizer_graph_canvas,
-        )
+        if self.visualizer_graph_canvas is None:
+            self.visualizer_graph_canvas = FigureCanvasTkAgg(fig, master=self.visualizer_host_frame)
+            self.visualizer_graph_canvas.draw()
+            self.visualizer_graph_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        else:
+            try:
+                self.visualizer_graph_canvas.draw()
+            except Exception:
+                # Fallback to full widget recreation only if redraw fails.
+                self.visualizer_graph_canvas = self._render_figure_in_frame(
+                    self.visualizer_host_frame,
+                    fig,
+                    self.visualizer_graph_canvas,
+                )
+        self._refresh_visualizer_fullscreen_canvas()
 
     def _render_visualizer_result_in_tab(self, visualization_result: dict | None):
         if not isinstance(visualization_result, dict):
             self._clear_visualizer_render()
+            self._refresh_visualizer_fullscreen_canvas()
             return
         vis_root = visualization_result.get("visualization")
         if not isinstance(vis_root, dict):
             self._clear_visualizer_render()
             self.visualizer_no_solution_var.set("No visualization payload was generated.")
+            self._refresh_visualizer_fullscreen_canvas()
             return
         iterations_raw = vis_root.get("visualization_iterations")
         if isinstance(iterations_raw, list) and iterations_raw:
@@ -5345,6 +6511,7 @@ class BenchmarkRunnerApp(tk.Tk):
         if not iterations:
             self._clear_visualizer_render()
             self.visualizer_no_solution_var.set("No visualization iterations were generated.")
+            self._refresh_visualizer_fullscreen_canvas()
             return
         self.visualizer_loaded_result = visualization_result
         self.visualizer_iterations = iterations
@@ -5352,25 +6519,196 @@ class BenchmarkRunnerApp(tk.Tk):
         self.visualizer_solution_index = 0
         self._render_visualizer_current_iteration()
 
+    def _close_visualizer_fullscreen_popup(self, _evt=None):
+        self._deactivate_visualizer_autoplay()
+        popup = self.visualizer_fullscreen_popup
+        self.visualizer_fullscreen_popup = None
+        if self.visualizer_fullscreen_canvas is not None:
+            try:
+                self.visualizer_fullscreen_canvas.get_tk_widget().destroy()
+            except Exception:
+                pass
+            self.visualizer_fullscreen_canvas = None
+        if self.visualizer_fullscreen_fig is not None:
+            try:
+                self.visualizer_fullscreen_fig.clear()
+            except Exception:
+                pass
+            self.visualizer_fullscreen_fig = None
+        self.visualizer_fullscreen_host = None
+        self.visualizer_fullscreen_nav_rows = {}
+        self.visualizer_fullscreen_nav_name_labels = {}
+        self.visualizer_fullscreen_nav_prev_buttons = {}
+        self.visualizer_fullscreen_nav_next_buttons = {}
+        self.visualizer_fullscreen_nav_jump_buttons = {}
+        self.visualizer_fullscreen_nav_play_buttons = {}
+        self.visualizer_fullscreen_iter_play_btn = None
+        self.visualizer_fullscreen_sol_play_btn = None
+        self.visualizer_fullscreen_global_autoplay_btn = None
+        self.visualizer_fullscreen_iter_back10_btn = None
+        self.visualizer_fullscreen_iter_back5_btn = None
+        self.visualizer_fullscreen_iter_prev_btn = None
+        self.visualizer_fullscreen_iter_next_btn = None
+        self.visualizer_fullscreen_iter_fwd5_btn = None
+        self.visualizer_fullscreen_iter_fwd10_btn = None
+        self.visualizer_fullscreen_sol_back10_btn = None
+        self.visualizer_fullscreen_sol_back5_btn = None
+        self.visualizer_fullscreen_sol_prev_btn = None
+        self.visualizer_fullscreen_sol_next_btn = None
+        self.visualizer_fullscreen_sol_fwd5_btn = None
+        self.visualizer_fullscreen_sol_fwd10_btn = None
+        if popup is not None:
+            try:
+                popup.destroy()
+            except Exception:
+                pass
+
+    def _sync_visualizer_fullscreen_controls(self, run_config: dict | None = None):
+        popup = self.visualizer_fullscreen_popup
+        if popup is None:
+            return
+        try:
+            if not popup.winfo_exists():
+                self._close_visualizer_fullscreen_popup()
+                return
+        except Exception:
+            self._close_visualizer_fullscreen_popup()
+            return
+
+        if run_config is None and isinstance(self.last_run_payload, dict):
+            raw_cfg = self.last_run_payload.get("run_config")
+            run_config = raw_cfg if isinstance(raw_cfg, dict) else None
+
+        vars_for_tab = self._visualizer_vars_for_tab(run_config) if isinstance(run_config, dict) else []
+        for var_id in ("n", "k", "density"):
+            row = self.visualizer_fullscreen_nav_rows.get(var_id)
+            if row is None:
+                continue
+            if var_id in vars_for_tab:
+                if not row.winfo_manager():
+                    row.pack(fill=tk.X, pady=(1, 1))
+            else:
+                if row.winfo_manager():
+                    row.pack_forget()
+                continue
+            name_label = self.visualizer_fullscreen_nav_name_labels.get(var_id)
+            if name_label is not None and isinstance(run_config, dict):
+                try:
+                    name_label.configure(text=f"{self._axis_label(var_id, run_config)}:")
+                except Exception:
+                    pass
+            source_prev = self.visualizer_nav_prev_buttons.get(var_id)
+            source_next = self.visualizer_nav_next_buttons.get(var_id)
+            state_prev = str(source_prev.cget("state")) if source_prev is not None else tk.DISABLED
+            state_next = str(source_next.cget("state")) if source_next is not None else tk.DISABLED
+            target_prev = self.visualizer_fullscreen_nav_prev_buttons.get(var_id)
+            target_next = self.visualizer_fullscreen_nav_next_buttons.get(var_id)
+            if target_prev is not None:
+                target_prev.configure(state=state_prev)
+            if target_next is not None:
+                target_next.configure(state=state_next)
+            src_jump = self.visualizer_nav_jump_buttons.get(var_id, {})
+            dst_jump = self.visualizer_fullscreen_nav_jump_buttons.get(var_id, {})
+            for delta, dst_btn in dst_jump.items():
+                src_btn = src_jump.get(delta)
+                state = str(src_btn.cget("state")) if src_btn is not None else tk.DISABLED
+                dst_btn.configure(state=state)
+
+        iter_pairs = [
+            (self.visualizer_fullscreen_iter_back10_btn, self.visualizer_iter_back10_btn),
+            (self.visualizer_fullscreen_iter_back5_btn, self.visualizer_iter_back5_btn),
+            (self.visualizer_fullscreen_iter_prev_btn, self.visualizer_iter_prev_btn),
+            (self.visualizer_fullscreen_iter_next_btn, self.visualizer_iter_next_btn),
+            (self.visualizer_fullscreen_iter_fwd5_btn, self.visualizer_iter_fwd5_btn),
+            (self.visualizer_fullscreen_iter_fwd10_btn, self.visualizer_iter_fwd10_btn),
+        ]
+        for dst, src in iter_pairs:
+            if dst is not None:
+                state = str(src.cget("state")) if src is not None else tk.DISABLED
+                dst.configure(state=state)
+
+        sol_pairs = [
+            (self.visualizer_fullscreen_sol_back10_btn, self.visualizer_sol_back10_btn),
+            (self.visualizer_fullscreen_sol_back5_btn, self.visualizer_sol_back5_btn),
+            (self.visualizer_fullscreen_sol_prev_btn, self.visualizer_sol_prev_btn),
+            (self.visualizer_fullscreen_sol_next_btn, self.visualizer_sol_next_btn),
+            (self.visualizer_fullscreen_sol_fwd5_btn, self.visualizer_sol_fwd5_btn),
+            (self.visualizer_fullscreen_sol_fwd10_btn, self.visualizer_sol_fwd10_btn),
+        ]
+        for dst, src in sol_pairs:
+            if dst is not None:
+                state = str(src.cget("state")) if src is not None else tk.DISABLED
+                dst.configure(state=state)
+
+    def _refresh_visualizer_fullscreen_canvas(self):
+        popup = self.visualizer_fullscreen_popup
+        host = self.visualizer_fullscreen_host
+        if popup is None or host is None:
+            return
+        try:
+            if not popup.winfo_exists():
+                self._close_visualizer_fullscreen_popup()
+                return
+        except Exception:
+            self._close_visualizer_fullscreen_popup()
+            return
+
+        target_fig = self.visualizer_fullscreen_fig if self.visualizer_fullscreen_fig is not None else Figure(figsize=(11.0, 6.2), dpi=100)
+        fig = self._build_visualizer_native_figure(target_fig)
+        if fig is None:
+            fig = target_fig
+            try:
+                fig.clear()
+            except Exception:
+                pass
+            ax = fig.add_subplot(1, 1, 1)
+            ax.text(0.5, 0.5, "No visualizer data loaded.", ha="center", va="center", transform=ax.transAxes, color="#666666")
+            ax.set_axis_off()
+            fig.tight_layout()
+
+        self.visualizer_fullscreen_fig = fig
+        if self.visualizer_fullscreen_canvas is None:
+            canvas = FigureCanvasTkAgg(fig, master=host)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            self.visualizer_fullscreen_canvas = canvas
+        else:
+            try:
+                self.visualizer_fullscreen_canvas.draw()
+            except Exception:
+                try:
+                    self.visualizer_fullscreen_canvas.get_tk_widget().destroy()
+                except Exception:
+                    pass
+                canvas = FigureCanvasTkAgg(fig, master=host)
+                canvas.draw()
+                canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+                self.visualizer_fullscreen_canvas = canvas
+        self._sync_visualizer_fullscreen_controls()
+
     def _show_visualizer_native_fullscreen(self):
         fig = self._build_visualizer_native_figure()
         if fig is None:
             messagebox.showwarning(APP_TITLE, "No in-tab visualizer is available yet.")
             return
+        popup = self.visualizer_fullscreen_popup
+        if popup is not None:
+            try:
+                if popup.winfo_exists():
+                    popup.deiconify()
+                    popup.lift()
+                    popup.focus_force()
+                    self._refresh_visualizer_fullscreen_canvas()
+                    return
+            except Exception:
+                self._close_visualizer_fullscreen_popup()
+
         popup = tk.Toplevel(self)
         popup.title("Visualizer Fullscreen")
         popup.transient(self)
         popup.configure(background="#111111")
-
-        def _close_popup(_evt=None):
-            try:
-                fig.clear()
-            except Exception:
-                pass
-            popup.destroy()
-
-        popup.bind("<Escape>", _close_popup)
-        popup.protocol("WM_DELETE_WINDOW", _close_popup)
+        popup.bind("<Escape>", self._close_visualizer_fullscreen_popup)
+        popup.protocol("WM_DELETE_WINDOW", self._close_visualizer_fullscreen_popup)
         try:
             popup.attributes("-fullscreen", True)
         except Exception:
@@ -5382,11 +6720,126 @@ class BenchmarkRunnerApp(tk.Tk):
         top_bar = ttk.Frame(popup)
         top_bar.pack(fill=tk.X)
         ttk.Label(top_bar, text="Press Esc to exit fullscreen visualizer").pack(side=tk.LEFT, padx=8, pady=6)
-        ttk.Button(top_bar, text="Close", command=_close_popup).pack(side=tk.RIGHT, padx=8, pady=4)
+        ttk.Button(top_bar, text="Close", command=self._close_visualizer_fullscreen_popup).pack(side=tk.RIGHT, padx=8, pady=4)
 
-        canvas = FigureCanvasTkAgg(fig, master=popup)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        controls = ttk.Frame(popup, padding=(10, 6, 10, 4))
+        controls.pack(fill=tk.X)
+        ttk.Label(controls, text="Datapoint Selection:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 2))
+        for var_id in ("n", "k", "density"):
+            row = ttk.Frame(controls)
+            row.pack(fill=tk.X, pady=(1, 1))
+            name_lbl = ttk.Label(row, text=f"{self._axis_label(var_id)}:", width=12)
+            name_lbl.pack(side=tk.LEFT)
+            back10_btn = ttk.Button(row, text="<<<", width=4, command=lambda v=var_id: self._shift_visualizer_variable(v, -10))
+            back10_btn.pack(side=tk.LEFT)
+            back5_btn = ttk.Button(row, text="<<", width=4, command=lambda v=var_id: self._shift_visualizer_variable(v, -5))
+            back5_btn.pack(side=tk.LEFT, padx=(2, 0))
+            prev_btn = ttk.Button(row, text="<", width=3, command=lambda v=var_id: self._shift_visualizer_variable(v, -1))
+            prev_btn.pack(side=tk.LEFT, padx=(2, 0))
+            value_lbl = tk.Label(
+                row,
+                textvariable=self.visualizer_nav_display_vars[var_id],
+                width=16,
+                anchor="center",
+                fg="#222222",
+            )
+            value_lbl.pack(side=tk.LEFT, padx=(6, 6))
+            next_btn = ttk.Button(row, text=">", width=3, command=lambda v=var_id: self._shift_visualizer_variable(v, 1))
+            next_btn.pack(side=tk.LEFT)
+            fwd5_btn = ttk.Button(row, text=">>", width=4, command=lambda v=var_id: self._shift_visualizer_variable(v, 5))
+            fwd5_btn.pack(side=tk.LEFT, padx=(2, 0))
+            fwd10_btn = ttk.Button(row, text=">>>", width=4, command=lambda v=var_id: self._shift_visualizer_variable(v, 10))
+            fwd10_btn.pack(side=tk.LEFT, padx=(2, 0))
+            ttk.Label(row, textvariable=self.visualizer_nav_count_vars[var_id], foreground="#666666").pack(side=tk.LEFT, padx=(8, 0))
+            auto_key = f"var_{var_id}"
+            play_btn = ttk.Button(
+                row,
+                textvariable=self.visualizer_autoplay_label_vars[auto_key],
+                width=6,
+                command=lambda k=auto_key: self._toggle_visualizer_autoplay(k),
+                state=tk.DISABLED,
+            )
+            play_btn.pack(side=tk.LEFT, padx=(8, 0))
+            self.visualizer_fullscreen_nav_rows[var_id] = row
+            self.visualizer_fullscreen_nav_name_labels[var_id] = name_lbl
+            self.visualizer_fullscreen_nav_prev_buttons[var_id] = prev_btn
+            self.visualizer_fullscreen_nav_next_buttons[var_id] = next_btn
+            self.visualizer_fullscreen_nav_play_buttons[var_id] = play_btn
+            self.visualizer_fullscreen_nav_jump_buttons[var_id] = {
+                -10: back10_btn,
+                -5: back5_btn,
+                -1: prev_btn,
+                1: next_btn,
+                5: fwd5_btn,
+                10: fwd10_btn,
+            }
+
+        iter_sol = ttk.Frame(controls)
+        iter_sol.pack(fill=tk.X, pady=(5, 3))
+        ttk.Label(iter_sol, text="Iteration:", width=10).pack(side=tk.LEFT)
+        self.visualizer_fullscreen_iter_back10_btn = ttk.Button(iter_sol, text="<<<", width=4, command=lambda: self._visualizer_shift_iteration(-10))
+        self.visualizer_fullscreen_iter_back10_btn.pack(side=tk.LEFT)
+        self.visualizer_fullscreen_iter_back5_btn = ttk.Button(iter_sol, text="<<", width=4, command=lambda: self._visualizer_shift_iteration(-5))
+        self.visualizer_fullscreen_iter_back5_btn.pack(side=tk.LEFT, padx=(2, 0))
+        self.visualizer_fullscreen_iter_prev_btn = ttk.Button(iter_sol, text="<", width=3, command=lambda: self._visualizer_shift_iteration(-1))
+        self.visualizer_fullscreen_iter_prev_btn.pack(side=tk.LEFT)
+        ttk.Label(iter_sol, textvariable=self.visualizer_iteration_label_var, width=20).pack(side=tk.LEFT, padx=(6, 6))
+        self.visualizer_fullscreen_iter_next_btn = ttk.Button(iter_sol, text=">", width=3, command=lambda: self._visualizer_shift_iteration(1))
+        self.visualizer_fullscreen_iter_next_btn.pack(side=tk.LEFT)
+        self.visualizer_fullscreen_iter_fwd5_btn = ttk.Button(iter_sol, text=">>", width=4, command=lambda: self._visualizer_shift_iteration(5))
+        self.visualizer_fullscreen_iter_fwd5_btn.pack(side=tk.LEFT, padx=(2, 0))
+        self.visualizer_fullscreen_iter_fwd10_btn = ttk.Button(iter_sol, text=">>>", width=4, command=lambda: self._visualizer_shift_iteration(10))
+        self.visualizer_fullscreen_iter_fwd10_btn.pack(side=tk.LEFT, padx=(2, 12))
+        ttk.Label(iter_sol, text="Solution:", width=10).pack(side=tk.LEFT)
+        self.visualizer_fullscreen_sol_back10_btn = ttk.Button(iter_sol, text="<<<", width=4, command=lambda: self._visualizer_shift_solution(-10))
+        self.visualizer_fullscreen_sol_back10_btn.pack(side=tk.LEFT)
+        self.visualizer_fullscreen_sol_back5_btn = ttk.Button(iter_sol, text="<<", width=4, command=lambda: self._visualizer_shift_solution(-5))
+        self.visualizer_fullscreen_sol_back5_btn.pack(side=tk.LEFT, padx=(2, 0))
+        self.visualizer_fullscreen_sol_prev_btn = ttk.Button(iter_sol, text="<", width=3, command=lambda: self._visualizer_shift_solution(-1))
+        self.visualizer_fullscreen_sol_prev_btn.pack(side=tk.LEFT)
+        ttk.Label(iter_sol, textvariable=self.visualizer_solution_label_var, width=32).pack(side=tk.LEFT, padx=(6, 6))
+        self.visualizer_fullscreen_sol_next_btn = ttk.Button(iter_sol, text=">", width=3, command=lambda: self._visualizer_shift_solution(1))
+        self.visualizer_fullscreen_sol_next_btn.pack(side=tk.LEFT)
+        self.visualizer_fullscreen_sol_fwd5_btn = ttk.Button(iter_sol, text=">>", width=4, command=lambda: self._visualizer_shift_solution(5))
+        self.visualizer_fullscreen_sol_fwd5_btn.pack(side=tk.LEFT, padx=(2, 0))
+        self.visualizer_fullscreen_sol_fwd10_btn = ttk.Button(iter_sol, text=">>>", width=4, command=lambda: self._visualizer_shift_solution(10))
+        self.visualizer_fullscreen_sol_fwd10_btn.pack(side=tk.LEFT, padx=(2, 0))
+        self.visualizer_fullscreen_iter_play_btn = ttk.Button(
+            iter_sol,
+            textvariable=self.visualizer_autoplay_label_vars["iteration"],
+            width=6,
+            command=lambda: self._toggle_visualizer_autoplay("iteration"),
+            state=tk.DISABLED,
+        )
+        self.visualizer_fullscreen_iter_play_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self.visualizer_fullscreen_sol_play_btn = ttk.Button(
+            iter_sol,
+            textvariable=self.visualizer_autoplay_label_vars["solution"],
+            width=6,
+            command=lambda: self._toggle_visualizer_autoplay("solution"),
+            state=tk.DISABLED,
+        )
+        self.visualizer_fullscreen_sol_play_btn.pack(side=tk.LEFT, padx=(8, 0))
+
+        ttk.Label(controls, textvariable=self.visualizer_solution_count_var, foreground="#555555").pack(anchor="w", pady=(0, 1))
+        ttk.Label(controls, textvariable=self.visualizer_no_solution_var, foreground="#B00020").pack(anchor="w")
+        self.visualizer_fullscreen_global_autoplay_btn = ttk.Button(
+            controls,
+            textvariable=self.visualizer_autoplay_global_label_var,
+            command=self._toggle_visualizer_autoplay_all,
+            state=tk.DISABLED,
+        )
+        self.visualizer_fullscreen_global_autoplay_btn.pack(anchor="w", pady=(4, 2))
+
+        host = ttk.Frame(popup)
+        host.pack(fill=tk.BOTH, expand=True)
+
+        self.visualizer_fullscreen_popup = popup
+        self.visualizer_fullscreen_host = host
+        self.visualizer_fullscreen_fig = fig
+        self.visualizer_fullscreen_canvas = None
+        self._refresh_visualizer_fullscreen_canvas()
+        self._update_visualizer_autoplay_controls()
 
     def _build_visualizer_bundle(
         self,
@@ -5408,7 +6861,7 @@ class BenchmarkRunnerApp(tk.Tk):
             selected_family,
             selected_point=selected_point,
         )
-        variant_ids = self._visualizer_variants_for_family(run_config, selected_family)
+        variant_ids = self._visualizer_mapping_variants(run_config, selected_family)
         if not variant_ids:
             raise RuntimeError(f"No variants available for family '{selected_family}'.")
 
@@ -5474,6 +6927,39 @@ class BenchmarkRunnerApp(tk.Tk):
                     count = parse_solution_count(outputs.get(variant_id, ""))
                     count_by_variant[variant_id].append(str(count) if count is not None else "NA")
 
+            if selected_family != "dijkstra" and "vf3_baseline" in outputs:
+                parsed_try = normalize_mappings(
+                    extract_mappings_from_text(outputs.get("vf3_baseline", ""), limit=VISUALIZER_SOLUTION_CAP),
+                    int(round(float(datapoint.get("k_nodes", 0)))),
+                    int(round(float(datapoint.get("n", 0)))),
+                    limit=1,
+                )
+                if not parsed_try:
+                    baseline_binary = self.binary_paths.get("vf3_baseline")
+                    if baseline_binary is not None:
+                        try:
+                            rerun_command = [
+                                str(baseline_binary),
+                                "-u",
+                                "-s",
+                                "-r",
+                                "0",
+                                str(inputs["vf_pattern"]),
+                                str(inputs["vf_target"]),
+                            ]
+                            rerun_out = self._run_visualizer_command(
+                                rerun_command,
+                                cwd=baseline_binary.parent,
+                                timeout_seconds=max(60.0, timeout_seconds),
+                            )
+                            if rerun_out.strip():
+                                outputs["vf3_baseline"] = rerun_out
+                        except Exception as exc:
+                            self._append_log_threadsafe(
+                                f"Visualizer fallback VF3 rerun warning (iter {iter_idx + 1}): {exc}",
+                                level="warn",
+                            )
+
             if selected_family == "dijkstra":
                 iteration_payload = self._build_dijkstra_visualization_iteration(
                     inputs=inputs,
@@ -5490,7 +6976,7 @@ class BenchmarkRunnerApp(tk.Tk):
                     iteration=iter_idx + 1,
                     seed=int(seed),
                     algorithm=visualization_algo,
-                    family=selected_family,
+                    family=("vf3" if selected_family != "dijkstra" else selected_family),
                 )
             iteration_payloads.append(iteration_payload)
 
