@@ -1270,6 +1270,10 @@ class BenchmarkRunnerApp(tk.Tk):
         self.visualizer_nav_rows: dict[str, tk.Widget] = {}
         self.visualizer_graph_canvas: FigureCanvasTkAgg | None = None
         self.visualizer_graph_fig: Figure | None = None
+        self.visualizer_host_scroll_canvas: tk.Canvas | None = None
+        self.visualizer_host_scroll_xbar: ttk.Scrollbar | None = None
+        self.visualizer_host_scroll_ybar: ttk.Scrollbar | None = None
+        self.visualizer_host_scroll_window = None
         self.visualizer_loaded_result: dict | None = None
         self.visualizer_active_context_key: str | None = None
         self.visualizer_bundle_cache_mem: dict[str, dict] = {}
@@ -1316,6 +1320,10 @@ class BenchmarkRunnerApp(tk.Tk):
         self.visualizer_fullscreen_canvas: FigureCanvasTkAgg | None = None
         self.visualizer_fullscreen_fig: Figure | None = None
         self.visualizer_fullscreen_host: ttk.Frame | None = None
+        self.visualizer_fullscreen_scroll_canvas: tk.Canvas | None = None
+        self.visualizer_fullscreen_scroll_xbar: ttk.Scrollbar | None = None
+        self.visualizer_fullscreen_scroll_ybar: ttk.Scrollbar | None = None
+        self.visualizer_fullscreen_scroll_window = None
         self.visualizer_fullscreen_nav_rows: dict[str, ttk.Frame] = {}
         self.visualizer_fullscreen_nav_name_labels: dict[str, ttk.Label] = {}
         self.visualizer_fullscreen_nav_prev_buttons: dict[str, ttk.Button] = {}
@@ -2184,8 +2192,31 @@ class BenchmarkRunnerApp(tk.Tk):
             justify=tk.LEFT,
         )
         self.visualizer_no_solution_label.pack(anchor="w", pady=(0, 6))
-        self.visualizer_host_frame = ttk.Frame(vis_wrap)
-        self.visualizer_host_frame.pack(fill=tk.BOTH, expand=True)
+        vis_graph_wrap = ttk.Frame(vis_wrap)
+        vis_graph_wrap.pack(fill=tk.BOTH, expand=True)
+        vis_graph_wrap.grid_rowconfigure(0, weight=1)
+        vis_graph_wrap.grid_columnconfigure(0, weight=1)
+        self.visualizer_host_scroll_canvas = tk.Canvas(vis_graph_wrap, highlightthickness=0, borderwidth=0)
+        self.visualizer_host_scroll_ybar = ttk.Scrollbar(
+            vis_graph_wrap, orient=tk.VERTICAL, command=self.visualizer_host_scroll_canvas.yview
+        )
+        self.visualizer_host_scroll_xbar = ttk.Scrollbar(
+            vis_graph_wrap, orient=tk.HORIZONTAL, command=self.visualizer_host_scroll_canvas.xview
+        )
+        self.visualizer_host_scroll_canvas.configure(
+            yscrollcommand=self.visualizer_host_scroll_ybar.set,
+            xscrollcommand=self.visualizer_host_scroll_xbar.set,
+        )
+        self.visualizer_host_scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        self.visualizer_host_scroll_ybar.grid(row=0, column=1, sticky="ns")
+        self.visualizer_host_scroll_xbar.grid(row=1, column=0, sticky="ew")
+        self.visualizer_host_frame = ttk.Frame(self.visualizer_host_scroll_canvas)
+        self.visualizer_host_scroll_window = self.visualizer_host_scroll_canvas.create_window(
+            (0, 0), window=self.visualizer_host_frame, anchor="nw"
+        )
+        self.visualizer_host_frame.bind("<Configure>", self._refresh_visualizer_host_scrollregion)
+        self.visualizer_host_scroll_canvas.bind("<Configure>", self._refresh_visualizer_host_scrollregion)
+        self.after(0, self._refresh_visualizer_host_scrollregion)
 
         self.runtime_canvas: FigureCanvasTkAgg | None = None
         self.memory_canvas: FigureCanvasTkAgg | None = None
@@ -2202,6 +2233,26 @@ class BenchmarkRunnerApp(tk.Tk):
         delta = int(getattr(evt, "delta", 0))
         if delta != 0:
             self._scroll_canvas.yview_scroll(int(-delta / 120), "units")
+
+    def _refresh_visualizer_host_scrollregion(self, _evt=None):
+        canvas = self.visualizer_host_scroll_canvas
+        if canvas is None:
+            return
+        try:
+            bbox = canvas.bbox("all")
+            canvas.configure(scrollregion=(bbox if bbox else (0, 0, 0, 0)))
+        except Exception:
+            pass
+
+    def _refresh_visualizer_fullscreen_scrollregion(self, _evt=None):
+        canvas = self.visualizer_fullscreen_scroll_canvas
+        if canvas is None:
+            return
+        try:
+            bbox = canvas.bbox("all")
+            canvas.configure(scrollregion=(bbox if bbox else (0, 0, 0, 0)))
+        except Exception:
+            pass
 
     def _apply_default_window_state(self):
         try:
@@ -5287,6 +5338,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.visualizer_solution_count_var.set("Solution Count: --")
         self.visualizer_no_solution_var.set("")
         self._update_visualizer_iteration_solution_controls()
+        self._refresh_visualizer_host_scrollregion()
         self._refresh_visualizer_fullscreen_canvas()
 
     def _visualizer_vars_for_tab(self, run_config: dict) -> list[str]:
@@ -6522,6 +6574,7 @@ class BenchmarkRunnerApp(tk.Tk):
                     fig,
                     self.visualizer_graph_canvas,
                 )
+        self._refresh_visualizer_host_scrollregion()
         self._refresh_visualizer_fullscreen_canvas()
 
     def _render_visualizer_result_in_tab(self, visualization_result: dict | None):
@@ -6566,8 +6619,12 @@ class BenchmarkRunnerApp(tk.Tk):
                 self.visualizer_fullscreen_fig.clear()
             except Exception:
                 pass
-            self.visualizer_fullscreen_fig = None
+        self.visualizer_fullscreen_fig = None
         self.visualizer_fullscreen_host = None
+        self.visualizer_fullscreen_scroll_canvas = None
+        self.visualizer_fullscreen_scroll_xbar = None
+        self.visualizer_fullscreen_scroll_ybar = None
+        self.visualizer_fullscreen_scroll_window = None
         self.visualizer_fullscreen_nav_rows = {}
         self.visualizer_fullscreen_nav_name_labels = {}
         self.visualizer_fullscreen_nav_prev_buttons = {}
@@ -6716,6 +6773,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 canvas.draw()
                 canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
                 self.visualizer_fullscreen_canvas = canvas
+        self._refresh_visualizer_fullscreen_scrollregion()
         self._sync_visualizer_fullscreen_controls()
 
     def _show_visualizer_native_fullscreen(self):
@@ -6863,14 +6921,31 @@ class BenchmarkRunnerApp(tk.Tk):
         )
         self.visualizer_fullscreen_global_autoplay_btn.pack(anchor="w", pady=(4, 2))
 
-        host = ttk.Frame(popup)
-        host.pack(fill=tk.BOTH, expand=True)
+        host_wrap = ttk.Frame(popup)
+        host_wrap.pack(fill=tk.BOTH, expand=True)
+        host_wrap.grid_rowconfigure(0, weight=1)
+        host_wrap.grid_columnconfigure(0, weight=1)
+        fs_scroll_canvas = tk.Canvas(host_wrap, highlightthickness=0, borderwidth=0)
+        fs_scroll_ybar = ttk.Scrollbar(host_wrap, orient=tk.VERTICAL, command=fs_scroll_canvas.yview)
+        fs_scroll_xbar = ttk.Scrollbar(host_wrap, orient=tk.HORIZONTAL, command=fs_scroll_canvas.xview)
+        fs_scroll_canvas.configure(yscrollcommand=fs_scroll_ybar.set, xscrollcommand=fs_scroll_xbar.set)
+        fs_scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        fs_scroll_ybar.grid(row=0, column=1, sticky="ns")
+        fs_scroll_xbar.grid(row=1, column=0, sticky="ew")
+        host = ttk.Frame(fs_scroll_canvas)
+        self.visualizer_fullscreen_scroll_window = fs_scroll_canvas.create_window((0, 0), window=host, anchor="nw")
+        self.visualizer_fullscreen_scroll_canvas = fs_scroll_canvas
+        self.visualizer_fullscreen_scroll_xbar = fs_scroll_xbar
+        self.visualizer_fullscreen_scroll_ybar = fs_scroll_ybar
+        host.bind("<Configure>", self._refresh_visualizer_fullscreen_scrollregion)
+        fs_scroll_canvas.bind("<Configure>", self._refresh_visualizer_fullscreen_scrollregion)
 
         self.visualizer_fullscreen_popup = popup
         self.visualizer_fullscreen_host = host
         self.visualizer_fullscreen_fig = fig
         self.visualizer_fullscreen_canvas = None
         self._refresh_visualizer_fullscreen_canvas()
+        self._refresh_visualizer_fullscreen_scrollregion()
         self._update_visualizer_autoplay_controls()
 
     def _build_visualizer_bundle(
