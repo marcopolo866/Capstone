@@ -174,19 +174,51 @@ jobs:
             -o "wasm/dijkstra_baseline.js"
 
           echo "Building discovered solver variants..."
+          skipped_variant_count=0
+          skipped_variant_summary=()
           while IFS='|' read -r label source script_out export_name; do
             if [ -z "${source:-}" ] || [ -z "${script_out:-}" ] || [ -z "${export_name:-}" ]; then
               continue
             fi
             echo "Building ${label}..."
-            em++ -std=c++17 \
+            variant_log="$(mktemp)"
+            if em++ -std=c++17 \
               "${common_flags[@]}" \
               "${telemetry_flags[@]}" \
               -fexceptions \
               -s DISABLE_EXCEPTION_CATCHING=0 \
               "$source" \
               -s EXPORT_NAME="$export_name" \
-              -o "$script_out"
+              -o "$script_out" >"$variant_log" 2>&1; then
+              rm -f "$variant_log"
+            else
+              skipped_variant_count=$((skipped_variant_count + 1))
+              reason="$(
+                python3 - "$variant_log" <<'PY'
+                import re
+                import sys
+                from pathlib import Path
+
+                path = Path(sys.argv[1])
+                text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+                lines = [line.strip() for line in text.splitlines() if line.strip()]
+                reason = ""
+                for line in lines:
+                    if " error:" in line or line.lower().startswith("error:"):
+                        reason = line
+                        break
+                if not reason and lines:
+                    reason = lines[-1]
+                reason = reason or "em++ failed"
+                reason = re.sub(r"\s+", " ", reason).strip()
+                print(reason)
+                PY
+              )"
+              rm -f "$variant_log"
+              rm -f "$script_out" "${script_out%.js}.wasm"
+              skipped_variant_summary+=("$label|$source|$reason")
+              echo "Skipping ${label} (${source}): ${reason}"
+            fi
           done < <(python3 - <<'PY'
           from pathlib import Path
           import scripts.solver_discovery as sd
@@ -203,6 +235,14 @@ jobs:
                   print(f"{label}|{source}|{script_out}|{export_name}")
           PY
           )
+          if [ "$skipped_variant_count" -gt 0 ]; then
+            echo "Skipped discovered WASM variants due to compile failures: $skipped_variant_count"
+            for entry in "${skipped_variant_summary[@]}"; do
+              IFS='|' read -r s_label s_source s_reason <<< "$entry"
+              echo "  - ${s_label} (${s_source})"
+              echo "    reason: ${s_reason}"
+            done
+          fi
 
       - name: Attempt experimental baseline Glasgow WASM build
         continue-on-error: true

@@ -4,36 +4,42 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <string>
 
 using namespace std;
 
 struct Graph {
-    int n;
+    int n = 0;
     vector<int> label;
     vector<vector<int>> out;
     vector<vector<int>> in;
 };
 
-Graph read_graph(const string &filename) {
+static bool read_graph(const string &filename, Graph &g) {
     ifstream fin(filename);
-    Graph g;
-    fin >> g.n;
+    if (!fin) return false;
+    if (!(fin >> g.n)) return false;
+    if (g.n < 0 || g.n > 1000000) return false;
 
-    g.label.resize(g.n);
-    for (int i = 0; i < g.n; i++) {
-        int id;
-        fin >> id >> g.label[id];
-    }
-
+    g.label.assign(g.n, 0);
     g.out.assign(g.n, {});
     g.in.assign(g.n, {});
 
     for (int i = 0; i < g.n; i++) {
-        int k;
-        fin >> k;
+        int id = -1, lbl = 0;
+        if (!(fin >> id >> lbl)) return false;
+        if (id < 0 || id >= g.n) return false;
+        g.label[id] = lbl;
+    }
+
+    for (int i = 0; i < g.n; i++) {
+        int k = 0;
+        if (!(fin >> k)) return false;
+        if (k < 0) return false;
         for (int j = 0; j < k; j++) {
-            int u, v;
-            fin >> u >> v;
+            int u = -1, v = -1;
+            if (!(fin >> u >> v)) return false;
+            if (u < 0 || u >= g.n || v < 0 || v >= g.n) return false;
             g.out[u].push_back(v);
             g.in[v].push_back(u);
         }
@@ -45,7 +51,7 @@ Graph read_graph(const string &filename) {
         sort(g.in[i].begin(), g.in[i].end());
     }
 
-    return g;
+    return true;
 }
 
 // Binary search edge existence
@@ -55,13 +61,26 @@ inline bool has_edge(const vector<vector<int>> &adj, int u, int v) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) {
+    bool first_only = false;
+    vector<string> positional;
+    positional.reserve(static_cast<size_t>(max(0, argc - 1)));
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i] ? string(argv[i]) : string();
+        if (arg == "--non-induced") continue; // backwards-compatible no-op
+        if (arg == "--first-only") { first_only = true; continue; }
+        positional.push_back(arg);
+    }
+
+    if (positional.size() != 2) {
         cerr << "Usage: ./solver pattern target\n";
         return 1;
     }
 
-    Graph H = read_graph(argv[1]);
-    Graph G = read_graph(argv[2]);
+    Graph H, G;
+    if (!read_graph(positional[0], H) || !read_graph(positional[1], G)) {
+        cerr << "Failed to parse graph input(s).\n";
+        return 1;
+    }
 
     const int nH = H.n;
     const int nG = G.n;
@@ -112,13 +131,13 @@ int main(int argc, char **argv) {
     };
 
     // Recursive search
-    function<void(vector<vector<int>> &)> dfs =
+    function<bool(vector<vector<int>> &)> dfs =
     [&](vector<vector<int>> &cand) {
 
         int u = select_node(cand);
         if (u == -1) {
             total++;
-            return;
+            return first_only;
         }
 
         auto current_candidates = cand[u];
@@ -179,13 +198,17 @@ int main(int argc, char **argv) {
                 }
             }
 
-            if (ok) {
-                dfs(new_cand);
+            if (ok && dfs(new_cand)) {
+                mapping[u] = -1;
+                used[v] = false;
+                return true;
             }
 
             mapping[u] = -1;
             used[v] = false;
         }
+
+        return false;
     };
 
     dfs(candidates);

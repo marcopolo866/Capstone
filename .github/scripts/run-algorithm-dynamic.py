@@ -527,8 +527,8 @@ def make_mode_commands(row: SolverRow, inputs: dict[str, Path]) -> dict[str, lis
                 "all": [str(binary), "-u", "-r", "0", "-e", str(inputs["vf_pattern"]), str(inputs["vf_target"])],
             }
         return {
-            "first": [str(binary), "--non-induced", "--first-only", str(inputs["vf_pattern"]), str(inputs["vf_target"])],
-            "all": [str(binary), "--non-induced", str(inputs["vf_pattern"]), str(inputs["vf_target"])],
+            "first": [str(binary), str(inputs["vf_pattern"]), str(inputs["vf_target"])],
+            "all": [str(binary), str(inputs["vf_pattern"]), str(inputs["vf_target"])],
         }
     if row.family == "glasgow":
         if row.role == "baseline":

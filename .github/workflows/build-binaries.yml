@@ -50,11 +50,17 @@ jobs:
           catalog = solver_discovery.build_catalog(repo_root)
           source_paths = [str(row["source_path"]) for row in catalog.get("variants", [])]
           binary_paths = list(solver_discovery.iter_binary_paths(catalog, include_baselines=True))
+          variant_by_binary = {
+              str(row.get("binary_path") or "").strip(): row
+              for row in catalog.get("variants", [])
+              if str(row.get("binary_path") or "").strip()
+          }
 
           manifest = {
               "commit_sha": os.environ.get("GITHUB_SHA", ""),
               "sources": {},
               "binaries": {},
+              "skipped_variants": [],
               "solver_catalog_schema_version": catalog.get("schema_version", 1),
               "solver_variants": catalog.get("solvers", []),
           }
@@ -63,11 +69,33 @@ jobs:
               if not path.is_file():
                   raise SystemExit(f"Missing source for manifest: {rel}")
               manifest["sources"][rel] = sha256(path)
+          missing_required_binaries: list[str] = []
           for rel in binary_paths:
               path = Path(rel)
               if not path.is_file():
-                  raise SystemExit(f"Missing binary for manifest: {rel}")
+                  variant = variant_by_binary.get(rel)
+                  if variant is None:
+                      missing_required_binaries.append(rel)
+                      continue
+                  manifest["skipped_variants"].append(
+                      {
+                          "variant_id": str(variant.get("variant_id") or "").strip(),
+                          "label": str(variant.get("label") or variant.get("variant_id") or "variant"),
+                          "source_path": str(variant.get("source_path") or "").strip(),
+                          "binary_path": rel,
+                          "reason": "missing binary after build (compile failure or incompatible toolchain)",
+                      }
+                  )
+                  continue
               manifest["binaries"][rel] = sha256(path)
+          if missing_required_binaries:
+              raise SystemExit(
+                  "Missing required binaries for manifest: " + ", ".join(sorted(missing_required_binaries))
+              )
+          if manifest["skipped_variants"]:
+              print("Skipped discovered variants:")
+              for item in manifest["skipped_variants"]:
+                  print(f"  - {item['label']} ({item['source_path']}): {item['reason']}")
 
           out = Path("outputs/binaries_manifest.json")
           out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")

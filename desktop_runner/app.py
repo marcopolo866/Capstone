@@ -2237,8 +2237,19 @@ class BenchmarkRunnerApp(tk.Tk):
         ttk.Button(tools, text="Check All", command=lambda t=tab_id: self._set_all_variants(t, True)).pack(side=tk.LEFT)
         ttk.Button(tools, text="Clear All", command=lambda t=tab_id: self._set_all_variants(t, False)).pack(side=tk.LEFT, padx=(8, 0))
 
-        vars_frame = ttk.Frame(container)
-        vars_frame.pack(fill=tk.X)
+        table_wrap = ttk.Frame(container)
+        table_wrap.pack(fill=tk.X, expand=True)
+        vars_canvas = tk.Canvas(
+            table_wrap,
+            highlightthickness=0,
+            height=1,
+            bg=self._theme_palette().get("panel_bg", self._theme_palette().get("bg", "#FFFFFF")),
+        )
+        vars_x_scroll = ttk.Scrollbar(table_wrap, orient=tk.HORIZONTAL, command=vars_canvas.xview)
+        vars_canvas.configure(xscrollcommand=vars_x_scroll.set)
+        vars_canvas.pack(side=tk.TOP, fill=tk.X, expand=True)
+        vars_frame = ttk.Frame(vars_canvas)
+        vars_canvas.create_window((0, 0), window=vars_frame, anchor="nw")
         variants = [v for v in SOLVER_VARIANTS if v.tab_id == tab_id]
         if not variants:
             return
@@ -2308,6 +2319,27 @@ class BenchmarkRunnerApp(tk.Tk):
                     command=self._on_variants_changed,
                 )
                 cb.grid(row=row, column=col, padx=(0, 12), pady=(0, 6), sticky="w")
+
+        def _refresh_variant_scrollbar(_evt=None):
+            try:
+                vars_canvas.configure(scrollregion=vars_canvas.bbox("all"))
+                req_w = max(1, int(vars_frame.winfo_reqwidth()))
+                req_h = max(1, int(vars_frame.winfo_reqheight()))
+                canvas_w = max(1, int(vars_canvas.winfo_width()))
+                vars_canvas.configure(height=req_h + 2)
+                if req_w > canvas_w + 2:
+                    if not vars_x_scroll.winfo_manager():
+                        vars_x_scroll.pack(side=tk.TOP, fill=tk.X)
+                else:
+                    if vars_x_scroll.winfo_manager():
+                        vars_x_scroll.pack_forget()
+                    vars_canvas.xview_moveto(0.0)
+            except Exception:
+                pass
+
+        vars_frame.bind("<Configure>", _refresh_variant_scrollbar)
+        vars_canvas.bind("<Configure>", _refresh_variant_scrollbar)
+        self.after(0, _refresh_variant_scrollbar)
 
     def _set_all_variants(self, tab_id: str, checked: bool):
         for variant in SOLVER_VARIANTS:
