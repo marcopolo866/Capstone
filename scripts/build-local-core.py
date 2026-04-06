@@ -479,6 +479,18 @@ def maybe_run_glasgow_parity_check(python_exe: str, env: dict[str, str]) -> None
     run_step("Checking Glasgow parity", lambda: run_cmd([python_exe, "scripts/check-glasgow-parity.py"], env=env))
 
 
+def maybe_run_sp_via_correctness_check(python_exe: str, env: dict[str, str]) -> None:
+    baseline = resolve_binary_path("baselines/via_dijkstra")
+    if not baseline:
+        print()
+        print("==> Skipping SP-Via correctness check (missing baselines/via_dijkstra)")
+        return
+    run_step(
+        "Checking SP-Via correctness",
+        lambda: run_cmd([python_exe, "scripts/check-sp-via-correctness.py"], env=env),
+    )
+
+
 def verify_expected_outputs(catalog: dict, solver_discovery, skipped_variant_ids: set[str] | None = None) -> None:
     skipped_ids = set(skipped_variant_ids or set())
     binary_rel_paths = set(solver_discovery.iter_binary_paths(catalog, include_baselines=True))
@@ -573,8 +585,67 @@ def main() -> int:
             env=env,
         ),
     )
+    run_step(
+        "Building Dijkstra Dial baseline",
+        lambda: run_cmd(
+            [
+                "g++",
+                "-std=c++17",
+                "-O3",
+                *([] if not suppress_diagnostics else ["-w"]),
+                *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
+                "-I",
+                "baselines/cxxgraph/include",
+                "baselines/dial_main.cpp",
+                "-o",
+                "baselines/dial",
+            ],
+            env=env,
+        ),
+    )
+    run_step(
+        "Building SP-Via baseline (Dijkstra composition)",
+        lambda: run_cmd(
+            [
+                "g++",
+                "-std=c++17",
+                "-O3",
+                *([] if not suppress_diagnostics else ["-w"]),
+                *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
+                "baselines/via_dijkstra_main.cpp",
+                "-o",
+                "baselines/via_dijkstra",
+            ],
+            env=env,
+        ),
+    )
+    run_step(
+        "Building SP-Via Dial baseline",
+        lambda: run_cmd(
+            [
+                "g++",
+                "-std=c++17",
+                "-O3",
+                *([] if not suppress_diagnostics else ["-w"]),
+                *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
+                "-I",
+                "baselines/cxxgraph/include",
+                "baselines/via_dial_main.cpp",
+                "-o",
+                "baselines/via_dial",
+            ],
+            env=env,
+        ),
+    )
     skipped_variants: list[dict] = []
     skipped_variants.extend(compile_discovered_variants_for_family(catalog, "dijkstra", env))
+    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "sp_via", env))
+
+    if fast_mode:
+        print()
+        print("==> Skipping SP-Via correctness check (BUILD_LOCAL_FAST=1)")
+    else:
+        maybe_run_sp_via_correctness_check(python_exe, env)
 
     vf3_cflags = "-std=c++11 -O2 -DNDEBUG -Wno-deprecated -fno-strict-aliasing -fwrapv"
     if suppress_diagnostics:

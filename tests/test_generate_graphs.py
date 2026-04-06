@@ -92,6 +92,30 @@ class GenerateGraphsCliTests(unittest.TestCase):
             self.assertEqual(meta_b.get("seed"), 424242)
             self.assertEqual(meta_a.get("pattern_nodes"), meta_b.get("pattern_nodes"))
 
+    def test_sp_via_generation_writes_via_metadata_and_header(self):
+        with tempfile.TemporaryDirectory(prefix="capstone-test-sp-via-") as tmp:
+            out_dir = Path(tmp) / "out"
+            files = self.run_generator(
+                algorithm="sp_via",
+                n=14,
+                k=None,
+                density=0.15,
+                seed=9001,
+                out_dir=out_dir,
+            )
+
+            self.assertEqual(len(files), 1, "sp_via generation should emit exactly one file path")
+            generated_csv = Path(files[0])
+            self.assertTrue(generated_csv.is_file(), f"missing generated file: {generated_csv}")
+
+            metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata.get("algorithm"), "sp_via")
+            via_label = metadata.get("via")
+            self.assertTrue(isinstance(via_label, str) and via_label, "sp_via metadata should include via label")
+
+            first_line = generated_csv.read_text(encoding="utf-8").splitlines()[0].strip()
+            self.assertIn("via=", first_line)
+
 
 if __name__ == "__main__":
     unittest.main()

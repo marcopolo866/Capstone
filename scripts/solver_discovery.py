@@ -15,6 +15,7 @@ FILE_RE = re.compile(r"^\[(?P<problem>[^\]]+)\]\[(?P<llm>[^\]]+)\]\[(?P<filetype
 
 PROBLEM_FILETYPE_TO_FAMILY = {
     ("shortestpath", "csv"): ("dijkstra", "dijkstra", "Dijkstra"),
+    ("shortestpathvia", "csv"): ("sp_via", "sp_via", "With Intermediate"),
     ("subgraphisomorphism", "grf"): ("vf3", "vf3", "VF3"),
     ("subgraphisomorphism", "lad"): ("glasgow", "glasgow", "Glasgow"),
 }
@@ -29,6 +30,36 @@ BASELINES = [
         "role": "baseline",
         "llm_key": None,
         "llm_label": None,
+    },
+    {
+        "variant_id": "dijkstra_dial",
+        "family": "dijkstra",
+        "algorithm": "dijkstra",
+        "label": "Dial Benchmark",
+        "binary_path": "baselines/dial",
+        "role": "variant",
+        "llm_key": "dial",
+        "llm_label": "Dial",
+    },
+    {
+        "variant_id": "sp_via_baseline",
+        "family": "sp_via",
+        "algorithm": "sp_via",
+        "label": "With Intermediate Baseline",
+        "binary_path": "baselines/via_dijkstra",
+        "role": "baseline",
+        "llm_key": None,
+        "llm_label": None,
+    },
+    {
+        "variant_id": "sp_via_dial",
+        "family": "sp_via",
+        "algorithm": "sp_via",
+        "label": "With Intermediate Dial",
+        "binary_path": "baselines/via_dial",
+        "role": "variant",
+        "llm_key": "dial",
+        "llm_label": "Dial",
     },
     {
         "variant_id": "vf3_baseline",
@@ -68,7 +99,10 @@ def title_case_token(value: str) -> str:
 def family_export_name(family: str) -> str:
     if family == "vf3":
         return "Vf3"
-    return family[:1].upper() + family[1:]
+    parts = [part for part in str(family or "").split("_") if part]
+    if not parts:
+        return "Unknown"
+    return "".join(part[:1].upper() + part[1:] for part in parts)
 
 
 @dataclass(frozen=True)
@@ -165,7 +199,7 @@ def build_catalog(repo_root: Path) -> dict:
         for v in variants
     )
 
-    by_algorithm: dict[str, list[dict]] = {"dijkstra": [], "vf3": [], "glasgow": [], "subgraph": []}
+    by_algorithm: dict[str, list[dict]] = {"dijkstra": [], "sp_via": [], "vf3": [], "glasgow": [], "subgraph": []}
     for row in all_solver_rows:
         algo = str(row.get("algorithm") or "").strip().lower()
         if algo in by_algorithm:

@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - dijkstra
+          - sp_via
           - glasgow
           - vf3
           - subgraph
@@ -50,6 +51,10 @@ on:
         description: 'Generator seed (optional)'
         required: false
         type: string
+      via_node:
+        description: 'Optional via node label for With Intermediate runs'
+        required: false
+        type: string
       input_files:
         description: 'Comma-separated input file paths'
         required: false
@@ -75,6 +80,7 @@ jobs:
       GENERATOR_K_INPUT: ${{ github.event.inputs.k || github.event.client_payload.k }}
       GENERATOR_DENSITY_INPUT: ${{ github.event.inputs.density || github.event.client_payload.density }}
       GENERATOR_SEED_INPUT: ${{ github.event.inputs.seed || github.event.client_payload.seed }}
+      VIA_NODE_INPUT: ${{ github.event.inputs.via_node || github.event.client_payload.via_node }}
       INPUT_FILES_INPUT: ${{ github.event.inputs.input_files || github.event.client_payload.input_files }}
       REQUEST_ID_INPUT: ${{ github.event.inputs.request_id || github.event.client_payload.request_id }}
 

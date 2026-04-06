@@ -51,6 +51,7 @@ gen_n = env.get("GENERATOR_N_INPUT", "")
 gen_k = env.get("GENERATOR_K_INPUT", "")
 gen_density = env.get("GENERATOR_DENSITY_INPUT", "")
 seed_used = env.get("SEED_USED", "")
+via_node = env.get("VIA_NODE_INPUT", "")
 
 result_txt = Path("outputs/result.txt")
 text = ""
@@ -142,6 +143,8 @@ if seed_used:
         inputs["seed"] = int(seed_used)
     except ValueError:
         inputs["seed"] = seed_used
+if via_node:
+    inputs["via"] = via_node
 if inputs:
     data["inputs"] = inputs
 variant_metadata = parse_json_env("VARIANT_METADATA_JSON")

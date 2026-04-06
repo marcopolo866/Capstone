@@ -118,7 +118,11 @@ jobs:
           name: algorithm-binaries-linux
           path: |
             baselines/dijkstra
+            baselines/dial
+            baselines/via_dijkstra
+            baselines/via_dial
             src/dijkstra_*
+            src/sp_via_*
             src/vf3_*
             src/glasgow_*
             baselines/vf3lib/bin/vf3

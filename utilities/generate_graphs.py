@@ -38,10 +38,19 @@ def generate_directed_edges(n: int, rng: random.Random, density: float) -> list[
     return [(u, v, w) for (u, v), w in edges.items()]
 
 
-def write_dijkstra_csv(path: Path, edges: list[tuple[int, int, int]], labels: list[str]) -> None:
+def write_dijkstra_csv(
+    path: Path,
+    edges: list[tuple[int, int, int]],
+    labels: list[str],
+    *,
+    via_label: str | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as fh:
-        fh.write(f"# start={labels[0]} target={labels[-1]}\n")
+        header = f"# start={labels[0]} target={labels[-1]}"
+        if via_label:
+            header += f" via={via_label}"
+        fh.write(header + "\n")
         writer = csv.writer(fh)
         writer.writerow(["source", "target", "weight"])
         for u, v, w in edges:
@@ -227,7 +236,7 @@ def main() -> None:
     args = parser.parse_args()
 
     algorithm = args.algorithm.strip().lower()
-    if algorithm not in {"dijkstra", "glasgow", "vf3", "subgraph"}:
+    if algorithm not in {"dijkstra", "sp_via", "glasgow", "vf3", "subgraph"}:
         raise ValueError("Unknown algorithm for generation")
 
     n = parse_int(args.n, "N", minimum=2)
@@ -253,12 +262,20 @@ def main() -> None:
     generated = []
 
     pattern_nodes = None
-    if algorithm == "dijkstra":
+    metadata_via_label: str | None = None
+    if algorithm in {"dijkstra", "sp_via"}:
         labels = [f"v{i}" for i in range(n)]
         edges = generate_directed_edges(n, rng, density)
-        path = out_dir / "dijkstra_generated.csv"
-        write_dijkstra_csv(path, edges, labels)
+        via_label = None
+        if algorithm == "sp_via":
+            via_index = max(0, min(n - 1, n // 2))
+            if n > 2 and via_index in {0, n - 1}:
+                via_index = 1
+            via_label = labels[via_index]
+        path = out_dir / ("sp_via_generated.csv" if algorithm == "sp_via" else "dijkstra_generated.csv")
+        write_dijkstra_csv(path, edges, labels, via_label=via_label)
         generated.append(path)
+        metadata_via_label = via_label
     else:
         labels = None
         target_adj = generate_adjacency(n, rng, density)
@@ -311,6 +328,9 @@ def main() -> None:
         "seed": seed,
         "files": [p.as_posix() for p in generated],
     }
+    if algorithm == "sp_via":
+        if metadata_via_label:
+            metadata["via"] = metadata_via_label
     if pattern_nodes is not None:
         metadata["pattern_nodes"] = [int(x) for x in pattern_nodes]
     (out_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")

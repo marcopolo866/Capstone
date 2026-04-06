@@ -7,3 +7,6 @@
 [submodule "baselines/nyaan-library"]
 	path = baselines/nyaan-library
 	url = https://github.com/NyaanNyaan/library.git
+[submodule "baselines/cxxgraph"]
+	path = baselines/cxxgraph
+	url = https://github.com/ZigRazor/CXXGraph.git

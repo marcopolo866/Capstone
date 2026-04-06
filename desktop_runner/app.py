@@ -736,6 +736,7 @@ class SolverVariant:
     label: str
     tab_id: str
     family: str
+    role: str
 
 
 @dataclass
@@ -753,12 +754,23 @@ class DatapointStats:
     seeds: list[int]
 
 
-SUPPORTED_FAMILIES = {"dijkstra", "vf3", "glasgow"}
+SUPPORTED_FAMILIES = {"dijkstra", "sp_via", "dial", "vf3", "glasgow"}
 FAMILY_LABELS = {
     "dijkstra": "Dijkstra",
+    "sp_via": "With Intermediate",
+    "dial": "Dial",
     "vf3": "VF3",
     "glasgow": "Glasgow",
 }
+
+
+def variant_family_from_id(variant_id: str) -> str:
+    token = str(variant_id or "").strip().lower()
+    if token.startswith("sp_via_"):
+        return "sp_via"
+    if "_" in token:
+        return token.split("_", 1)[0]
+    return token
 
 
 def _baseline_solver_rows() -> list[dict]:
@@ -766,6 +778,9 @@ def _baseline_solver_rows() -> list[dict]:
         {"variant_id": "vf3_baseline", "label": "VF3 Baseline", "family": "vf3", "role": "baseline"},
         {"variant_id": "glasgow_baseline", "label": "Glasgow Baseline", "family": "glasgow", "role": "baseline"},
         {"variant_id": "dijkstra_baseline", "label": "Dijkstra Baseline", "family": "dijkstra", "role": "baseline"},
+        {"variant_id": "dijkstra_dial", "label": "Dial Benchmark", "family": "dial", "role": "baseline"},
+        {"variant_id": "sp_via_baseline", "label": "With Intermediate Baseline", "family": "sp_via", "role": "baseline"},
+        {"variant_id": "sp_via_dial", "label": "With Intermediate Dial", "family": "sp_via", "role": "variant", "llm_key": "dial", "llm_label": "Dial"},
     ]
 
 
@@ -777,6 +792,8 @@ def _legacy_llm_solver_rows() -> list[dict]:
         {"variant_id": "glasgow_gemini", "label": "Glasgow Gemini", "family": "glasgow", "role": "variant", "llm_key": "gemini", "llm_label": "Gemini"},
         {"variant_id": "dijkstra_chatgpt", "label": "Dijkstra Chatgpt", "family": "dijkstra", "role": "variant", "llm_key": "chatgpt", "llm_label": "Chatgpt"},
         {"variant_id": "dijkstra_gemini", "label": "Dijkstra Gemini", "family": "dijkstra", "role": "variant", "llm_key": "gemini", "llm_label": "Gemini"},
+        {"variant_id": "sp_via_chatgpt", "label": "With Intermediate Chatgpt", "family": "sp_via", "role": "variant", "llm_key": "chatgpt", "llm_label": "Chatgpt"},
+        {"variant_id": "sp_via_gemini", "label": "With Intermediate Gemini", "family": "sp_via", "role": "variant", "llm_key": "gemini", "llm_label": "Gemini"},
     ]
 
 
@@ -801,16 +818,27 @@ def _normalize_solver_rows(rows: list[dict]) -> list[dict]:
             continue
         variant_id = str(row.get("variant_id") or "").strip().lower()
         family = str(row.get("family") or "").strip().lower()
+        role = str(row.get("role") or "").strip().lower() or "variant"
+        label = str(row.get("label") or variant_id).strip() or variant_id
+        llm_key = str(row.get("llm_key") or "").strip().lower() or None
+        llm_label = str(row.get("llm_label") or "").strip() or None
+        if variant_id == "dijkstra_dial":
+            # Treat Dial as a benchmark row in the desktop selector.
+            family = "dial"
+            role = "baseline"
+            label = "Dial Benchmark"
+            llm_key = None
+            llm_label = None
         if not variant_id or family not in SUPPORTED_FAMILIES:
             continue
         normalized.append(
             {
                 "variant_id": variant_id,
-                "label": str(row.get("label") or variant_id).strip() or variant_id,
+                "label": label,
                 "family": family,
-                "role": str(row.get("role") or "").strip().lower() or "variant",
-                "llm_key": str(row.get("llm_key") or "").strip().lower() or None,
-                "llm_label": str(row.get("llm_label") or "").strip() or None,
+                "role": role,
+                "llm_key": llm_key,
+                "llm_label": llm_label,
                 "binary_name": str(row.get("binary_name") or "").strip() or variant_id,
             }
         )
@@ -881,7 +909,7 @@ def _discover_llm_rows_from_binaries() -> list[dict]:
         if not entry.is_file():
             continue
         binary_name = entry.stem.lower() if entry.suffix.lower() == ".exe" else entry.name.lower()
-        match = re.fullmatch(r"(dijkstra|vf3|glasgow)_([a-z0-9_]+)", binary_name)
+        match = re.fullmatch(r"(dijkstra|sp_via|vf3|glasgow)_([a-z0-9_]+)", binary_name)
         if not match:
             continue
         family, llm_key = match.group(1), match.group(2)
@@ -966,6 +994,12 @@ def _resolve_binary_for_variant(root: Path, variant_id: str, binary_name: str) -
     # Source-tree fallback for local development runs without a packaged binaries folder.
     if variant_id == "dijkstra_baseline":
         candidates.extend([root / "baselines" / "dijkstra", root / "baselines" / "dijkstra.exe"])
+    elif variant_id == "dijkstra_dial":
+        candidates.extend([root / "baselines" / "dial", root / "baselines" / "dial.exe"])
+    elif variant_id == "sp_via_baseline":
+        candidates.extend([root / "baselines" / "via_dijkstra", root / "baselines" / "via_dijkstra.exe"])
+    elif variant_id == "sp_via_dial":
+        candidates.extend([root / "baselines" / "via_dial", root / "baselines" / "via_dial.exe"])
     elif variant_id == "vf3_baseline":
         candidates.extend([root / "baselines" / "vf3lib" / "bin" / "vf3", root / "baselines" / "vf3lib" / "bin" / "vf3.exe"])
     elif variant_id == "glasgow_baseline":
@@ -1015,12 +1049,22 @@ def _build_solver_variants_and_binary_map() -> tuple[list[SolverVariant], dict[s
         family = str(row.get("family") or "").strip().lower()
         if not variant_id or family not in SUPPORTED_FAMILIES:
             continue
-        tab_id = "shortest_path" if family == "dijkstra" else "subgraph"
+        tab_id = "shortest_path" if family in {"dijkstra", "sp_via", "dial"} else "subgraph"
         label = str(row.get("label") or variant_id)
-        variants.append(SolverVariant(variant_id, label, tab_id, family))
+        role = str(row.get("role") or "variant").strip().lower() or "variant"
+        variants.append(SolverVariant(variant_id, label, tab_id, family, role))
         binary_name = str(row.get("binary_name") or variant_id).strip() or variant_id
         binary_map[variant_id] = _resolve_binary_for_variant(root, variant_id, binary_name)
-    variants.sort(key=lambda item: (item.tab_id, item.family, item.variant_id != f"{item.family}_baseline", item.label.lower()))
+    family_order = {"dijkstra": 0, "dial": 1, "sp_via": 2, "vf3": 3, "glasgow": 4}
+    variants.sort(
+        key=lambda item: (
+            item.tab_id,
+            family_order.get(item.family, 99),
+            item.family,
+            item.role != "baseline",
+            item.label.lower(),
+        )
+    )
     return variants, binary_map
 
 
@@ -2311,13 +2355,19 @@ class BenchmarkRunnerApp(tk.Tk):
             "vf3": "VF3",
             "glasgow": "Glasgow",
             "dijkstra": "Dijkstra",
+            "sp_via": "With Intermediate",
+            "dial": "Dial",
         }
 
         def role_key_and_label(variant: SolverVariant) -> tuple[str, str]:
             label = str(variant.label or "").strip()
             lower_label = label.lower()
-            if "baseline" in lower_label or str(variant.variant_id).strip().lower().endswith("_baseline"):
-                return "baseline", "Baseline"
+            if (
+                str(variant.role or "").strip().lower() == "baseline"
+                or "baseline" in lower_label
+                or str(variant.variant_id).strip().lower().endswith("_baseline")
+            ):
+                return "baseline", "Benchmark"
 
             prefix = family_label_prefix.get(str(variant.family or "").strip().lower(), "")
             role_text = label
@@ -2341,6 +2391,10 @@ class BenchmarkRunnerApp(tk.Tk):
                 return "Glasgow (.lad)"
             if f == "dijkstra":
                 return "Dijkstra (.csv)"
+            if f == "dial":
+                return "Dial (.csv)"
+            if f == "sp_via":
+                return "With Intermediate (.csv)"
             return f.title()
 
         role_display: dict[str, str] = {}
@@ -3519,7 +3573,13 @@ class BenchmarkRunnerApp(tk.Tk):
         if config["tab_id"] == "subgraph":
             accuracy_baseline_variant = "vf3_baseline"
         else:
-            accuracy_baseline_variant = "dijkstra_baseline"
+            families_in_selection = {variant_family_from_id(v) for v in selected_variants}
+            if "dijkstra" in families_in_selection:
+                accuracy_baseline_variant = "dijkstra_baseline"
+            elif "sp_via" in families_in_selection:
+                accuracy_baseline_variant = "sp_via_baseline"
+            else:
+                accuracy_baseline_variant = "dijkstra_baseline"
         solver_timeout_seconds = config.get("solver_timeout_seconds")
         warmup_trials = int(max(0, config.get("warmup_trials", 0)))
         failure_policy = str(config.get("failure_policy", "stop")).strip().lower()
@@ -4133,6 +4193,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 "vf3": "vf3_baseline",
                 "glasgow": "glasgow_baseline",
                 "dijkstra": "dijkstra_baseline",
+                "sp_via": "sp_via_baseline",
             }
             runtime_diff_by_variant: dict[str, list[float]] = {variant_id: [] for variant_id in selected_variants}
             baseline_id_by_variant: dict[str, str] = {}
@@ -4143,7 +4204,7 @@ class BenchmarkRunnerApp(tk.Tk):
                     if not isinstance(iter_map, dict):
                         continue
                     for variant_id in selected_variants:
-                        family = variant_id.split("_", 1)[0].strip().lower()
+                        family = variant_family_from_id(variant_id)
                         baseline_variant_id = family_to_baseline.get(family)
                         if not baseline_variant_id:
                             continue
@@ -4265,15 +4326,16 @@ class BenchmarkRunnerApp(tk.Tk):
         if not binary.exists():
             raise FileNotFoundError(f"Missing binary for {variant_id}: {binary}")
 
-        if variant_id.startswith("dijkstra_"):
+        family = variant_family_from_id(variant_id)
+        if family in {"dijkstra", "sp_via"}:
             command = [str(binary), str(generated["dijkstra_file"])]
-        elif variant_id.startswith("vf3_"):
+        elif family == "vf3":
             if variant_id == "vf3_baseline":
                 # Match the web runner's stable baseline invocation on generated VF inputs.
                 command = [str(binary), "-u", "-r", "0", "-e", str(generated["vf_pattern"]), str(generated["vf_target"])]
             else:
                 command = [str(binary), str(generated["vf_pattern"]), str(generated["vf_target"])]
-        elif variant_id.startswith("glasgow_"):
+        elif family == "glasgow":
             if variant_id == "glasgow_baseline":
                 command = [str(binary), "--count-solutions", "--format", "vertexlabelledlad", str(generated["lad_pattern"]), str(generated["lad_target"])]
             else:
@@ -4308,11 +4370,11 @@ class BenchmarkRunnerApp(tk.Tk):
         solution_count = None
         answer_signature = None
         combined_output = stdout_text + "\n" + stderr_text
-        if variant_id.startswith("vf3_") or variant_id.startswith("glasgow_"):
+        if family in {"vf3", "glasgow"}:
             solution_count = parse_solution_count(combined_output)
             if solution_count is not None:
                 answer_signature = ("solution_count", int(solution_count))
-        elif variant_id.startswith("dijkstra_"):
+        elif family in {"dijkstra", "sp_via"}:
             distance_signature = parse_dijkstra_distance(combined_output)
             if distance_signature is not None:
                 answer_signature = ("distance", distance_signature)
@@ -5389,7 +5451,7 @@ class BenchmarkRunnerApp(tk.Tk):
         if "n" not in point or "density" not in point:
             return None
 
-        if family != "dijkstra":
+        if family not in {"dijkstra", "sp_via"}:
             if "k" not in point:
                 return None
             n_nodes = int(round(float(point["n"])))
@@ -5725,10 +5787,10 @@ class BenchmarkRunnerApp(tk.Tk):
                 raise RuntimeError("VF3 baseline binary is required for subgraph visualizer mappings.")
             return [baseline]
         if tab_id == "shortest_path":
-            baseline = "dijkstra_baseline"
+            baseline = "dijkstra_baseline" if selected_family == "dijkstra" else "sp_via_baseline"
             path = self.binary_paths.get(baseline)
             if path is None or not path.exists():
-                raise RuntimeError("Dijkstra baseline binary is required for shortest-path visualizer mappings.")
+                raise RuntimeError(f"{baseline} binary is required for shortest-path visualizer mappings.")
             return [baseline]
         return self._visualizer_variants_for_family(run_config, selected_family)
 
@@ -5793,7 +5855,7 @@ class BenchmarkRunnerApp(tk.Tk):
         iter_dir = cache_dir / "inputs" / f"iter_{iteration_index + 1:03d}"
         iter_dir.mkdir(parents=True, exist_ok=True)
 
-        if selected_family == "dijkstra":
+        if selected_family in {"dijkstra", "sp_via"}:
             inputs = {
                 "dijkstra_file": generate_dijkstra_inputs(
                     iter_dir,
@@ -5832,7 +5894,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 )
 
         # Fallback rerun for subgraph mappings in VF3 baseline mode.
-        if selected_family != "dijkstra" and "vf3_baseline" in outputs:
+        if selected_family not in {"dijkstra", "sp_via"} and "vf3_baseline" in outputs:
             parsed_try = normalize_mappings(
                 extract_mappings_from_text(outputs.get("vf3_baseline", ""), limit=VISUALIZER_SOLUTION_CAP),
                 int(round(float(datapoint.get("k_nodes", 0)))),
@@ -5865,7 +5927,7 @@ class BenchmarkRunnerApp(tk.Tk):
                             level="warn",
                         )
 
-        if selected_family == "dijkstra":
+        if selected_family in {"dijkstra", "sp_via"}:
             iteration_payload = self._build_dijkstra_visualization_iteration(
                 inputs=inputs,
                 outputs=outputs,
@@ -5881,7 +5943,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 iteration=iteration_index + 1,
                 seed=int(seed),
                 algorithm=visualization_algo,
-                family=("vf3" if selected_family != "dijkstra" else selected_family),
+                family=("vf3" if selected_family not in {"dijkstra", "sp_via"} else selected_family),
             )
         return iteration_payload
 
@@ -6136,7 +6198,7 @@ class BenchmarkRunnerApp(tk.Tk):
         }
 
         point_text = f"N={int(round(float(datapoint['n'])))} density={float(datapoint['density']):.4f}"
-        if selected_family != "dijkstra":
+        if selected_family not in {"dijkstra", "sp_via"}:
             point_text += f" k_nodes={int(round(float(datapoint['k_nodes'])))}"
         note = (
             f"Prepared {view_label} visualizer datapoint"
@@ -7030,7 +7092,7 @@ class BenchmarkRunnerApp(tk.Tk):
             iter_dir = vis_inputs / f"iter_{iter_idx + 1:03d}"
             iter_dir.mkdir(parents=True, exist_ok=True)
 
-            if selected_family == "dijkstra":
+            if selected_family in {"dijkstra", "sp_via"}:
                 inputs = {
                     "dijkstra_file": generate_dijkstra_inputs(
                         iter_dir,
@@ -7068,14 +7130,14 @@ class BenchmarkRunnerApp(tk.Tk):
                         level="warn",
                     )
 
-                if selected_family == "dijkstra":
+                if selected_family in {"dijkstra", "sp_via"}:
                     distance = parse_dijkstra_distance(outputs.get(variant_id, ""))
                     count_by_variant[variant_id].append(distance if distance is not None else "NA")
                 else:
                     count = parse_solution_count(outputs.get(variant_id, ""))
                     count_by_variant[variant_id].append(str(count) if count is not None else "NA")
 
-            if selected_family != "dijkstra" and "vf3_baseline" in outputs:
+            if selected_family not in {"dijkstra", "sp_via"} and "vf3_baseline" in outputs:
                 parsed_try = normalize_mappings(
                     extract_mappings_from_text(outputs.get("vf3_baseline", ""), limit=VISUALIZER_SOLUTION_CAP),
                     int(round(float(datapoint.get("k_nodes", 0)))),
@@ -7108,7 +7170,7 @@ class BenchmarkRunnerApp(tk.Tk):
                                 level="warn",
                             )
 
-            if selected_family == "dijkstra":
+            if selected_family in {"dijkstra", "sp_via"}:
                 iteration_payload = self._build_dijkstra_visualization_iteration(
                     inputs=inputs,
                     outputs=outputs,
@@ -7124,7 +7186,7 @@ class BenchmarkRunnerApp(tk.Tk):
                     iteration=iter_idx + 1,
                     seed=int(seed),
                     algorithm=visualization_algo,
-                    family=("vf3" if selected_family != "dijkstra" else selected_family),
+                    family=("vf3" if selected_family not in {"dijkstra", "sp_via"} else selected_family),
                 )
             iteration_payloads.append(iteration_payload)
 
@@ -7138,7 +7200,7 @@ class BenchmarkRunnerApp(tk.Tk):
             "status": "completed",
             "visualization": visualization_root,
         }
-        if selected_family != "dijkstra":
+        if selected_family not in {"dijkstra", "sp_via"}:
             lines: list[str] = []
             for variant_id in variant_ids:
                 label = label_lookup.get(variant_id, variant_id)
@@ -7175,7 +7237,7 @@ class BenchmarkRunnerApp(tk.Tk):
         )
 
         point_text = f"N={int(round(float(datapoint['n'])))} density={float(datapoint['density']):.4f}"
-        if selected_family != "dijkstra":
+        if selected_family not in {"dijkstra", "sp_via"}:
             point_text += f" k_nodes={int(round(float(datapoint['k_nodes'])))}"
         note = (
             f"Prepared {view_label} visualizer datapoint"
@@ -7199,6 +7261,9 @@ class BenchmarkRunnerApp(tk.Tk):
     def _visualizer_family_context(self, run_config: dict) -> tuple[str, str, str]:
         tab_id = str(run_config.get("tab_id") or "").strip().lower()
         if tab_id == "shortest_path":
+            selected_variants = [str(v).strip().lower() for v in list(run_config.get("selected_variants") or [])]
+            if any(v.startswith("sp_via_") for v in selected_variants):
+                return "sp_via", "With Intermediate", "sp_via"
             return "dijkstra", "Shortest Path", "dijkstra"
         selected_variants = [str(v).strip().lower() for v in list(run_config.get("selected_variants") or [])]
         # Subgraph view is presented generically; prefer VF3 answers as requested.
@@ -7232,13 +7297,14 @@ class BenchmarkRunnerApp(tk.Tk):
         binary = self.binary_paths.get(variant_id)
         if binary is None:
             raise RuntimeError(f"Unknown variant: {variant_id}")
-        if variant_id.startswith("dijkstra_"):
+        family = variant_family_from_id(variant_id)
+        if family in {"dijkstra", "sp_via"}:
             return [str(binary), str(inputs["dijkstra_file"])]
-        if variant_id.startswith("vf3_"):
+        if family == "vf3":
             if variant_id == "vf3_baseline":
                 return [str(binary), "-u", "-s", "-r", "0", str(inputs["vf_pattern"]), str(inputs["vf_target"])]
             return [str(binary), str(inputs["vf_pattern"]), str(inputs["vf_target"])]
-        if variant_id.startswith("glasgow_"):
+        if family == "glasgow":
             if variant_id == "glasgow_baseline":
                 return [
                     str(binary),

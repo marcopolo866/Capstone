@@ -1,0 +1,10 @@
+{
+  "algorithm": "dijkstra",
+  "n": 40,
+  "k": null,
+  "density": 0.2,
+  "seed": 1010,
+  "files": [
+    "outputs/tmp_dial_cmp/dijkstra_generated.csv"
+  ]
+}

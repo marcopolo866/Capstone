@@ -319,12 +319,14 @@ def load_solver_rows() -> list[SolverRow]:
         algorithm = str(row.get("algorithm") or "").strip().lower()
         role = str(row.get("role") or "").strip().lower() or "variant"
         binary_path = str(row.get("binary_path") or "").strip()
-        if not variant_id or family not in {"dijkstra", "vf3", "glasgow"}:
+        if not variant_id or family not in {"dijkstra", "sp_via", "vf3", "glasgow"}:
             continue
         if not binary_path:
             if role == "baseline":
                 if family == "dijkstra":
                     binary_path = "baselines/dijkstra"
+                elif family == "sp_via":
+                    binary_path = "baselines/via_dijkstra"
                 elif family == "vf3":
                     binary_path = "baselines/vf3lib/bin/vf3"
                 else:
@@ -430,12 +432,12 @@ def generate_inputs_for_iteration(
     out_dir = OUTPUTS_DIR / "generated" / algorithm / f"iter_{iteration_index + 1}"
     out_dir.mkdir(parents=True, exist_ok=True)
     seed = base_seed + iteration_index
-    if algorithm == "dijkstra":
+    if algorithm in {"dijkstra", "sp_via"}:
         cmd = [
             sys.executable,
             "utilities/generate_graphs.py",
             "--algorithm",
-            "dijkstra",
+            algorithm,
             "--n",
             str(n),
             "--density",
@@ -448,8 +450,9 @@ def generate_inputs_for_iteration(
         done = subprocess.run(cmd, cwd=str(REPO_ROOT), check=True, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
         paths = parse_last_line_paths(done.stdout)
         if not paths:
-            raise RuntimeError("Generator did not return Dijkstra input path")
-        return {"seed": Path(str(seed)), "dijkstra": Path(paths[0]).resolve()}
+            raise RuntimeError("Generator did not return shortest-path input path")
+        graph_path = Path(paths[0]).resolve()
+        return {"seed": Path(str(seed)), "dijkstra": graph_path, "sp_via": graph_path}
 
     cmd = [
         sys.executable,
@@ -483,10 +486,10 @@ def generate_inputs_for_iteration(
 
 def get_premade_inputs(algorithm: str, input_files: list[str]) -> dict[str, Path]:
     files = [Path(item).resolve() for item in input_files if item]
-    if algorithm == "dijkstra":
+    if algorithm in {"dijkstra", "sp_via"}:
         if len(files) < 1:
-            raise RuntimeError("Dijkstra requires one input file")
-        return {"seed": Path(""), "dijkstra": files[0]}
+            raise RuntimeError(f"{algorithm} requires one input file")
+        return {"seed": Path(""), "dijkstra": files[0], "sp_via": files[0]}
     if len(files) < 2:
         raise RuntimeError(f"{algorithm} requires two input files")
     return {
@@ -514,11 +517,18 @@ def resolve_row_binary(row: SolverRow) -> Path:
     return resolve_binary(row.binary_path)
 
 
-def make_mode_commands(row: SolverRow, inputs: dict[str, Path]) -> dict[str, list[str]]:
+def make_mode_commands(row: SolverRow, inputs: dict[str, Path], via_label: str) -> dict[str, list[str]]:
     binary = resolve_row_binary(row)
     if row.family == "dijkstra":
         return {
             "single": [str(binary), str(inputs["dijkstra"])],
+        }
+    if row.family == "sp_via":
+        command = [str(binary), str(inputs.get("sp_via", inputs["dijkstra"]))]
+        if via_label:
+            command.append(via_label)
+        return {
+            "single": command,
         }
     if row.family == "vf3":
         if row.role == "baseline":
@@ -1168,6 +1178,7 @@ def main() -> int:
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
     algorithm_input = str(os.environ.get("ALGORITHM_INPUT", "dijkstra") or "dijkstra").strip().lower()
+    via_node_input = str(os.environ.get("VIA_NODE_INPUT", "") or "").strip()
     subgraph_phase = str(os.environ.get("SUBGRAPH_PHASE_INPUT", "") or "").strip().lower()
     input_mode = str(os.environ.get("INPUT_MODE_INPUT", "generate") or "generate").strip().lower()
     request_id = str(os.environ.get("REQUEST_ID_INPUT", "") or "").strip()
@@ -1193,6 +1204,12 @@ def main() -> int:
         else:
             selected_family = "vf3"
             subgraph_phase = "vf3"
+    family_display = {
+        "dijkstra": "Dijkstra",
+        "sp_via": "With Intermediate",
+        "vf3": "VF3",
+        "glasgow": "Glasgow",
+    }
 
     exit_code = 0
     started = time.perf_counter()
@@ -1260,7 +1277,7 @@ def main() -> int:
         input_files_raw = str(os.environ.get("INPUT_FILES_INPUT", "") or "").strip()
         input_files = [part.strip() for part in input_files_raw.split(",") if part.strip()]
 
-        mode_order = ["single"] if selected_family == "dijkstra" else ["first", "all"]
+        mode_order = ["single"] if selected_family in {"dijkstra", "sp_via"} else ["first", "all"]
         per_solver_times: dict[tuple[str, str], list[float]] = {
             (row.variant_id, mode): [] for row in by_role for mode in mode_order
         }
@@ -1276,7 +1293,7 @@ def main() -> int:
         for iter_idx in range(iterations):
             if input_mode == "generate":
                 inputs = generate_inputs_for_iteration(
-                    algorithm=algorithm_input if algorithm_input == "dijkstra" else "subgraph",
+                    algorithm=algorithm_input if algorithm_input in {"dijkstra", "sp_via"} else "subgraph",
                     iteration_index=iter_idx,
                     n=n,
                     k=k,
@@ -1288,7 +1305,7 @@ def main() -> int:
             per_iteration_inputs.append(dict(inputs))
 
             for row in by_role:
-                commands = make_mode_commands(row, inputs)
+                commands = make_mode_commands(row, inputs, via_label=via_node_input)
                 for mode in mode_order:
                     command = commands.get(mode)
                     if command is None:
@@ -1359,7 +1376,7 @@ def main() -> int:
 
         for row in by_role:
             key = build_variant_metric_key(row)
-            if selected_family == "dijkstra":
+            if selected_family in {"dijkstra", "sp_via"}:
                 median_ms, stdev_ms = median_and_stdev(per_solver_times[(row.variant_id, "single")])
                 median_kb, stdev_kb = median_and_stdev([float(v) for v in per_solver_mem[(row.variant_id, "single")]])
                 metric_key = key
@@ -1430,7 +1447,7 @@ def main() -> int:
         solution_counts_by_variant: dict[str, list[str]] = {}
         comparison_reference_label: str | None = None
         comparison_reference_counts: list[int | None] = []
-        if selected_family == "dijkstra":
+        if selected_family in {"dijkstra", "sp_via"}:
             baseline_outputs = per_solver_outputs[(baseline_row.variant_id, "single")]
         else:
             baseline_outputs = per_solver_outputs[(baseline_row.variant_id, "all")]
@@ -1455,7 +1472,7 @@ def main() -> int:
         for row in by_role:
             if row.role == "baseline":
                 continue
-            if selected_family == "dijkstra":
+            if selected_family in {"dijkstra", "sp_via"}:
                 total = 0
                 matches = 0
                 for i, out in enumerate(per_solver_outputs[(row.variant_id, "single")]):
@@ -1509,11 +1526,14 @@ def main() -> int:
                 output_lines.append(f"[visualization warning] {vis_exc}")
                 output_lines.append("")
 
-        output_lines.append(f"[{algorithm_input.upper()} Dynamic Runner]")
-        output_lines.append(f"Family: {selected_family}")
+        algo_header = "WITH INTERMEDIATE" if algorithm_input == "sp_via" else algorithm_input.upper()
+        output_lines.append(f"[{algo_header} Dynamic Runner]")
+        output_lines.append(f"Family: {family_display.get(selected_family, selected_family)}")
         output_lines.append(f"Iterations: {iterations}")
         output_lines.append(f"Warmup: {warmup}")
         output_lines.append(f"Seed used: {base_seed}")
+        if via_node_input:
+            output_lines.append(f"Via node: {via_node_input}")
         if comparison_reference_label and comparison_reference_label != baseline_row.label:
             output_lines.append(f"Equivalence reference: {comparison_reference_label}")
         if first_only_fallback_rows:
@@ -1526,7 +1546,7 @@ def main() -> int:
             for item in skipped_rows:
                 output_lines.append(f"  - {item}")
         output_lines.append("")
-        if algorithm_input == "dijkstra":
+        if algorithm_input in {"dijkstra", "sp_via"}:
             for row in by_role:
                 metric_key = build_variant_metric_key(row)
                 output_lines.append(f"[{row.label}]")
@@ -1643,6 +1663,7 @@ def main() -> int:
         "REQUEST_ID_INPUT": request_id,
         "INPUT_MODE_INPUT": input_mode,
         "INPUT_FILES_INPUT": str(os.environ.get("INPUT_FILES_INPUT", "") or ""),
+        "VIA_NODE_INPUT": via_node_input,
         "GENERATOR_N_INPUT": str(n),
         "GENERATOR_K_INPUT": str(k),
         "GENERATOR_DENSITY_INPUT": str(density),
