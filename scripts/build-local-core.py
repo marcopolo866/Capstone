@@ -297,6 +297,61 @@ def _extract_compile_failure_reason(output: str, returncode: int) -> str:
     return f"compiler exited with code {int(returncode)}"
 
 
+def ensure_cxxgraph_checkout(env: dict[str, str]) -> None:
+    header_path = REPO_ROOT / "baselines" / "cxxgraph" / "include" / "CXXGraph" / "Edge" / "DirectedWeightedEdge.h"
+    if header_path.is_file():
+        return
+
+    print()
+    print("==> Ensuring CXXGraph dependency checkout")
+
+    submodule_cmd = ["git", "submodule", "update", "--init", "--recursive", "baselines/cxxgraph"]
+    submodule_attempt = subprocess.run(
+        submodule_cmd,
+        cwd=str(REPO_ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if submodule_attempt.returncode == 0 and header_path.is_file():
+        return
+
+    print("CXXGraph submodule init failed or unavailable; trying direct clone fallback.")
+    target_dir = REPO_ROOT / "baselines" / "cxxgraph"
+    if target_dir.exists():
+        shutil.rmtree(target_dir, ignore_errors=True)
+
+    clone_cmd = ["git", "clone", "--depth", "1", "https://github.com/ZigRazor/CXXGraph.git", str(target_dir)]
+    clone_attempt = subprocess.run(
+        clone_cmd,
+        cwd=str(REPO_ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if clone_attempt.returncode == 0 and header_path.is_file():
+        return
+
+    details = []
+    if submodule_attempt.stdout.strip():
+        details.append("submodule output:\n" + submodule_attempt.stdout.strip())
+    if clone_attempt.stdout.strip():
+        details.append("clone output:\n" + clone_attempt.stdout.strip())
+    detail_text = "\n\n".join(details).strip()
+    if detail_text:
+        detail_text = "\n\n" + detail_text
+    raise RuntimeError(
+        "Unable to provision CXXGraph headers required for Dial baselines. "
+        f"Expected file: {header_path}{detail_text}"
+    )
+
+
 def compile_discovered_variants_for_family(catalog: dict, family: str, env: dict[str, str]) -> list[dict]:
     rows = [
         row
@@ -563,6 +618,8 @@ def main() -> int:
         print("==> Skipping submodule update (BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1)")
     else:
         run_step("Updating submodules", lambda: run_cmd(["git", "submodule", "update", "--init", "--recursive"], env=env))
+
+    ensure_cxxgraph_checkout(env)
 
     solver_discovery = load_solver_discovery_module()
     catalog = solver_discovery.build_catalog(REPO_ROOT)
