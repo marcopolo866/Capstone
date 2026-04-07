@@ -41,6 +41,50 @@ def parse_json_env(name: str):
     except json.JSONDecodeError:
         return None
 
+
+def merge_statistical_tests(previous, current):
+    prev = previous if isinstance(previous, dict) else {}
+    cur = current if isinstance(current, dict) else {}
+    merged = {}
+
+    merged["metric"] = cur.get("metric") or prev.get("metric") or "runtime_ms"
+    alpha = cur.get("alpha", prev.get("alpha"))
+    if alpha is not None:
+        merged["alpha"] = alpha
+
+    notes = []
+    for source in (prev.get("notes"), cur.get("notes")):
+        if not isinstance(source, list):
+            continue
+        for item in source:
+            if not isinstance(item, str):
+                continue
+            text = item.strip()
+            if text and text not in notes:
+                notes.append(text)
+    if notes:
+        merged["notes"] = notes
+
+    pairs = []
+    seen = set()
+    for source in (prev.get("pairs"), cur.get("pairs")):
+        if not isinstance(source, list):
+            continue
+        for row in source:
+            if not isinstance(row, dict):
+                continue
+            key = (
+                str(row.get("variant_id") or ""),
+                str(row.get("baseline_variant_id") or ""),
+                str(row.get("mode") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            pairs.append(row)
+    merged["pairs"] = pairs
+    return merged
+
 algorithm = env.get("ALGORITHM_INPUT", "")
 exit_code = env.get("EXIT_CODE", "")
 request_id = env.get("REQUEST_ID_INPUT", "")
@@ -502,6 +546,10 @@ dynamic_match_counts = parse_json_env("MATCH_COUNTS_JSON")
 if isinstance(dynamic_match_counts, dict):
     data["match_counts"] = dynamic_match_counts
 
+statistical_tests = parse_json_env("STATISTICAL_TESTS_JSON")
+if isinstance(statistical_tests, dict):
+    data["statistical_tests"] = statistical_tests
+
 if not isinstance(dynamic_match_counts, dict) and algorithm == "dijkstra":
     chat_match = maybe_int_env("DIJKSTRA_CHATGPT_MATCH")
     chat_total = maybe_int_env("DIJKSTRA_CHATGPT_TOTAL")
@@ -714,6 +762,11 @@ if algorithm == "subgraph" and env.get("SUBGRAPH_PHASE", "").strip().lower() == 
                     merged = dict(previous.get(key, {}))
                     merged.update(data.get(key, {}))
                     data[key] = merged
+            if "statistical_tests" in previous or "statistical_tests" in data:
+                data["statistical_tests"] = merge_statistical_tests(
+                    previous.get("statistical_tests"),
+                    data.get("statistical_tests"),
+                )
             if isinstance(previous.get("variant_metadata"), list) or isinstance(data.get("variant_metadata"), list):
                 merged_meta = []
                 seen_variant_ids = set()

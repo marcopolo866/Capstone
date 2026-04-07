@@ -22,6 +22,10 @@
                 exportRow.hidden = true;
                 exportRow.replaceChildren();
             }
+            const statsPanel = document.getElementById('stats-panel');
+            const statsGrid = document.getElementById('stats-grid');
+            if (statsGrid) statsGrid.replaceChildren();
+            if (statsPanel) statsPanel.hidden = true;
             clearVisualization();
         }
 
@@ -459,6 +463,73 @@
             return Object.keys(bySection).length ? bySection : null;
         }
 
+        function formatStatNumber(value, decimals = 4) {
+            if (!Number.isFinite(Number(value))) return 'n/a';
+            return Number(value).toFixed(decimals);
+        }
+
+        function renderStatisticalTests(result) {
+            const statsPanel = document.getElementById('stats-panel');
+            const statsGrid = document.getElementById('stats-grid');
+            if (!statsPanel || !statsGrid) return;
+            statsGrid.replaceChildren();
+
+            const block = result && result.statistical_tests && typeof result.statistical_tests === 'object'
+                ? result.statistical_tests
+                : null;
+            const rows = block && Array.isArray(block.pairs) ? block.pairs : [];
+            if (!rows.length) {
+                statsPanel.hidden = true;
+                return;
+            }
+
+            for (const raw of rows) {
+                const row = raw && typeof raw === 'object' ? raw : null;
+                if (!row) continue;
+                const variantLabel = String(row.variant_label || row.variant_id || 'Variant').trim();
+                const baselineLabel = String(row.baseline_label || row.baseline_variant_id || 'Baseline').trim();
+                const mode = String(row.mode || 'single').trim();
+                const n = Number.isFinite(Number(row.n)) ? Number(row.n) : 0;
+
+                const paired = row.paired_t_test && typeof row.paired_t_test === 'object' ? row.paired_t_test : {};
+                const effects = row.effect_sizes && typeof row.effect_sizes === 'object' ? row.effect_sizes : {};
+                const ci = row.delta_ci_95_ms && typeof row.delta_ci_95_ms === 'object' ? row.delta_ci_95_ms : {};
+                const pValue = paired.p_value_two_sided;
+                const meanDelta = row.mean_delta_ms;
+                const direction = String(row.direction || 'n/a');
+
+                const card = document.createElement('article');
+                card.className = 'stats-card';
+
+                const title = document.createElement('h4');
+                title.className = 'stats-card-title';
+                title.textContent = `${variantLabel} vs ${baselineLabel}`;
+
+                const subtitle = document.createElement('div');
+                subtitle.className = 'stats-card-subtitle';
+                subtitle.textContent = `Mode: ${mode} | Matched samples: ${n}`;
+
+                const list = document.createElement('div');
+                list.className = 'stats-card-metrics';
+                const ciLow = ci.low;
+                const ciHigh = ci.high;
+                list.innerHTML = [
+                    `<div><strong>Mean delta:</strong> ${formatStatNumber(meanDelta, 3)} ms (${direction})</div>`,
+                    `<div><strong>t-test p-value:</strong> ${formatStatNumber(pValue, 6)}</div>`,
+                    `<div><strong>95% CI (delta):</strong> [${formatStatNumber(ciLow, 3)}, ${formatStatNumber(ciHigh, 3)}] ms</div>`,
+                    `<div><strong>Hedges g:</strong> ${formatStatNumber(effects.hedges_g, 4)}</div>`,
+                    `<div><strong>Cliff's delta:</strong> ${formatStatNumber(effects.cliffs_delta, 4)}</div>`
+                ].join('');
+
+                card.appendChild(title);
+                card.appendChild(subtitle);
+                card.appendChild(list);
+                statsGrid.appendChild(card);
+            }
+
+            statsPanel.hidden = !statsGrid.children.length;
+        }
+
         function renderExportButtons(result) {
             const exportRow = document.getElementById('export-row');
             if (!exportRow || !result) return;
@@ -499,6 +570,7 @@
                     run_duration_ms: pickDefined(result.run_duration_ms),
                     subgraph_phase: result.subgraph_phase || null,
                     match_counts: matchCounts,
+                    statistical_tests: result.statistical_tests || null,
                     seed_used: seedUsed,
                     iteration_seeds: iterationSeeds,
                     solution_counts_per_iteration: solutionCounts,
@@ -582,6 +654,7 @@
                     }
                 }
                 flattenObjectRows('correctness', 'match_counts', result.match_counts);
+                flattenObjectRows('statistics', 'statistical_tests', result.statistical_tests);
                 for (const key of Object.keys(timings)) {
                     const val = timings[key];
                     const sd = timingsStdev[key] !== undefined ? timingsStdev[key] : '';
@@ -674,6 +747,7 @@
                     : null;
                 lastResult = result;
                 charts.hidden = false;
+                renderStatisticalTests(result);
                 renderExportButtons(result);
                 return;
             }
@@ -772,6 +846,7 @@
                     : null;
                 lastResult = result;
                 charts.hidden = false;
+                renderStatisticalTests(result);
                 renderExportButtons(result);
                 return;
             }
@@ -826,6 +901,7 @@
                     : null;
                 lastResult = result;
                 charts.hidden = false;
+                renderStatisticalTests(result);
                 renderExportButtons(result);
                 return;
             }
@@ -879,5 +955,6 @@
                 : null;
             lastResult = result;
             charts.hidden = false;
+            renderStatisticalTests(result);
             renderExportButtons(result);
         }

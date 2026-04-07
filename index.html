@@ -165,6 +165,9 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                 </div>
                 <div id="export-row" class="export-row" hidden></div>
                 <div class="charts" id="charts" hidden>
+                    <div class="charts-blurb">
+                        Runtime and memory charts show median values across benchmark iterations, with error bars for standard deviation.
+                    </div>
                     <div class="chart-panel">
                         <div class="chart-title">Runtime (ms)</div>
                         <div class="chart"><canvas id="runtime-chart"></canvas></div>
@@ -173,6 +176,19 @@ No output yet. Select an algorithm and input files, then click "Run Algorithm".
                         <div class="chart-title">Memory (kB)</div>
                         <div class="chart"><canvas id="memory-chart"></canvas></div>
                     </div>
+                </div>
+                <div class="stats-panel" id="stats-panel" hidden>
+                    <div class="chart-title">Runtime Statistical Tests</div>
+                    <p class="stats-blurb">
+                        These comparisons test each variant against its benchmark baseline.
+                        p-value estimates chance-level differences, and effect sizes indicate practical magnitude.
+                    </p>
+                    <div class="stats-legend">
+                        <span><strong>t-test:</strong> mean runtime shift</span>
+                        <span><strong>95% CI:</strong> plausible range of mean delta</span>
+                        <span><strong>Hedges g / Cliff's delta:</strong> effect size strength</span>
+                    </div>
+                    <div class="stats-grid" id="stats-grid"></div>
                 </div>
                 <div class="graph-panel graph-panel-small" id="pattern-panel" hidden>
                     <div class="chart-title">Pattern Visualization</div>

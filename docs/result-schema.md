@@ -21,6 +21,7 @@ Optional sections:
 - `timings_ms`, `timings_ms_stdev`
 - `memory_kb`, `memory_kb_stdev`
 - `match_counts`
+- `statistical_tests` (runtime comparisons vs baseline; paired t-test, Mann-Whitney U, effect sizes, CI)
 - `equivalence_check`
 - `visualization`
 - `subgraph_phase` (`vf3` or `glasgow` in split subgraph flow)
@@ -49,6 +50,7 @@ Primary JSON fields:
 - `run_duration_ms`
 - `aborted`, `timed_out`
 - `completed_trials`, `planned_trials`
+- `statistical_tests` (runtime comparisons vs family baseline)
 - `run_config`:
   - `tab_id` (`subgraph` or `shortest_path`)
   - `selected_variants`

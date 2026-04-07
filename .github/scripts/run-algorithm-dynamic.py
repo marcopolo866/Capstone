@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import re
@@ -79,6 +80,322 @@ def median_and_stdev(samples: list[float]) -> tuple[float | None, float]:
     if len(samples) == 1:
         return float(samples[0]), 0.0
     return float(statistics.median(samples)), float(statistics.stdev(samples))
+
+
+def _simpson_integral(func, a: float, b: float) -> float:
+    c = (a + b) * 0.5
+    h = b - a
+    return (h / 6.0) * (func(a) + (4.0 * func(c)) + func(b))
+
+
+def _adaptive_simpson(func, a: float, b: float, eps: float, whole: float, depth: int) -> float:
+    c = (a + b) * 0.5
+    left = _simpson_integral(func, a, c)
+    right = _simpson_integral(func, c, b)
+    delta = left + right - whole
+    if depth <= 0 or abs(delta) <= 15.0 * eps:
+        return left + right + (delta / 15.0)
+    return (
+        _adaptive_simpson(func, a, c, eps * 0.5, left, depth - 1)
+        + _adaptive_simpson(func, c, b, eps * 0.5, right, depth - 1)
+    )
+
+
+def student_t_two_sided_p_value(t_stat: float, degrees_of_freedom: int) -> float | None:
+    if not math.isfinite(t_stat):
+        return None
+    df = int(degrees_of_freedom)
+    if df <= 0:
+        return None
+    x = abs(float(t_stat))
+    if x <= 0.0:
+        return 1.0
+    if x >= 50.0:
+        return 0.0
+    if df >= 200:
+        tail = 0.5 * math.erfc(x / math.sqrt(2.0))
+        return max(0.0, min(1.0, 2.0 * tail))
+
+    log_c = math.lgamma((df + 1.0) * 0.5) - math.lgamma(df * 0.5) - 0.5 * math.log(df * math.pi)
+    c = math.exp(log_c)
+
+    def pdf(val: float) -> float:
+        return c * ((1.0 + ((val * val) / float(df))) ** (-(df + 1.0) * 0.5))
+
+    whole = _simpson_integral(pdf, 0.0, x)
+    area_0_to_x = _adaptive_simpson(pdf, 0.0, x, 1e-8, whole, depth=20)
+    cdf = max(0.0, min(1.0, 0.5 + area_0_to_x))
+    return max(0.0, min(1.0, 2.0 * (1.0 - cdf)))
+
+
+def student_t_critical_two_sided(alpha: float, degrees_of_freedom: int) -> float | None:
+    df = int(degrees_of_freedom)
+    if df <= 0:
+        return None
+    target = float(alpha)
+    if not math.isfinite(target) or target <= 0.0 or target >= 1.0:
+        return None
+    lo = 0.0
+    hi = 1.0
+    p_hi = student_t_two_sided_p_value(hi, df)
+    guard = 0
+    while (p_hi is None or p_hi > target) and hi < 1_000_000.0:
+        lo = hi
+        hi *= 2.0
+        p_hi = student_t_two_sided_p_value(hi, df)
+        guard += 1
+        if guard > 80:
+            break
+    if p_hi is None:
+        return None
+    for _ in range(64):
+        mid = (lo + hi) * 0.5
+        p_mid = student_t_two_sided_p_value(mid, df)
+        if p_mid is None:
+            return None
+        if p_mid > target:
+            lo = mid
+        else:
+            hi = mid
+    return hi
+
+
+def normal_two_sided_p_value_from_z(z_score: float) -> float | None:
+    if not math.isfinite(z_score):
+        return None
+    tail = 0.5 * math.erfc(abs(float(z_score)) / math.sqrt(2.0))
+    return max(0.0, min(1.0, 2.0 * tail))
+
+
+def cliffs_delta(left: list[float], right: list[float]) -> float | None:
+    a = [float(v) for v in left if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    b = [float(v) for v in right if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    if not a or not b:
+        return None
+    greater = 0
+    less = 0
+    for x in a:
+        for y in b:
+            if x > y:
+                greater += 1
+            elif x < y:
+                less += 1
+    denom = len(a) * len(b)
+    if denom <= 0:
+        return None
+    return float(greater - less) / float(denom)
+
+
+def mann_whitney_u_test(left: list[float], right: list[float]) -> dict:
+    x = [float(v) for v in left if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    y = [float(v) for v in right if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    nx = len(x)
+    ny = len(y)
+    if nx == 0 or ny == 0:
+        return {
+            "u_stat": None,
+            "u_stat_alt": None,
+            "z_score": None,
+            "p_value_two_sided": None,
+        }
+
+    combined = [(val, 0) for val in x] + [(val, 1) for val in y]
+    combined.sort(key=lambda item: item[0])
+    rank_sum_x = 0.0
+    tie_sizes: list[int] = []
+    idx = 0
+    while idx < len(combined):
+        j = idx + 1
+        while j < len(combined) and combined[j][0] == combined[idx][0]:
+            j += 1
+        avg_rank = (float(idx + 1) + float(j)) * 0.5
+        block = combined[idx:j]
+        tie_sizes.append(len(block))
+        rank_sum_x += avg_rank * float(sum(1 for _value, grp in block if grp == 0))
+        idx = j
+
+    u_x = rank_sum_x - (float(nx) * float(nx + 1) * 0.5)
+    u_y = float(nx * ny) - u_x
+    u_stat = min(u_x, u_y)
+    mean_u = float(nx * ny) * 0.5
+
+    n_total = nx + ny
+    tie_term = sum(float(t * t * t - t) for t in tie_sizes)
+    denom = float(n_total * n_total * n_total - n_total)
+    tie_correction = 1.0 - (tie_term / denom) if denom > 0.0 else 1.0
+    sigma_sq = float(nx * ny * (n_total + 1)) / 12.0
+    sigma_sq *= max(0.0, tie_correction)
+
+    if sigma_sq <= 0.0:
+        if abs(u_stat - mean_u) <= 1e-12:
+            z_score = 0.0
+            p_value = 1.0
+        else:
+            z_score = math.copysign(float("inf"), u_stat - mean_u)
+            p_value = 0.0
+    else:
+        sigma = math.sqrt(sigma_sq)
+        z_score = (u_stat - mean_u) / sigma
+        p_value = normal_two_sided_p_value_from_z(z_score)
+
+    return {
+        "u_stat": float(u_stat),
+        "u_stat_alt": float(max(u_x, u_y)),
+        "z_score": None if z_score is None else float(z_score),
+        "p_value_two_sided": None if p_value is None else float(p_value),
+    }
+
+
+def summarize_runtime_comparison(
+    *,
+    variant_samples_ms: list[float],
+    baseline_samples_ms: list[float],
+    alpha: float = 0.05,
+) -> dict:
+    variant = [float(v) for v in variant_samples_ms if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    baseline = [float(v) for v in baseline_samples_ms if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    pair_count = min(len(variant), len(baseline))
+    if pair_count <= 0:
+        return {
+            "n": 0,
+            "mean_delta_ms": None,
+            "median_delta_ms": None,
+            "stdev_delta_ms": None,
+            "delta_ci_95_ms": {"low": None, "high": None},
+            "paired_t_test": {"t_stat": None, "degrees_of_freedom": 0, "p_value_two_sided": None},
+            "mann_whitney_u": mann_whitney_u_test(variant, baseline),
+            "effect_sizes": {
+                "cohen_d": None,
+                "hedges_g": None,
+                "cliffs_delta": cliffs_delta(variant, baseline),
+            },
+            "direction": "insufficient_data",
+            "significant_at_alpha": None,
+            "alpha": float(alpha),
+        }
+
+    deltas = [variant[i] - baseline[i] for i in range(pair_count)]
+    mean_delta = float(statistics.mean(deltas))
+    median_delta = float(statistics.median(deltas))
+    if pair_count >= 2:
+        sd_delta = float(statistics.stdev(deltas))
+    else:
+        sd_delta = 0.0
+
+    if pair_count < 2:
+        t_stat = None
+        p_value = None
+        ci_low = None
+        ci_high = None
+    elif sd_delta <= 0.0:
+        if abs(mean_delta) <= 1e-12:
+            t_stat = 0.0
+            p_value = 1.0
+        else:
+            t_stat = math.copysign(float("inf"), mean_delta)
+            p_value = 0.0
+        ci_low = mean_delta
+        ci_high = mean_delta
+    else:
+        se = sd_delta / math.sqrt(float(pair_count))
+        t_stat = mean_delta / se
+        p_value = student_t_two_sided_p_value(t_stat, pair_count - 1)
+        t_crit = student_t_critical_two_sided(alpha, pair_count - 1)
+        if t_crit is None:
+            ci_low = None
+            ci_high = None
+        else:
+            half = float(t_crit) * se
+            ci_low = mean_delta - half
+            ci_high = mean_delta + half
+
+    if pair_count < 2:
+        cohen_d = None
+    elif sd_delta <= 0.0:
+        cohen_d = 0.0 if abs(mean_delta) <= 1e-12 else math.copysign(float("inf"), mean_delta)
+    else:
+        cohen_d = mean_delta / sd_delta
+    if cohen_d is None:
+        hedges_g = None
+    else:
+        correction = 1.0 if pair_count <= 2 else (1.0 - (3.0 / ((4.0 * float(pair_count)) - 5.0)))
+        hedges_g = float(cohen_d) * correction
+
+    if abs(mean_delta) <= 1e-12:
+        direction = "equal"
+    elif mean_delta > 0.0:
+        direction = "slower"
+    else:
+        direction = "faster"
+
+    return {
+        "n": int(pair_count),
+        "mean_delta_ms": float(mean_delta),
+        "median_delta_ms": float(median_delta),
+        "stdev_delta_ms": float(sd_delta),
+        "delta_ci_95_ms": {
+            "low": None if ci_low is None else float(ci_low),
+            "high": None if ci_high is None else float(ci_high),
+        },
+        "paired_t_test": {
+            "t_stat": None if t_stat is None else float(t_stat),
+            "degrees_of_freedom": int(max(0, pair_count - 1)),
+            "p_value_two_sided": None if p_value is None else float(p_value),
+        },
+        "mann_whitney_u": mann_whitney_u_test(variant, baseline),
+        "effect_sizes": {
+            "cohen_d": None if cohen_d is None else float(cohen_d),
+            "hedges_g": None if hedges_g is None else float(hedges_g),
+            "cliffs_delta": cliffs_delta(variant, baseline),
+        },
+        "direction": direction,
+        "significant_at_alpha": None if p_value is None else bool(p_value < float(alpha)),
+        "alpha": float(alpha),
+    }
+
+
+def build_runtime_statistical_tests(
+    *,
+    by_role: list["SolverRow"],
+    baseline_row: "SolverRow",
+    selected_family: str,
+    per_solver_times: dict[tuple[str, str], list[float]],
+    alpha: float = 0.05,
+) -> dict:
+    mode_order = ["single"] if selected_family in {"dijkstra", "sp_via"} else ["first", "all"]
+    rows: list[dict] = []
+    for row in by_role:
+        if row.role == "baseline":
+            continue
+        for mode in mode_order:
+            baseline_samples = list(per_solver_times.get((baseline_row.variant_id, mode), []))
+            variant_samples = list(per_solver_times.get((row.variant_id, mode), []))
+            summary = summarize_runtime_comparison(
+                variant_samples_ms=variant_samples,
+                baseline_samples_ms=baseline_samples,
+                alpha=alpha,
+            )
+            rows.append(
+                {
+                    "variant_id": row.variant_id,
+                    "variant_label": row.label,
+                    "baseline_variant_id": baseline_row.variant_id,
+                    "baseline_label": baseline_row.label,
+                    "mode": mode,
+                    **summary,
+                }
+            )
+    return {
+        "metric": "runtime_ms",
+        "alpha": float(alpha),
+        "pairs": rows,
+        "notes": [
+            "paired_t_test uses matched iteration deltas (variant - baseline).",
+            "mann_whitney_u compares the two runtime distributions.",
+            "cohen_d and hedges_g are standardized effect sizes on paired deltas.",
+            "cliffs_delta is the probability dominance effect size.",
+        ],
+    }
 
 
 def parse_solution_count(text: str) -> int | None:
@@ -1218,6 +1535,7 @@ def main() -> int:
     memory_kb: dict[str, int] = {}
     memory_kb_stdev: dict[str, int] = {}
     match_counts: dict[str, dict] = {}
+    statistical_tests: dict = {"metric": "runtime_ms", "alpha": 0.05, "pairs": [], "notes": []}
     variant_metadata: list[dict] = []
     output_lines: list[str] = []
     vis_path = OUTPUTS_DIR / "visualization.json"
@@ -1512,6 +1830,14 @@ def main() -> int:
                 key = row.variant_id
             match_counts[key] = {"matches": matches, "total": total, "mismatches": mismatches}
 
+        statistical_tests = build_runtime_statistical_tests(
+            by_role=by_role,
+            baseline_row=baseline_row,
+            selected_family=selected_family,
+            per_solver_times=per_solver_times,
+            alpha=0.05,
+        )
+
         if selected_family in {"vf3", "glasgow"}:
             try:
                 maybe_write_visualization(
@@ -1546,6 +1872,37 @@ def main() -> int:
             for item in skipped_rows:
                 output_lines.append(f"  - {item}")
         output_lines.append("")
+        stats_rows = list(statistical_tests.get("pairs", []))
+        if stats_rows:
+            output_lines.append("Runtime Statistical Tests (variant vs baseline):")
+            output_lines.append(
+                "  blurb: Paired t-test checks if the average runtime delta is non-random; "
+                "Mann-Whitney U checks distribution shift; effect sizes show practical magnitude."
+            )
+            for row in stats_rows:
+                if not isinstance(row, dict):
+                    continue
+                n = int(row.get("n", 0) or 0)
+                mode = str(row.get("mode") or "single")
+                label = str(row.get("variant_label") or row.get("variant_id") or "variant")
+                baseline_label = str(row.get("baseline_label") or row.get("baseline_variant_id") or "baseline")
+                if n <= 0:
+                    output_lines.append(f"  - [{mode}] {label} vs {baseline_label}: insufficient matched samples (n=0).")
+                    continue
+                mean_delta = row.get("mean_delta_ms")
+                direction = str(row.get("direction") or "n/a")
+                paired = row.get("paired_t_test") if isinstance(row.get("paired_t_test"), dict) else {}
+                p_value = paired.get("p_value_two_sided")
+                p_text = "n/a" if p_value is None else f"{float(p_value):.6g}"
+                effect_sizes = row.get("effect_sizes") if isinstance(row.get("effect_sizes"), dict) else {}
+                hedges_g = effect_sizes.get("hedges_g")
+                g_text = "n/a" if hedges_g is None else f"{float(hedges_g):.4f}"
+                output_lines.append(
+                    f"  - [{mode}] {label} vs {baseline_label}: n={n}, mean_delta={float(mean_delta):.3f} ms, "
+                    f"direction={direction}, p={p_text}, hedges_g={g_text}"
+                )
+            output_lines.append("")
+
         if algorithm_input in {"dijkstra", "sp_via"}:
             for row in by_role:
                 metric_key = build_variant_metric_key(row)
@@ -1677,6 +2034,7 @@ def main() -> int:
         "MEMORY_KB_JSON": json.dumps(memory_kb, separators=(",", ":"), sort_keys=True),
         "MEMORY_KB_STDEV_JSON": json.dumps(memory_kb_stdev, separators=(",", ":"), sort_keys=True),
         "MATCH_COUNTS_JSON": json.dumps(match_counts, separators=(",", ":"), sort_keys=True),
+        "STATISTICAL_TESTS_JSON": json.dumps(statistical_tests, separators=(",", ":"), sort_keys=True),
         "VARIANT_METADATA_JSON": json.dumps(variant_metadata, separators=(",", ":"), sort_keys=True),
     }
 

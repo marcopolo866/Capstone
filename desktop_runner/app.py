@@ -312,6 +312,309 @@ def student_t_two_sided_p_value(t_stat: float, degrees_of_freedom: int) -> float
     return max(0.0, min(1.0, 2.0 * (1.0 - cdf)))
 
 
+def student_t_critical_two_sided(alpha: float, degrees_of_freedom: int) -> float | None:
+    df = int(degrees_of_freedom)
+    if df <= 0:
+        return None
+    target = float(alpha)
+    if not math.isfinite(target) or target <= 0.0 or target >= 1.0:
+        return None
+    lo = 0.0
+    hi = 1.0
+    p_hi = student_t_two_sided_p_value(hi, df)
+    guard = 0
+    while (p_hi is None or p_hi > target) and hi < 1_000_000.0:
+        lo = hi
+        hi *= 2.0
+        p_hi = student_t_two_sided_p_value(hi, df)
+        guard += 1
+        if guard > 80:
+            break
+    if p_hi is None:
+        return None
+    for _ in range(64):
+        mid = (lo + hi) * 0.5
+        p_mid = student_t_two_sided_p_value(mid, df)
+        if p_mid is None:
+            return None
+        if p_mid > target:
+            lo = mid
+        else:
+            hi = mid
+    return hi
+
+
+def normal_two_sided_p_value_from_z(z_score: float) -> float | None:
+    if not math.isfinite(z_score):
+        return None
+    tail = 0.5 * math.erfc(abs(float(z_score)) / math.sqrt(2.0))
+    return max(0.0, min(1.0, 2.0 * tail))
+
+
+def cliffs_delta(left: list[float], right: list[float]) -> float | None:
+    a = [float(v) for v in left if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    b = [float(v) for v in right if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    if not a or not b:
+        return None
+    greater = 0
+    less = 0
+    for x in a:
+        for y in b:
+            if x > y:
+                greater += 1
+            elif x < y:
+                less += 1
+    denom = len(a) * len(b)
+    if denom <= 0:
+        return None
+    return float(greater - less) / float(denom)
+
+
+def mann_whitney_u_test(left: list[float], right: list[float]) -> dict:
+    x = [float(v) for v in left if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    y = [float(v) for v in right if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    nx = len(x)
+    ny = len(y)
+    if nx == 0 or ny == 0:
+        return {
+            "u_stat": None,
+            "u_stat_alt": None,
+            "z_score": None,
+            "p_value_two_sided": None,
+        }
+
+    combined = [(val, 0) for val in x] + [(val, 1) for val in y]
+    combined.sort(key=lambda item: item[0])
+    rank_sum_x = 0.0
+    tie_sizes: list[int] = []
+    idx = 0
+    while idx < len(combined):
+        j = idx + 1
+        while j < len(combined) and combined[j][0] == combined[idx][0]:
+            j += 1
+        avg_rank = (float(idx + 1) + float(j)) * 0.5
+        block = combined[idx:j]
+        tie_sizes.append(len(block))
+        rank_sum_x += avg_rank * float(sum(1 for _value, grp in block if grp == 0))
+        idx = j
+
+    u_x = rank_sum_x - (float(nx) * float(nx + 1) * 0.5)
+    u_y = float(nx * ny) - u_x
+    u_stat = min(u_x, u_y)
+    mean_u = float(nx * ny) * 0.5
+
+    n_total = nx + ny
+    tie_term = sum(float(t * t * t - t) for t in tie_sizes)
+    denom = float(n_total * n_total * n_total - n_total)
+    tie_correction = 1.0 - (tie_term / denom) if denom > 0.0 else 1.0
+    sigma_sq = float(nx * ny * (n_total + 1)) / 12.0
+    sigma_sq *= max(0.0, tie_correction)
+
+    if sigma_sq <= 0.0:
+        if abs(u_stat - mean_u) <= 1e-12:
+            z_score = 0.0
+            p_value = 1.0
+        else:
+            z_score = math.copysign(float("inf"), u_stat - mean_u)
+            p_value = 0.0
+    else:
+        sigma = math.sqrt(sigma_sq)
+        z_score = (u_stat - mean_u) / sigma
+        p_value = normal_two_sided_p_value_from_z(z_score)
+
+    return {
+        "u_stat": float(u_stat),
+        "u_stat_alt": float(max(u_x, u_y)),
+        "z_score": None if z_score is None else float(z_score),
+        "p_value_two_sided": None if p_value is None else float(p_value),
+    }
+
+
+def summarize_runtime_comparison(
+    *,
+    variant_samples_ms: list[float],
+    baseline_samples_ms: list[float],
+    alpha: float = 0.05,
+) -> dict:
+    variant = [float(v) for v in variant_samples_ms if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    baseline = [float(v) for v in baseline_samples_ms if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    pair_count = min(len(variant), len(baseline))
+    if pair_count <= 0:
+        return {
+            "n": 0,
+            "mean_delta_ms": None,
+            "median_delta_ms": None,
+            "stdev_delta_ms": None,
+            "delta_ci_95_ms": {"low": None, "high": None},
+            "paired_t_test": {"t_stat": None, "degrees_of_freedom": 0, "p_value_two_sided": None},
+            "mann_whitney_u": mann_whitney_u_test(variant, baseline),
+            "effect_sizes": {
+                "cohen_d": None,
+                "hedges_g": None,
+                "cliffs_delta": cliffs_delta(variant, baseline),
+            },
+            "direction": "insufficient_data",
+            "significant_at_alpha": None,
+            "alpha": float(alpha),
+        }
+
+    deltas = [variant[i] - baseline[i] for i in range(pair_count)]
+    mean_delta = float(statistics.mean(deltas))
+    median_delta = float(statistics.median(deltas))
+    sd_delta = float(statistics.stdev(deltas)) if pair_count >= 2 else 0.0
+
+    if pair_count < 2:
+        t_stat = None
+        p_value = None
+        ci_low = None
+        ci_high = None
+    elif sd_delta <= 0.0:
+        if abs(mean_delta) <= 1e-12:
+            t_stat = 0.0
+            p_value = 1.0
+        else:
+            t_stat = math.copysign(float("inf"), mean_delta)
+            p_value = 0.0
+        ci_low = mean_delta
+        ci_high = mean_delta
+    else:
+        se = sd_delta / math.sqrt(float(pair_count))
+        t_stat = mean_delta / se
+        p_value = student_t_two_sided_p_value(t_stat, pair_count - 1)
+        t_crit = student_t_critical_two_sided(alpha, pair_count - 1)
+        if t_crit is None:
+            ci_low = None
+            ci_high = None
+        else:
+            half = float(t_crit) * se
+            ci_low = mean_delta - half
+            ci_high = mean_delta + half
+
+    if pair_count < 2:
+        cohen_d = None
+    elif sd_delta <= 0.0:
+        cohen_d = 0.0 if abs(mean_delta) <= 1e-12 else math.copysign(float("inf"), mean_delta)
+    else:
+        cohen_d = mean_delta / sd_delta
+    if cohen_d is None:
+        hedges_g = None
+    else:
+        correction = 1.0 if pair_count <= 2 else (1.0 - (3.0 / ((4.0 * float(pair_count)) - 5.0)))
+        hedges_g = float(cohen_d) * correction
+
+    if abs(mean_delta) <= 1e-12:
+        direction = "equal"
+    elif mean_delta > 0.0:
+        direction = "slower"
+    else:
+        direction = "faster"
+
+    return {
+        "n": int(pair_count),
+        "mean_delta_ms": float(mean_delta),
+        "median_delta_ms": float(median_delta),
+        "stdev_delta_ms": float(sd_delta),
+        "delta_ci_95_ms": {
+            "low": None if ci_low is None else float(ci_low),
+            "high": None if ci_high is None else float(ci_high),
+        },
+        "paired_t_test": {
+            "t_stat": None if t_stat is None else float(t_stat),
+            "degrees_of_freedom": int(max(0, pair_count - 1)),
+            "p_value_two_sided": None if p_value is None else float(p_value),
+        },
+        "mann_whitney_u": mann_whitney_u_test(variant, baseline),
+        "effect_sizes": {
+            "cohen_d": None if cohen_d is None else float(cohen_d),
+            "hedges_g": None if hedges_g is None else float(hedges_g),
+            "cliffs_delta": cliffs_delta(variant, baseline),
+        },
+        "direction": direction,
+        "significant_at_alpha": None if p_value is None else bool(p_value < float(alpha)),
+        "alpha": float(alpha),
+    }
+
+
+def build_desktop_runtime_statistical_tests(
+    *,
+    config: dict,
+    point_states: dict[int, dict],
+    selected_variants: list[str],
+    alpha: float = 0.05,
+) -> dict:
+    family_to_baseline = {
+        "vf3": "vf3_baseline",
+        "glasgow": "glasgow_baseline",
+        "dijkstra": "dijkstra_baseline",
+        "sp_via": "sp_via_baseline",
+    }
+    pair_samples: dict[str, dict[str, list[float] | str]] = {}
+    for variant_id in selected_variants:
+        if variant_id.endswith("_baseline"):
+            continue
+        family = variant_family_from_id(variant_id)
+        baseline_variant_id = family_to_baseline.get(family)
+        if not baseline_variant_id:
+            continue
+        pair_samples[variant_id] = {
+            "baseline_variant_id": baseline_variant_id,
+            "variant_samples": [],
+            "baseline_samples": [],
+        }
+
+    for state in point_states.values():
+        iter_runtime_ms = state.get("iter_runtime_ms", {})
+        if not isinstance(iter_runtime_ms, dict):
+            continue
+        for iter_idx in range(int(config.get("iterations", 0))):
+            iter_map = iter_runtime_ms.get(iter_idx, {})
+            if not isinstance(iter_map, dict):
+                continue
+            for variant_id, holder in pair_samples.items():
+                baseline_variant_id = str(holder.get("baseline_variant_id", "") or "")
+                baseline_runtime = iter_map.get(baseline_variant_id)
+                solver_runtime = iter_map.get(variant_id)
+                if baseline_runtime is None or solver_runtime is None:
+                    continue
+                holder["baseline_samples"].append(float(baseline_runtime))
+                holder["variant_samples"].append(float(solver_runtime))
+
+    label_lookup = dict(config.get("selected_variant_labels", {}) or {})
+    rows: list[dict] = []
+    for variant_id in selected_variants:
+        holder = pair_samples.get(variant_id)
+        if not isinstance(holder, dict):
+            continue
+        baseline_variant_id = str(holder.get("baseline_variant_id", "") or "")
+        summary = summarize_runtime_comparison(
+            variant_samples_ms=list(holder.get("variant_samples", [])),
+            baseline_samples_ms=list(holder.get("baseline_samples", [])),
+            alpha=alpha,
+        )
+        rows.append(
+            {
+                "variant_id": variant_id,
+                "variant_label": str(label_lookup.get(variant_id, variant_id)),
+                "baseline_variant_id": baseline_variant_id,
+                "baseline_label": str(label_lookup.get(baseline_variant_id, baseline_variant_id)),
+                "mode": "single",
+                **summary,
+            }
+        )
+
+    return {
+        "metric": "runtime_ms",
+        "alpha": float(alpha),
+        "pairs": rows,
+        "notes": [
+            "paired_t_test uses matched iteration deltas (variant - baseline).",
+            "mann_whitney_u compares the two runtime distributions.",
+            "cohen_d and hedges_g are standardized effect sizes on paired deltas.",
+            "cliffs_delta is the probability dominance effect size.",
+        ],
+    }
+
+
 def number_or_blank(value: float | None) -> str:
     if value is None or not math.isfinite(value):
         return ""
@@ -1284,6 +1587,12 @@ class BenchmarkRunnerApp(tk.Tk):
         self.last_memory_fig: Figure | None = None
         self.last_runtime_3d_fig: Figure | None = None
         self.last_memory_3d_fig: Figure | None = None
+        self.stats_tree: ttk.Treeview | None = None
+        self.stats_blurb_label: ttk.Label | None = None
+        self.stats_summary_label: ttk.Label | None = None
+        self.stats_wrap: ttk.Frame | None = None
+        self.stats_sort_column_combo: ttk.Combobox | None = None
+        self.stats_sort_note_label: ttk.Label | None = None
         self.run_timer_deadline_monotonic: float | None = None
         self.run_timer_after_id: str | None = None
         self.live_log_lines: dict[str, str] = {}
@@ -1292,6 +1601,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.drilldown_popup_point_key: tuple | None = None
         self.drilldown_highlight_artist = None
         self.drilldown_highlight_canvas: FigureCanvasTkAgg | None = None
+        self.stats_help_popup: tk.Toplevel | None = None
         self.visualizer_embed_enabled = bool(
             TkWebView2 is not None
             and sys.platform.startswith("win")
@@ -1562,6 +1872,24 @@ class BenchmarkRunnerApp(tk.Tk):
             foreground=[("selected", palette["fg"])],
         )
         self.style.configure("TPanedwindow", background=palette["bg"])
+        self.style.configure(
+            "Stats.Treeview",
+            background=palette["input_bg"],
+            fieldbackground=palette["input_bg"],
+            foreground=palette["fg"],
+            bordercolor=palette["border"],
+            rowheight=22,
+        )
+        self.style.map(
+            "Stats.Treeview",
+            background=[("selected", palette["select_bg"])],
+            foreground=[("selected", palette["select_fg"])],
+        )
+        self.style.configure(
+            "Stats.Treeview.Heading",
+            background=palette["button_bg"],
+            foreground=palette["fg"],
+        )
 
         self.theme_toggle_label_var.set("Light Mode" if mode_key == "dark" else "Dark Mode")
         if self.theme_toggle_btn is not None:
@@ -1617,6 +1945,27 @@ class BenchmarkRunnerApp(tk.Tk):
                 self.visualizer_no_solution_label.configure(foreground=palette["log_error"])
             except Exception:
                 pass
+        if hasattr(self, "stats_blurb_label") and self.stats_blurb_label is not None:
+            try:
+                self.stats_blurb_label.configure(foreground=palette["muted_fg"], style="Muted.TLabel")
+            except Exception:
+                pass
+        if hasattr(self, "stats_summary_label") and self.stats_summary_label is not None:
+            try:
+                self.stats_summary_label.configure(foreground=palette["muted_fg"], style="Muted.TLabel")
+            except Exception:
+                pass
+        if hasattr(self, "stats_sort_note_label") and self.stats_sort_note_label is not None:
+            try:
+                self.stats_sort_note_label.configure(foreground=palette["muted_fg"], style="Muted.TLabel")
+            except Exception:
+                pass
+        if hasattr(self, "stats_tree") and self.stats_tree is not None:
+            try:
+                self.stats_tree.tag_configure("significant", foreground=palette["log_success"])
+                self.stats_tree.tag_configure("insufficient", foreground=palette["log_warn"])
+            except Exception:
+                pass
 
     def _build_state(self):
         self.tab_id_var = tk.StringVar(value="subgraph")
@@ -1637,6 +1986,13 @@ class BenchmarkRunnerApp(tk.Tk):
         self.show_trendlines_only_var = tk.BooleanVar(value=False)
         self.log_x_scale_var = tk.BooleanVar(value=False)
         self.log_y_scale_var = tk.BooleanVar(value=False)
+        self.stats_blurb_var = tk.StringVar(
+            value="Run a benchmark to populate runtime statistical comparisons."
+        )
+        self.stats_summary_var = tk.StringVar(
+            value="No statistical comparisons available yet."
+        )
+        self.stats_sort_column_var = tk.StringVar(value="p-value")
         self.visualizer_status_var = tk.StringVar(
             value="Run a benchmark, then load a datapoint into the visualizer tab."
         )
@@ -1920,11 +2276,13 @@ class BenchmarkRunnerApp(tk.Tk):
         memory_tab = ttk.Frame(chart_panel)
         runtime_3d_tab = ttk.Frame(chart_panel)
         memory_3d_tab = ttk.Frame(chart_panel)
+        stats_tab = ttk.Frame(chart_panel)
         visualizer_tab = ttk.Frame(chart_panel)
         chart_panel.add(runtime_tab, text="Runtime 2D")
         chart_panel.add(memory_tab, text="Memory 2D")
         chart_panel.add(runtime_3d_tab, text="Runtime 3D")
         chart_panel.add(memory_3d_tab, text="Memory 3D")
+        chart_panel.add(stats_tab, text="Statistics")
         chart_panel.add(visualizer_tab, text="Visualizer")
 
         runtime_toolbar = ttk.Frame(runtime_tab)
@@ -2040,6 +2398,107 @@ class BenchmarkRunnerApp(tk.Tk):
         ttk.Button(memory3d_toolbar, text="Center", command=lambda: self._center_3d_view("memory")).pack(side=tk.RIGHT, padx=(0, 8))
         self.memory_3d_frame = ttk.Frame(memory_3d_tab)
         self.memory_3d_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.stats_wrap = ttk.Frame(stats_tab, padding=10)
+        self.stats_wrap.pack(fill=tk.BOTH, expand=True)
+        self.stats_blurb_label = ttk.Label(
+            self.stats_wrap,
+            textvariable=self.stats_blurb_var,
+            style="Muted.TLabel",
+            justify=tk.LEFT,
+            wraplength=800,
+        )
+        self.stats_blurb_label.pack(fill=tk.X, anchor="w")
+        self.stats_summary_label = ttk.Label(
+            self.stats_wrap,
+            textvariable=self.stats_summary_var,
+            style="Muted.TLabel",
+            justify=tk.LEFT,
+            wraplength=800,
+        )
+        self.stats_summary_label.pack(fill=tk.X, anchor="w", pady=(4, 8))
+
+        stats_controls = ttk.Frame(self.stats_wrap)
+        stats_controls.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(stats_controls, text="Sort by:").pack(side=tk.LEFT)
+        stats_table_wrap = ttk.Frame(self.stats_wrap)
+        stats_table_wrap.pack(fill=tk.BOTH, expand=True)
+        stats_columns = (
+            "variant",
+            "baseline",
+            "n",
+            "p_value",
+            "direction",
+            "mean_delta_ms",
+            "ci95_ms",
+            "hedges_g",
+            "cliffs_delta",
+            "mode",
+        )
+        heading_map = self._stats_column_heading_map()
+        sort_labels = [heading_map.get(col, col) for col in stats_columns]
+        default_sort_label = heading_map.get("p_value", "p-value")
+        if default_sort_label not in sort_labels and sort_labels:
+            default_sort_label = sort_labels[0]
+        self.stats_sort_column_var.set(default_sort_label)
+        self.stats_sort_column_combo = ttk.Combobox(
+            stats_controls,
+            state="readonly",
+            textvariable=self.stats_sort_column_var,
+            values=sort_labels,
+            width=20,
+        )
+        self.stats_sort_column_combo.pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            stats_controls,
+            text="\u2191",
+            width=3,
+            command=lambda: self._sort_stats_tree(ascending=True),
+        ).pack(side=tk.LEFT, padx=(8, 2))
+        ttk.Button(
+            stats_controls,
+            text="\u2193",
+            width=3,
+            command=lambda: self._sort_stats_tree(ascending=False),
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        self.stats_sort_note_label = ttk.Label(
+            stats_controls,
+            text="Use arrows to sort. Click a header for help.",
+            style="Muted.TLabel",
+        )
+        self.stats_sort_note_label.pack(side=tk.LEFT)
+
+        self.stats_tree = ttk.Treeview(
+            stats_table_wrap,
+            columns=stats_columns,
+            show="headings",
+            style="Stats.Treeview",
+        )
+        for col in stats_columns:
+            self.stats_tree.heading(
+                col,
+                text=heading_map.get(col, col),
+                command=lambda c=col: self._show_stats_heading_help(c),
+            )
+        self.stats_tree.column("variant", width=180, anchor="w", stretch=False)
+        self.stats_tree.column("baseline", width=180, anchor="w", stretch=False)
+        self.stats_tree.column("n", width=60, anchor="center", stretch=False)
+        self.stats_tree.column("p_value", width=90, anchor="e", stretch=False)
+        self.stats_tree.column("direction", width=100, anchor="center", stretch=False)
+        self.stats_tree.column("mean_delta_ms", width=120, anchor="e", stretch=False)
+        self.stats_tree.column("ci95_ms", width=180, anchor="e", stretch=False)
+        self.stats_tree.column("hedges_g", width=100, anchor="e", stretch=False)
+        self.stats_tree.column("cliffs_delta", width=110, anchor="e", stretch=False)
+        self.stats_tree.column("mode", width=80, anchor="center", stretch=False)
+        stats_ybar = ttk.Scrollbar(stats_table_wrap, orient=tk.VERTICAL, command=self.stats_tree.yview)
+        stats_xbar = ttk.Scrollbar(stats_table_wrap, orient=tk.HORIZONTAL, command=self.stats_tree.xview)
+        self.stats_tree.configure(yscrollcommand=stats_ybar.set, xscrollcommand=stats_xbar.set)
+        self.stats_tree.grid(row=0, column=0, sticky="nsew")
+        stats_ybar.grid(row=0, column=1, sticky="ns")
+        stats_xbar.grid(row=1, column=0, sticky="ew")
+        stats_table_wrap.grid_rowconfigure(0, weight=1)
+        stats_table_wrap.grid_columnconfigure(0, weight=1)
+        self.stats_wrap.bind("<Configure>", self._refresh_stats_blurb_wraplength)
 
         vis_wrap = ttk.Frame(visualizer_tab, padding=12)
         vis_wrap.pack(fill=tk.BOTH, expand=True)
@@ -2520,6 +2979,20 @@ class BenchmarkRunnerApp(tk.Tk):
     def _on_outlier_blurb_parent_resize(self, _event=None):
         self._refresh_outlier_blurb_wraplength()
 
+    def _refresh_stats_blurb_wraplength(self, _event=None):
+        wrap_parent = self.stats_wrap
+        if wrap_parent is None:
+            return
+        try:
+            width = int(wrap_parent.winfo_width() or wrap_parent.winfo_reqwidth() or 800)
+            wrap = max(260, width - 24)
+            if self.stats_blurb_label is not None:
+                self.stats_blurb_label.configure(wraplength=wrap)
+            if self.stats_summary_label is not None:
+                self.stats_summary_label.configure(wraplength=wrap)
+        except Exception:
+            pass
+
     def _on_variable_selection_changed(self):
         tab_id = self.tab_id_var.get()
         run_mode = self.run_mode_var.get().strip().lower()
@@ -2774,6 +3247,7 @@ class BenchmarkRunnerApp(tk.Tk):
                     pass
 
     def _on_app_close(self):
+        self._close_stats_help_popup()
         self._flush_visualizer_caches(delete_disk=True)
         try:
             self.destroy()
@@ -2815,6 +3289,8 @@ class BenchmarkRunnerApp(tk.Tk):
         self._clear_visualizer_render()
 
         self._clear_drilldown()
+        self._close_stats_help_popup()
+        self._clear_stats_table()
         self.last_plot_context = None
         if announce and had_graphs:
             self._append_log("Graphs cleared.", level="notice")
@@ -4135,6 +4611,12 @@ class BenchmarkRunnerApp(tk.Tk):
                 datapoints_stream_fh = None
 
             ended_at = dt.datetime.now(dt.timezone.utc)
+            statistical_tests = build_desktop_runtime_statistical_tests(
+                config=config,
+                point_states=point_states,
+                selected_variants=selected_variants,
+                alpha=0.05,
+            )
             payload = self._build_payload(
                 config,
                 started_at,
@@ -4145,6 +4627,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 total_trials_planned,
                 datapoints_stream_path,
                 streamed_datapoint_rows,
+                statistical_tests=statistical_tests,
             )
             self.last_run_payload = payload
             self.last_plot_context = payload
@@ -4189,72 +4672,38 @@ class BenchmarkRunnerApp(tk.Tk):
                         level="notice",
                     )
 
-            family_to_baseline = {
-                "vf3": "vf3_baseline",
-                "glasgow": "glasgow_baseline",
-                "dijkstra": "dijkstra_baseline",
-                "sp_via": "sp_via_baseline",
-            }
-            runtime_diff_by_variant: dict[str, list[float]] = {variant_id: [] for variant_id in selected_variants}
-            baseline_id_by_variant: dict[str, str] = {}
-            for state in point_states.values():
-                iter_runtime_ms = state.get("iter_runtime_ms", {})
-                for iter_idx in range(config["iterations"]):
-                    iter_map = iter_runtime_ms.get(iter_idx, {})
-                    if not isinstance(iter_map, dict):
-                        continue
-                    for variant_id in selected_variants:
-                        family = variant_family_from_id(variant_id)
-                        baseline_variant_id = family_to_baseline.get(family)
-                        if not baseline_variant_id:
-                            continue
-                        if baseline_variant_id == variant_id:
-                            continue
-                        baseline_runtime = iter_map.get(baseline_variant_id)
-                        solver_runtime = iter_map.get(variant_id)
-                        if baseline_runtime is None or solver_runtime is None:
-                            continue
-                        baseline_id_by_variant[variant_id] = baseline_variant_id
-                        runtime_diff_by_variant[variant_id].append(float(solver_runtime) - float(baseline_runtime))
-
-            self._append_log_threadsafe("Paired t-test vs family baseline (runtime, two-sided):", level="notice")
-            for variant_id in selected_variants:
-                if variant_id.endswith("_baseline"):
+            self._append_log_threadsafe("Runtime statistical tests vs family baseline:", level="notice")
+            self._append_log_threadsafe(
+                "Blurb: t-test checks mean runtime shift, Mann-Whitney checks distribution shift, "
+                "and effect sizes quantify practical magnitude.",
+                level="notice",
+            )
+            stats_rows = list(statistical_tests.get("pairs", []))
+            if not stats_rows:
+                self._append_log_threadsafe("No statistical comparisons available for selected variants.", level="warn")
+            for row in stats_rows:
+                if not isinstance(row, dict):
                     continue
-                baseline_variant_id = baseline_id_by_variant.get(variant_id)
-                if not baseline_variant_id:
-                    solver_label = config["selected_variant_labels"].get(variant_id, variant_id)
+                n = int(row.get("n", 0) or 0)
+                solver_label = str(row.get("variant_label") or row.get("variant_id") or "variant")
+                baseline_label = str(row.get("baseline_label") or row.get("baseline_variant_id") or "baseline")
+                if n <= 0:
                     self._append_log_threadsafe(
-                        f"[{solver_label}]: insufficient matched pairs (n=0).",
+                        f"[{solver_label}] vs [{baseline_label}]: insufficient matched pairs (n=0).",
                         level="warn",
                     )
                     continue
-                diffs = runtime_diff_by_variant.get(variant_id, [])
-                n = len(diffs)
-                solver_label = config["selected_variant_labels"].get(variant_id, variant_id)
-                baseline_label = config["selected_variant_labels"].get(baseline_variant_id, baseline_variant_id)
-                if n < 2:
-                    self._append_log_threadsafe(
-                        f"[{solver_label}] vs [{baseline_label}]: insufficient matched pairs (n={n}).",
-                        level="warn",
-                    )
-                    continue
-                mean_diff = float(statistics.mean(diffs))
-                sd_diff = float(statistics.stdev(diffs)) if n >= 2 else 0.0
-                if sd_diff <= 0.0:
-                    if abs(mean_diff) <= 1e-12:
-                        t_stat = 0.0
-                        p_value = 1.0
-                    else:
-                        t_stat = math.copysign(float("inf"), mean_diff)
-                        p_value = 0.0
-                else:
-                    t_stat = mean_diff / (sd_diff / math.sqrt(float(n)))
-                    p_value = student_t_two_sided_p_value(t_stat, n - 1)
-                p_text = "n/a" if p_value is None else f"{p_value:.6g}"
+                mean_delta = row.get("mean_delta_ms")
+                direction = str(row.get("direction") or "n/a")
+                paired = row.get("paired_t_test") if isinstance(row.get("paired_t_test"), dict) else {}
+                p_value = paired.get("p_value_two_sided")
+                p_text = "n/a" if p_value is None else f"{float(p_value):.6g}"
+                effect_sizes = row.get("effect_sizes") if isinstance(row.get("effect_sizes"), dict) else {}
+                hedges_g = effect_sizes.get("hedges_g")
+                g_text = "n/a" if hedges_g is None else f"{float(hedges_g):.4f}"
                 self._append_log_threadsafe(
-                    f"[{solver_label}] vs [{baseline_label}]: n={n}, mean_delta={mean_diff:.3f} ms, "
-                    f"t={t_stat:.4f}, p={p_text}",
+                    f"[{solver_label}] vs [{baseline_label}]: n={n}, mean_delta={float(mean_delta):.3f} ms, "
+                    f"direction={direction}, p={p_text}, hedges_g={g_text}",
                     level="notice",
                 )
 
@@ -4508,10 +4957,10 @@ class BenchmarkRunnerApp(tk.Tk):
         total_trials_planned,
         datapoints_path: Path,
         streamed_datapoint_rows: int,
+        statistical_tests: dict | None = None,
     ):
         duration_ms = (ended_at - started_at).total_seconds() * 1000.0
-
-        return {
+        payload = {
             "schema_version": "desktop-benchmark-v1",
             "created_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
             "run_started_utc": started_at.isoformat(),
@@ -4557,6 +5006,9 @@ class BenchmarkRunnerApp(tk.Tk):
             "datapoints_path": str(datapoints_path),
             "streamed_datapoint_rows": int(streamed_datapoint_rows),
         }
+        if isinstance(statistical_tests, dict):
+            payload["statistical_tests"] = statistical_tests
+        return payload
 
     def _render_figure_in_frame(
         self,
@@ -5000,6 +5452,284 @@ class BenchmarkRunnerApp(tk.Tk):
         fig.tight_layout()
         return fig
 
+    def _format_stats_number(self, value, decimals: int = 4) -> str:
+        if value is None:
+            return "n/a"
+        try:
+            numeric = float(value)
+        except Exception:
+            return "n/a"
+        if not math.isfinite(numeric):
+            return "n/a"
+        return f"{numeric:.{int(max(0, decimals))}f}"
+
+    def _stats_column_heading_map(self) -> dict[str, str]:
+        return {
+            "variant": "Variant",
+            "baseline": "Baseline",
+            "n": "n",
+            "p_value": "p-value",
+            "direction": "Direction",
+            "mean_delta_ms": "Mean Delta (ms)",
+            "ci95_ms": "95% CI Delta (ms)",
+            "hedges_g": "Hedges g",
+            "cliffs_delta": "Cliff's Delta",
+            "mode": "Mode",
+        }
+
+    def _stats_sort_column_from_label(self, label: str) -> str | None:
+        lookup = self._stats_column_heading_map()
+        target = str(label or "").strip().lower()
+        for col_id, heading in lookup.items():
+            if str(heading).strip().lower() == target:
+                return col_id
+        return None
+
+    def _stats_sort_key(self, column_id: str, values: tuple) -> tuple[bool, object]:
+        if self.stats_tree is None:
+            return True, ""
+        columns = list(self.stats_tree.cget("columns") or [])
+        try:
+            idx = columns.index(column_id)
+        except ValueError:
+            return True, ""
+        raw = values[idx] if idx < len(values) else ""
+        text = str(raw or "").strip()
+        if text == "" or text.lower() in {"n/a", "nan", "none"}:
+            return True, ""
+
+        numeric_cols = {"n", "p_value", "mean_delta_ms", "hedges_g", "cliffs_delta"}
+        if column_id in numeric_cols:
+            try:
+                return False, float(text)
+            except Exception:
+                return True, ""
+        if column_id == "ci95_ms":
+            match = re.search(r"-?\d+(?:\.\d+)?", text)
+            if match:
+                try:
+                    return False, float(match.group(0))
+                except Exception:
+                    pass
+            return True, ""
+        if column_id == "direction":
+            order = {"faster": -1, "equal": 0, "slower": 1}
+            return False, order.get(text.lower(), 99)
+        return False, text.lower()
+
+    def _sort_stats_tree(self, ascending: bool):
+        tree = self.stats_tree
+        if tree is None:
+            return
+        column_label = self.stats_sort_column_var.get().strip()
+        col_id = self._stats_sort_column_from_label(column_label)
+        if not col_id:
+            return
+        rows = []
+        for item_id in tree.get_children(""):
+            values = tuple(tree.item(item_id, "values") or ())
+            missing, sort_value = self._stats_sort_key(col_id, values)
+            rows.append((item_id, missing, sort_value))
+        if not rows:
+            return
+
+        present = [row for row in rows if not row[1]]
+        missing = [row for row in rows if row[1]]
+        present.sort(key=lambda row: row[2], reverse=not bool(ascending))
+        ordered = present + missing
+        for idx, row in enumerate(ordered):
+            tree.move(row[0], "", idx)
+
+    def _clear_stats_table(self):
+        if self.stats_tree is None:
+            return
+        try:
+            for item in self.stats_tree.get_children():
+                self.stats_tree.delete(item)
+        except Exception:
+            pass
+        try:
+            self.stats_blurb_var.set("Run a benchmark to populate runtime statistical comparisons.")
+            self.stats_summary_var.set("No statistical comparisons available yet.")
+        except Exception:
+            pass
+
+    def _close_stats_help_popup(self):
+        popup = self.stats_help_popup
+        self.stats_help_popup = None
+        if popup is not None:
+            try:
+                popup.destroy()
+            except Exception:
+                pass
+
+    def _stats_heading_help_text(self, column_id: str) -> tuple[str, str]:
+        key = str(column_id or "").strip().lower()
+        if key == "variant":
+            return ("Variant", "The solver implementation being evaluated in this row.")
+        if key == "baseline":
+            return ("Baseline", "The benchmark solver this variant is compared against for runtime deltas.")
+        if key == "n":
+            return (
+                "n (Matched Samples)",
+                "The number of iteration pairs where both variant and baseline produced a runtime.",
+            )
+        if key == "p_value":
+            return (
+                "p-value",
+                "Two-sided paired t-test p-value. Smaller values indicate stronger evidence of a real mean runtime difference.",
+            )
+        if key == "direction":
+            return (
+                "Direction",
+                "Interprets mean delta sign for variant - baseline. "
+                "'faster' means negative delta; 'slower' means positive delta.",
+            )
+        if key == "mean_delta_ms":
+            return (
+                "Mean Delta (ms)",
+                "Average runtime difference computed as variant - baseline in milliseconds.",
+            )
+        if key == "ci95_ms":
+            return (
+                "95% CI Delta (ms)",
+                "Approximate 95% confidence interval for the mean runtime delta (variant - baseline).",
+            )
+        if key == "hedges_g":
+            return (
+                "Hedges g",
+                "Bias-corrected standardized effect size for paired deltas. Larger absolute values indicate stronger effects.",
+            )
+        if key == "cliffs_delta":
+            return (
+                "Cliff's Delta",
+                "Non-parametric effect size from -1 to +1 measuring distribution dominance between variant and baseline runtimes.",
+            )
+        if key == "mode":
+            return (
+                "Mode",
+                "Timing phase being compared. 'single' is one-shot timing; other families may provide first/all modes.",
+            )
+        return ("Column Help", "No description is available for this column.")
+
+    def _show_stats_heading_help(self, column_id: str):
+        title, body = self._stats_heading_help_text(column_id)
+        self._close_stats_help_popup()
+        popup = tk.Toplevel(self)
+        popup.title("Column Help")
+        try:
+            popup.transient(self)
+        except Exception:
+            pass
+        popup.resizable(False, False)
+        popup.protocol("WM_DELETE_WINDOW", self._close_stats_help_popup)
+        self.stats_help_popup = popup
+
+        frame = ttk.Frame(popup, padding=10)
+        frame.pack(fill=tk.BOTH, expand=True)
+        header = ttk.Frame(frame)
+        header.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(header, text=title, font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
+        ttk.Button(header, text="X", width=3, command=self._close_stats_help_popup).pack(side=tk.RIGHT)
+        ttk.Label(
+            frame,
+            text=body,
+            justify=tk.LEFT,
+            wraplength=360,
+        ).pack(fill=tk.X, anchor="w")
+
+        try:
+            popup.update_idletasks()
+            x = int(self.winfo_pointerx()) + 14
+            y = int(self.winfo_pointery()) + 14
+            screen_w = int(self.winfo_screenwidth() or 1200)
+            screen_h = int(self.winfo_screenheight() or 800)
+            w = int(popup.winfo_reqwidth() or 380)
+            h = int(popup.winfo_reqheight() or 120)
+            x = max(8, min(x, max(8, screen_w - w - 8)))
+            y = max(8, min(y, max(8, screen_h - h - 8)))
+            popup.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+    def _render_statistical_tests_panel(self, payload: dict):
+        if self.stats_tree is None:
+            return
+        self._clear_stats_table()
+        stats_block = payload.get("statistical_tests") if isinstance(payload, dict) else None
+        if not isinstance(stats_block, dict):
+            self.stats_summary_var.set("This payload does not include a statistical_tests section.")
+            return
+
+        alpha_raw = stats_block.get("alpha")
+        alpha_text = self._format_stats_number(alpha_raw, decimals=3) if alpha_raw is not None else "0.050"
+        self.stats_blurb_var.set(
+            "Runtime comparisons are measured as variant - baseline. "
+            "Negative mean delta means the variant is faster; positive means slower."
+        )
+
+        rows = [row for row in list(stats_block.get("pairs") or []) if isinstance(row, dict)]
+        if not rows:
+            self.stats_summary_var.set(
+                f"No pairwise comparisons were recorded for this run (alpha={alpha_text})."
+            )
+            return
+
+        rows.sort(key=lambda row: (str(row.get("variant_label") or row.get("variant_id") or ""), str(row.get("mode") or "")))
+        significant_count = 0
+        inserted_count = 0
+        for row in rows:
+            variant_label = str(row.get("variant_label") or row.get("variant_id") or "variant")
+            baseline_label = str(row.get("baseline_label") or row.get("baseline_variant_id") or "baseline")
+            mode = str(row.get("mode") or "single")
+            n = int(row.get("n") or 0)
+
+            paired = row.get("paired_t_test")
+            paired = paired if isinstance(paired, dict) else {}
+            effects = row.get("effect_sizes")
+            effects = effects if isinstance(effects, dict) else {}
+            ci = row.get("delta_ci_95_ms")
+            ci = ci if isinstance(ci, dict) else {}
+
+            p_value = paired.get("p_value_two_sided")
+            ci_low = ci.get("low")
+            ci_high = ci.get("high")
+            ci_text = f"[{self._format_stats_number(ci_low, 3)}, {self._format_stats_number(ci_high, 3)}]"
+            significant = bool(row.get("significant_at_alpha"))
+            if significant:
+                significant_count += 1
+
+            direction = str(row.get("direction") or "n/a")
+            tags = ()
+            if significant:
+                tags = ("significant",)
+            elif n < 2:
+                tags = ("insufficient",)
+
+            self.stats_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    variant_label,
+                    baseline_label,
+                    str(n),
+                    self._format_stats_number(p_value, 6),
+                    direction,
+                    self._format_stats_number(row.get("mean_delta_ms"), 3),
+                    ci_text,
+                    self._format_stats_number(effects.get("hedges_g"), 4),
+                    self._format_stats_number(effects.get("cliffs_delta"), 4),
+                    mode,
+                ),
+                tags=tags,
+            )
+            inserted_count += 1
+
+        self.stats_summary_var.set(
+            f"Comparisons: {inserted_count} | significant (p < {alpha_text}): {significant_count}."
+        )
+        self._refresh_stats_blurb_wraplength()
+
     def _render_plots(self, payload: dict):
         self._clear_drilldown()
         datapoints = self._collect_payload_datapoints(payload)
@@ -5031,6 +5761,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self.last_memory_fig = memory_fig
         self.last_runtime_3d_fig = runtime_3d_fig
         self.last_memory_3d_fig = memory_3d_fig
+        self._render_statistical_tests_panel(payload)
 
     def _repaint_existing_plots(self):
         if not self.last_plot_context:
