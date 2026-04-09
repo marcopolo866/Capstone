@@ -124,6 +124,7 @@ class CreateResultJsonStepTests(unittest.TestCase):
                 "MEMORY_KB_JSON": json.dumps({"baseline": 100, "claude": 120}),
                 "MEMORY_KB_STDEV_JSON": json.dumps({"baseline": 1, "claude": 2}),
                 "MATCH_COUNTS_JSON": json.dumps({"claude": {"matches": 2, "total": 2, "mismatches": 0}}),
+                "WITNESS_COUNTS_JSON": json.dumps({"claude": {"valid": 2, "required": 2, "missing": 0}}),
                 "VARIANT_METADATA_JSON": json.dumps(
                     [
                         {"variant_id": "dijkstra_baseline", "label": "Dijkstra Baseline", "timing_key": "baseline"},
@@ -143,6 +144,7 @@ class CreateResultJsonStepTests(unittest.TestCase):
             self.assertAlmostEqual(result.get("timings_ms", {}).get("claude"), 2.0, places=6)
             self.assertEqual(result.get("memory_kb", {}).get("claude"), 120)
             self.assertEqual(result.get("match_counts", {}).get("claude", {}).get("mismatches"), 0)
+            self.assertEqual(result.get("witness_counts", {}).get("claude", {}).get("valid"), 2)
             self.assertEqual(len(result.get("variant_metadata", [])), 2)
 
 

@@ -163,7 +163,7 @@ jobs:
             -o "wasm/vf3_baseline.js"
 
           echo "Building Dijkstra baseline..."
-          em++ -std=c++17 \
+          em++ -std=c++20 \
             "${common_flags[@]}" \
             "${telemetry_flags[@]}" \
             -fexceptions \
@@ -198,7 +198,7 @@ jobs:
             fi
             echo "Building ${label}..."
             variant_log="$(mktemp)"
-            if em++ -std=c++17 \
+            if em++ -std=c++20 \
               "${common_flags[@]}" \
               "${telemetry_flags[@]}" \
               -fexceptions \

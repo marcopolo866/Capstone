@@ -20,6 +20,7 @@ The project provides:
 1. Build native binaries:
    - Windows: `./scripts/build-local.ps1`
    - Linux/macOS: `bash scripts/build-local.sh`
+   - Optional CMake path: `cmake -S . -B build/cmake && cmake --build build/cmake`
 2. Open `index.html` from a local static server.
 3. Connect to a repository/branch in the UI.
 4. Select algorithm + input mode (`premade` or `generate`).

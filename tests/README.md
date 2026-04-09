@@ -22,6 +22,9 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - `test_create_result_json_step.py`
   - Validates structured metrics ingestion from `outputs/run_metrics.json`.
   - Validates fallback behavior to environment variables.
+- `tests/cpp/graph_oracle_tests.cpp` (via CMake/CTest)
+  - C++ edge-case checks for shortest-path and subgraph mapping oracles.
+  - Property-based randomized checks for path optimality and witness mapping validity.
 
 ## Legacy Benchmark Scripts
 
@@ -33,4 +36,12 @@ python -m unittest discover -s tests -p "test_*.py" -v
 ```bash
 python DJ.py
 python VF3.py
+```
+
+## C++ Oracle Tests (CMake)
+
+```bash
+cmake -S . -B build/cmake -DCAPSTONE_BUILD_SOLVERS=OFF
+cmake --build build/cmake --target capstone_graph_oracle_tests
+ctest --test-dir build/cmake -R capstone_graph_oracle_tests --output-on-failure
 ```

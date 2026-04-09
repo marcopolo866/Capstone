@@ -546,6 +546,10 @@ dynamic_match_counts = parse_json_env("MATCH_COUNTS_JSON")
 if isinstance(dynamic_match_counts, dict):
     data["match_counts"] = dynamic_match_counts
 
+dynamic_witness_counts = parse_json_env("WITNESS_COUNTS_JSON")
+if isinstance(dynamic_witness_counts, dict):
+    data["witness_counts"] = dynamic_witness_counts
+
 statistical_tests = parse_json_env("STATISTICAL_TESTS_JSON")
 if isinstance(statistical_tests, dict):
     data["statistical_tests"] = statistical_tests
@@ -757,7 +761,7 @@ if algorithm == "subgraph" and env.get("SUBGRAPH_PHASE", "").strip().lower() == 
                 data["output"] = previous.get("output")
             if previous.get("visualization_error") and "visualization" not in data and "visualization_error" not in data:
                 data["visualization_error"] = previous.get("visualization_error")
-            for key in ("timings_ms", "timings_ms_stdev", "memory_kb", "memory_kb_stdev", "match_counts"):
+            for key in ("timings_ms", "timings_ms_stdev", "memory_kb", "memory_kb_stdev", "match_counts", "witness_counts"):
                 if key in previous:
                     merged = dict(previous.get(key, {}))
                     merged.update(data.get(key, {}))

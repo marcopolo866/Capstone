@@ -8,6 +8,7 @@ import concurrent.futures
 import datetime as dt
 import importlib.util
 import argparse
+import gzip
 import hashlib
 import json
 import math
@@ -18,8 +19,11 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tarfile
 import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
@@ -1057,6 +1061,277 @@ class DatapointStats:
     seeds: list[int]
 
 
+@dataclass(frozen=True)
+class DatasetSpec:
+    dataset_id: str
+    name: str
+    tab_id: str
+    source: str
+    source_url: str
+    raw_format: str
+    description: str
+    estimated_size_bytes: int
+    estimated_graph_files: int
+    estimated_pair_count: int
+    download: dict
+    prepare: dict
+
+
+DEFAULT_DATASET_CATALOG_ROWS = [
+    {
+        "dataset_id": "subgraph_sip_full",
+        "name": "SIP Full Archive",
+        "tab_id": "subgraph",
+        "source": "SIP Benchmarks (Solnon)",
+        "source_url": "https://perso.citi-lab.fr/csolnon/SIP.html",
+        "raw_format": "TGZ archive of subgraph benchmark suites",
+        "description": "Large benchmark archive containing multiple subgraph isomorphism suites (si, scalefree, image, mesh, etc.).",
+        "estimated_size_bytes": 27882629,
+        "estimated_graph_files": 8294,
+        "estimated_pair_count": 1170,
+        "download": {
+            "kind": "single_file",
+            "url": "http://perso.citi-lab.fr/csolnon/newSIPbenchmarks.tgz",
+            "relative_path": "raw/newSIPbenchmarks.tgz",
+        },
+        "prepare": {
+            "kind": "subgraph_pair_from_tgz_members",
+            "archive_relative_path": "raw/newSIPbenchmarks.tgz",
+            "pattern_member": "newSIPbenchmarks/si/si2_bvg_b03m_200/si2_b03m_m200.04/pattern",
+            "target_member": "newSIPbenchmarks/si/si2_bvg_b03m_200/si2_b03m_m200.04/target",
+        },
+    },
+    {
+        "dataset_id": "subgraph_mivia_arg",
+        "name": "MIVIA ARG Database",
+        "tab_id": "subgraph",
+        "source": "MIVIA",
+        "source_url": "https://mivia.unisa.it/datasets/graph-database/arg-database/",
+        "raw_format": "ZIP archive (binary graph files + gtr files)",
+        "description": "Large ARG benchmark collection (binary format). Downloaded and retained locally; conversion to runner formats is currently not automated.",
+        "estimated_size_bytes": 418262348,
+        "estimated_graph_files": 143600,
+        "estimated_pair_count": 168000,
+        "download": {
+            "kind": "single_file",
+            "url": "https://mivia.unisa.it/database/graphsdb.zip",
+            "relative_path": "raw/graphsdb.zip",
+        },
+        "prepare": {
+            "kind": "download_only",
+            "note": "Binary ARG format is not yet auto-converted by this runner.",
+        },
+    },
+    {
+        "dataset_id": "subgraph_practical_bigraphs",
+        "name": "Practical Bigraphs (Zenodo)",
+        "tab_id": "subgraph",
+        "source": "Zenodo",
+        "source_url": "https://zenodo.org/records/4597074",
+        "raw_format": "TAR.XZ archive",
+        "description": "Practical Bigraphs benchmark archive (11,176 instances). Downloaded and retained locally; conversion to runner formats is currently not automated.",
+        "estimated_size_bytes": 14312140,
+        "estimated_graph_files": 11176,
+        "estimated_pair_count": 11176,
+        "download": {
+            "kind": "single_file",
+            "url": "https://zenodo.org/records/4597074/files/instances.tar.xz?download=1",
+            "relative_path": "raw/instances.tar.xz",
+        },
+        "prepare": {
+            "kind": "download_only",
+            "note": "Bigraph archive format is not yet auto-converted by this runner.",
+        },
+    },
+    {
+        "dataset_id": "shortest_dimacs_usa_road_d",
+        "name": "DIMACS USA-road-d",
+        "tab_id": "shortest_path",
+        "source": "DIMACS Challenge 9",
+        "source_url": "https://www.diag.uniroma1.it/challenge9/download.shtml",
+        "raw_format": "DIMACS .gr.gz",
+        "description": "Full USA road network from DIMACS challenge data (directed, weighted arcs).",
+        "estimated_size_bytes": 351265214,
+        "estimated_graph_files": 1,
+        "estimated_pair_count": 1,
+        "download": {
+            "kind": "single_file",
+            "url": "https://www.diag.uniroma1.it/challenge9/data/USA-road-d/USA-road-d.USA.gr.gz",
+            "relative_path": "raw/USA-road-d.USA.gr.gz",
+        },
+        "prepare": {
+            "kind": "shortest_path_csv_from_dimacs_gr_gz",
+            "source_relative_path": "raw/USA-road-d.USA.gr.gz",
+        },
+    },
+    {
+        "dataset_id": "shortest_snap_roadnet_ca",
+        "name": "SNAP roadNet-CA",
+        "tab_id": "shortest_path",
+        "source": "SNAP",
+        "source_url": "https://snap.stanford.edu/data/roadNet-CA.html",
+        "raw_format": "Edge-list .txt.gz",
+        "description": "California road network graph from SNAP.",
+        "estimated_size_bytes": 17892860,
+        "estimated_graph_files": 1,
+        "estimated_pair_count": 1,
+        "download": {
+            "kind": "single_file",
+            "url": "https://snap.stanford.edu/data/roadNet-CA.txt.gz",
+            "relative_path": "raw/roadNet-CA.txt.gz",
+        },
+        "prepare": {
+            "kind": "shortest_path_csv_from_edge_list_gz",
+            "source_relative_path": "raw/roadNet-CA.txt.gz",
+            "assume_undirected": True,
+        },
+    },
+    {
+        "dataset_id": "shortest_snap_roadnet_tx",
+        "name": "SNAP roadNet-TX",
+        "tab_id": "shortest_path",
+        "source": "SNAP",
+        "source_url": "https://snap.stanford.edu/data/roadNet-TX.html",
+        "raw_format": "Edge-list .txt.gz",
+        "description": "Texas road network graph from SNAP.",
+        "estimated_size_bytes": 12442024,
+        "estimated_graph_files": 1,
+        "estimated_pair_count": 1,
+        "download": {
+            "kind": "single_file",
+            "url": "https://snap.stanford.edu/data/roadNet-TX.txt.gz",
+            "relative_path": "raw/roadNet-TX.txt.gz",
+        },
+        "prepare": {
+            "kind": "shortest_path_csv_from_edge_list_gz",
+            "source_relative_path": "raw/roadNet-TX.txt.gz",
+            "assume_undirected": True,
+        },
+    },
+    {
+        "dataset_id": "shortest_snap_wiki_talk",
+        "name": "SNAP Wiki-Talk",
+        "tab_id": "shortest_path",
+        "source": "SNAP",
+        "source_url": "https://snap.stanford.edu/data/wiki-Talk.html",
+        "raw_format": "Edge-list .txt.gz",
+        "description": "Wikipedia user talk network from SNAP (directed).",
+        "estimated_size_bytes": 16947922,
+        "estimated_graph_files": 1,
+        "estimated_pair_count": 1,
+        "download": {
+            "kind": "single_file",
+            "url": "https://snap.stanford.edu/data/wiki-Talk.txt.gz",
+            "relative_path": "raw/wiki-Talk.txt.gz",
+        },
+        "prepare": {
+            "kind": "shortest_path_csv_from_edge_list_gz",
+            "source_relative_path": "raw/wiki-Talk.txt.gz",
+            "assume_undirected": False,
+        },
+    },
+    {
+        "dataset_id": "shortest_snap_livejournal",
+        "name": "SNAP LiveJournal",
+        "tab_id": "shortest_path",
+        "source": "SNAP",
+        "source_url": "https://snap.stanford.edu/data/com-LiveJournal.html",
+        "raw_format": "Edge-list .txt.gz",
+        "description": "Large LiveJournal social graph from SNAP.",
+        "estimated_size_bytes": 124262769,
+        "estimated_graph_files": 1,
+        "estimated_pair_count": 1,
+        "download": {
+            "kind": "single_file",
+            "url": "https://snap.stanford.edu/data/bigdata/communities/com-lj.ungraph.txt.gz",
+            "relative_path": "raw/com-lj.ungraph.txt.gz",
+        },
+        "prepare": {
+            "kind": "shortest_path_csv_from_edge_list_gz",
+            "source_relative_path": "raw/com-lj.ungraph.txt.gz",
+            "assume_undirected": True,
+        },
+    },
+]
+
+
+def _dataset_catalog_paths() -> list[Path]:
+    paths: list[Path] = []
+    root = resource_root()
+    paths.append(root / "desktop_runner" / "datasets_catalog.json")
+    paths.append(Path(__file__).resolve().with_name("datasets_catalog.json"))
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path.resolve() if path.exists() else path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def _normalize_dataset_spec_rows(rows: list[dict]) -> list[DatasetSpec]:
+    specs: list[DatasetSpec] = []
+    seen_ids: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        dataset_id = str(row.get("dataset_id") or "").strip().lower()
+        tab_id = str(row.get("tab_id") or "").strip().lower()
+        if not dataset_id or tab_id not in {"subgraph", "shortest_path"}:
+            continue
+        if dataset_id in seen_ids:
+            continue
+        seen_ids.add(dataset_id)
+        specs.append(
+            DatasetSpec(
+                dataset_id=dataset_id,
+                name=str(row.get("name") or dataset_id).strip() or dataset_id,
+                tab_id=tab_id,
+                source=str(row.get("source") or "").strip(),
+                source_url=str(row.get("source_url") or "").strip(),
+                raw_format=str(row.get("raw_format") or "").strip(),
+                description=str(row.get("description") or "").strip(),
+                estimated_size_bytes=int(max(0, int(row.get("estimated_size_bytes") or 0))),
+                estimated_graph_files=int(max(0, int(row.get("estimated_graph_files") or 0))),
+                estimated_pair_count=int(max(0, int(row.get("estimated_pair_count") or 0))),
+                download=dict(row.get("download") or {}),
+                prepare=dict(row.get("prepare") or {}),
+            )
+        )
+    specs.sort(key=lambda item: (item.tab_id, item.name.lower(), item.dataset_id))
+    return specs
+
+
+def load_dataset_catalog() -> list[DatasetSpec]:
+    for path in _dataset_catalog_paths():
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        rows = payload.get("datasets") if isinstance(payload, dict) else None
+        if isinstance(rows, list):
+            normalized = _normalize_dataset_spec_rows(rows)
+            if normalized:
+                return normalized
+    return _normalize_dataset_spec_rows(list(DEFAULT_DATASET_CATALOG_ROWS))
+
+
+def format_bytes_human(num_bytes: int) -> str:
+    size = float(max(0, int(num_bytes)))
+    units = ["B", "KB", "MB", "GB", "TB"]
+    idx = 0
+    while size >= 1024.0 and idx < len(units) - 1:
+        size /= 1024.0
+        idx += 1
+    if idx == 0:
+        return f"{int(size)} {units[idx]}"
+    return f"{size:.2f} {units[idx]}"
+
+
 SUPPORTED_FAMILIES = {"dijkstra", "sp_via", "dial", "vf3", "glasgow"}
 FAMILY_LABELS = {
     "dijkstra": "Dijkstra",
@@ -1519,6 +1794,16 @@ def write_vertex_labelled_lad(path: Path, adj, labels):
             fh.write(line + "\n")
 
 
+def write_unlabelled_lad(path: Path, adj):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        fh.write(f"{len(adj)}\n")
+        for neighbors in adj:
+            row = [str(len(neighbors))]
+            row.extend(str(int(v)) for v in neighbors)
+            fh.write(" ".join(row) + "\n")
+
+
 def generate_dijkstra_inputs(out_dir: Path, n: int, density: float, seed: int) -> Path:
     rng = random.Random(seed)
     labels = [f"v{i}" for i in range(n)]
@@ -1559,7 +1844,671 @@ def generate_subgraph_inputs(out_dir: Path, n: int, k: int, density: float, seed
         "vf_target": vf_target,
         "lad_pattern": lad_pattern,
         "lad_target": lad_target,
+        "lad_format": "vertexlabelledlad",
     }
+
+
+def write_dijkstra_csv_with_labels(path: Path, edges: list[tuple[str, str, int]], start_label: str, target_label: str):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        fh.write(f"# start={start_label} target={target_label}\n")
+        writer = csv.writer(fh)
+        writer.writerow(["source", "target", "weight"])
+        for src, dst, weight in edges:
+            writer.writerow([str(src), str(dst), int(weight)])
+
+
+def normalize_adj_lists(adj: list[list[int]]) -> list[list[int]]:
+    n = len(adj)
+    normalized: list[list[int]] = []
+    for u, neighbors in enumerate(adj):
+        row = sorted({int(v) for v in neighbors if 0 <= int(v) < n and int(v) != u})
+        normalized.append(row)
+    return normalized
+
+
+def count_adj_edges(adj: list[list[int]]) -> int:
+    return int(sum(len(row) for row in adj))
+
+
+def dataset_storage_root() -> Path:
+    override = str(os.environ.get("CAPSTONE_DATASETS_DIR") or "").strip()
+    if override:
+        root = Path(override).expanduser()
+    elif sys.platform.startswith("win"):
+        local_appdata = str(os.environ.get("LOCALAPPDATA") or "").strip()
+        if local_appdata:
+            root = Path(local_appdata) / "CapstoneBenchmarkRunner" / "datasets"
+        else:
+            root = Path.home() / "AppData" / "Local" / "CapstoneBenchmarkRunner" / "datasets"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support" / "CapstoneBenchmarkRunner" / "datasets"
+    else:
+        xdg_data_home = str(os.environ.get("XDG_DATA_HOME") or "").strip()
+        if xdg_data_home:
+            root = Path(xdg_data_home) / "capstone-benchmark-runner" / "datasets"
+        else:
+            root = Path.home() / ".local" / "share" / "capstone-benchmark-runner" / "datasets"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    except OSError:
+        # Last-resort fallback keeps behavior working even in restricted environments.
+        fallback = adjacent_output_base() / ".datasets"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+
+def dataset_dir_for_spec(spec: DatasetSpec) -> Path:
+    return dataset_storage_root() / spec.tab_id / spec.dataset_id
+
+
+def _dir_total_size_bytes(path: Path) -> int:
+    total = 0
+    if not path.exists():
+        return 0
+    for child in path.rglob("*"):
+        try:
+            if child.is_file():
+                total += int(child.stat().st_size)
+        except OSError:
+            continue
+    return total
+
+
+def _count_graph_files(path: Path) -> int:
+    if not path.exists():
+        return 0
+    count = 0
+    valid_suffixes = {".vf", ".grf", ".lad", ".csv"}
+    for child in path.rglob("*"):
+        try:
+            if child.is_file() and child.suffix.lower() in valid_suffixes:
+                count += 1
+        except OSError:
+            continue
+    return count
+
+
+def _dataset_meta_path(dataset_dir: Path) -> Path:
+    return dataset_dir / "dataset_meta.json"
+
+
+def read_dataset_meta(dataset_dir: Path) -> dict:
+    path = _dataset_meta_path(dataset_dir)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_dataset_meta(dataset_dir: Path, payload: dict):
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    _dataset_meta_path(dataset_dir).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def dataset_raw_ready(spec: DatasetSpec) -> bool:
+    dataset_dir = dataset_dir_for_spec(spec)
+    meta = read_dataset_meta(dataset_dir)
+    return bool(meta.get("raw_ready", False))
+
+
+def dataset_converted_ready(spec: DatasetSpec) -> bool:
+    dataset_dir = dataset_dir_for_spec(spec)
+    meta = read_dataset_meta(dataset_dir)
+    return bool(meta.get("converted_ready", False))
+
+
+def dataset_converted_inputs(spec: DatasetSpec) -> dict[str, Path | str] | None:
+    dataset_dir = dataset_dir_for_spec(spec)
+    meta = read_dataset_meta(dataset_dir)
+    raw_inputs = meta.get("inputs")
+    if not isinstance(raw_inputs, dict):
+        return None
+    resolved: dict[str, Path | str] = {}
+    for key, raw_path in raw_inputs.items():
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        if str(key) == "lad_format":
+            resolved[str(key)] = str(raw_path).strip()
+            continue
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = dataset_dir / raw_path
+        if candidate.exists():
+            resolved[str(key)] = candidate
+    return resolved or None
+
+
+def _dataset_download_kind(spec: DatasetSpec) -> str:
+    download = dict(spec.download or {})
+    return str(download.get("kind") or "").strip().lower()
+
+
+def _raw_dataset_has_files(dataset_dir: Path) -> bool:
+    raw_dir = dataset_dir / "raw"
+    if not raw_dir.exists():
+        return False
+    for child in raw_dir.rglob("*"):
+        try:
+            if child.is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _http_download_with_resume(url: str, destination: Path, *, retries: int = 8, timeout_seconds: float = 60.0):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() and destination.is_file():
+        return
+    temp_path = destination.with_suffix(destination.suffix + ".part")
+    backoff_seconds = 1.0
+    for attempt in range(retries):
+        existing = int(temp_path.stat().st_size) if temp_path.exists() else 0
+        headers = {"User-Agent": "capstone-benchmark-runner/1.0"}
+        if existing > 0:
+            headers["Range"] = f"bytes={existing}-"
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                status_code = int(getattr(response, "status", response.getcode()))
+                mode = "ab"
+                if existing > 0 and status_code != 206:
+                    try:
+                        temp_path.unlink()
+                    except OSError:
+                        pass
+                    existing = 0
+                    mode = "wb"
+                elif existing == 0:
+                    mode = "wb"
+                with temp_path.open(mode) as out_fh:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        out_fh.write(chunk)
+            temp_path.replace(destination)
+            return
+        except Exception:
+            if attempt >= retries - 1:
+                raise
+            time.sleep(backoff_seconds)
+            backoff_seconds = min(backoff_seconds * 2.0, 12.0)
+
+
+def _download_dataset_raw_files(spec: DatasetSpec, dataset_dir: Path):
+    download = dict(spec.download or {})
+    kind = str(download.get("kind") or "").strip().lower()
+    if kind == "manual_request":
+        return
+    if kind == "single_file":
+        url = str(download.get("url") or "").strip()
+        rel = str(download.get("relative_path") or "").strip()
+        if not url or not rel:
+            raise RuntimeError(f"Invalid single_file download configuration for {spec.dataset_id}.")
+        _http_download_with_resume(url, dataset_dir / rel)
+        return
+    if kind == "multi_file":
+        files = list(download.get("files") or [])
+        if not files:
+            raise RuntimeError(f"Invalid multi_file download configuration for {spec.dataset_id}.")
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            rel = str(item.get("relative_path") or "").strip()
+            if not url or not rel:
+                continue
+            _http_download_with_resume(url, dataset_dir / rel)
+        return
+    raise RuntimeError(f"Unsupported download kind '{kind}' for {spec.dataset_id}.")
+
+
+def _extract_member_from_tgz(archive_path: Path, member_name: str, destination: Path):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive_path, "r:gz") as tf:
+        try:
+            member = tf.getmember(member_name)
+        except KeyError as exc:
+            raise RuntimeError(f"Archive member missing: {member_name}") from exc
+        if not member.isfile():
+            raise RuntimeError(f"Archive member is not a regular file: {member_name}")
+        extracted = tf.extractfile(member)
+        if extracted is None:
+            raise RuntimeError(f"Failed to extract archive member: {member_name}")
+        data = extracted.read()
+    destination.write_bytes(data)
+
+
+def _convert_subgraph_from_adj_pair(
+    dataset_dir: Path,
+    pattern_adj: list[list[int]],
+    target_adj: list[list[int]],
+    source_kind: str,
+) -> dict:
+    pattern_adj = normalize_adj_lists(pattern_adj)
+    target_adj = normalize_adj_lists(target_adj)
+    converted_dir = dataset_dir / "converted"
+    converted_dir.mkdir(parents=True, exist_ok=True)
+
+    vf_pattern = converted_dir / "vf3_pattern.vf"
+    vf_target = converted_dir / "vf3_target.vf"
+    lad_pattern = converted_dir / "glasgow_pattern.lad"
+    lad_target = converted_dir / "glasgow_target.lad"
+
+    write_vf(vf_pattern, pattern_adj, [0] * len(pattern_adj))
+    write_vf(vf_target, target_adj, [0] * len(target_adj))
+    write_unlabelled_lad(lad_pattern, pattern_adj)
+    write_unlabelled_lad(lad_target, target_adj)
+
+    parsed_vf_pattern = normalize_adj_lists(parse_vf_graph(vf_pattern))
+    parsed_vf_target = normalize_adj_lists(parse_vf_graph(vf_target))
+    parsed_lad_pattern = normalize_adj_lists(parse_lad_graph(lad_pattern))
+    parsed_lad_target = normalize_adj_lists(parse_lad_graph(lad_target))
+
+    if parsed_vf_pattern != pattern_adj or parsed_lad_pattern != pattern_adj:
+        raise RuntimeError("Converted pattern graph failed identity verification across VF/LAD.")
+    if parsed_vf_target != target_adj or parsed_lad_target != target_adj:
+        raise RuntimeError("Converted target graph failed identity verification across VF/LAD.")
+
+    return {
+        "raw_ready": True,
+        "converted_ready": True,
+        "source_kind": source_kind,
+        "inputs": {
+            "vf_pattern": str(vf_pattern),
+            "vf_target": str(vf_target),
+            "lad_pattern": str(lad_pattern),
+            "lad_target": str(lad_target),
+            "lad_format": "lad",
+        },
+        "graph_file_count": 2,
+        "pair_count": 1,
+        "pattern_nodes": len(pattern_adj),
+        "target_nodes": len(target_adj),
+        "pattern_edges": count_adj_edges(pattern_adj),
+        "target_edges": count_adj_edges(target_adj),
+    }
+
+
+def _convert_shortest_path_from_edge_list(
+    dataset_dir: Path,
+    source_path: Path,
+    assume_undirected: bool,
+) -> dict:
+    converted_dir = dataset_dir / "converted"
+    converted_dir.mkdir(parents=True, exist_ok=True)
+    dijkstra_csv = converted_dir / "dijkstra_input.csv"
+    temp_edges = converted_dir / "edge_rows.tmp.csv"
+
+    opener = gzip.open if source_path.suffix.lower() == ".gz" else open
+    announced_nodes = 0
+    nodes_seen: set[str] | None = set()
+    first_seen: str | None = None
+    second_seen: str | None = None
+    last_seen: str | None = None
+    numeric_min: int | None = None
+    numeric_max: int | None = None
+    edge_count = 0
+
+    with opener(source_path, "rt", encoding="utf-8", errors="replace") as in_fh, temp_edges.open(
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as out_fh:
+        for raw_line in in_fh:
+            line = str(raw_line or "").strip()
+            if not line:
+                continue
+            if line.startswith("#") or line.startswith("%"):
+                if announced_nodes <= 0:
+                    node_match = re.search(r"Nodes:\s*(\d+)", line, flags=re.IGNORECASE)
+                    if node_match:
+                        announced_nodes = max(announced_nodes, int(node_match.group(1)))
+                continue
+            parts = re.split(r"[\s,;]+", line)
+            if len(parts) < 2:
+                continue
+            u = parts[0].strip()
+            v = parts[1].strip()
+            if not u or not v or u == v:
+                continue
+
+            if first_seen is None:
+                first_seen = u
+                second_seen = v
+            last_seen = v
+
+            if nodes_seen is not None:
+                nodes_seen.add(u)
+                nodes_seen.add(v)
+                if len(nodes_seen) > 1_000_000:
+                    nodes_seen = None
+
+            try:
+                ui = int(u)
+                vi = int(v)
+            except ValueError:
+                pass
+            else:
+                low = ui if ui <= vi else vi
+                high = vi if vi >= ui else ui
+                numeric_min = low if numeric_min is None else min(numeric_min, low)
+                numeric_max = high if numeric_max is None else max(numeric_max, high)
+
+            out_fh.write(f"{u},{v},1\n")
+            edge_count += 1
+            if assume_undirected:
+                out_fh.write(f"{v},{u},1\n")
+                edge_count += 1
+
+    if edge_count <= 0:
+        try:
+            temp_edges.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(f"No parseable edges found in {source_path}.")
+
+    if announced_nodes > 0:
+        n_nodes = announced_nodes
+    elif nodes_seen is not None:
+        n_nodes = len(nodes_seen)
+    elif numeric_min is not None and numeric_max is not None and numeric_max >= numeric_min:
+        n_nodes = int((numeric_max - numeric_min) + 1)
+    else:
+        n_nodes = 0
+    if n_nodes < 2:
+        try:
+            temp_edges.unlink()
+        except OSError:
+            pass
+        raise RuntimeError("Converted shortest-path dataset has fewer than 2 nodes.")
+
+    if numeric_min is not None and numeric_max is not None and numeric_max > numeric_min:
+        start_label = str(numeric_min)
+        target_label = str(numeric_max)
+    else:
+        start_label = str(first_seen or "")
+        target_label = str(last_seen or second_seen or "")
+    if not start_label or not target_label or start_label == target_label:
+        if nodes_seen is not None and len(nodes_seen) >= 2:
+            ordered_nodes = sorted(nodes_seen)
+            start_label = ordered_nodes[0]
+            target_label = ordered_nodes[-1]
+    if not start_label or not target_label or start_label == target_label:
+        try:
+            temp_edges.unlink()
+        except OSError:
+            pass
+        raise RuntimeError("Could not derive distinct start/target node labels for shortest-path conversion.")
+
+    with dijkstra_csv.open("w", encoding="utf-8", newline="") as out_fh:
+        out_fh.write(f"# start={start_label} target={target_label}\n")
+        out_fh.write("source,target,weight\n")
+        with temp_edges.open("r", encoding="utf-8", errors="replace") as in_fh:
+            shutil.copyfileobj(in_fh, out_fh, length=1024 * 1024)
+    try:
+        temp_edges.unlink()
+    except OSError:
+        pass
+
+    density = 0.0
+    if n_nodes > 1:
+        density = min(1.0, float(edge_count) / float(n_nodes * (n_nodes - 1)))
+
+    return {
+        "raw_ready": True,
+        "converted_ready": True,
+        "source_kind": "edge_list",
+        "inputs": {
+            "dijkstra_file": str(dijkstra_csv),
+        },
+        "graph_file_count": 1,
+        "pair_count": 1,
+        "nodes": n_nodes,
+        "edges": int(edge_count),
+        "density": float(density),
+        "start_label": start_label,
+        "target_label": target_label,
+    }
+
+
+def _convert_shortest_path_from_dimacs_gr(
+    dataset_dir: Path,
+    source_path: Path,
+) -> dict:
+    converted_dir = dataset_dir / "converted"
+    converted_dir.mkdir(parents=True, exist_ok=True)
+    dijkstra_csv = converted_dir / "dijkstra_input.csv"
+    temp_edges = converted_dir / "edge_rows.tmp.csv"
+
+    opener = gzip.open if source_path.suffix.lower() == ".gz" else open
+    declared_nodes = 0
+    min_node_id: int | None = None
+    max_node_id: int | None = None
+    edge_count = 0
+    with opener(source_path, "rt", encoding="utf-8", errors="replace") as in_fh, temp_edges.open(
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as out_fh:
+        for raw_line in in_fh:
+            line = str(raw_line or "").strip()
+            if not line:
+                continue
+            token = line[0].lower()
+            if token == "c":
+                continue
+            if token == "p":
+                parts = line.split()
+                if len(parts) >= 4:
+                    try:
+                        declared_nodes = int(parts[2])
+                    except ValueError:
+                        declared_nodes = 0
+                continue
+            if token != "a":
+                continue
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            try:
+                src = int(parts[1])
+                dst = int(parts[2])
+                weight = int(float(parts[3]))
+            except ValueError:
+                continue
+            if src == dst:
+                continue
+            out_fh.write(f"{src},{dst},{weight}\n")
+            edge_count += 1
+            low = src if src <= dst else dst
+            high = dst if dst >= src else src
+            min_node_id = low if min_node_id is None else min(min_node_id, low)
+            max_node_id = high if max_node_id is None else max(max_node_id, high)
+
+    if edge_count <= 0:
+        try:
+            temp_edges.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(f"No parseable arc rows found in DIMACS source {source_path}.")
+
+    if declared_nodes > 0:
+        n_nodes = declared_nodes
+        start_label = "1"
+        target_label = str(declared_nodes)
+    elif min_node_id is not None and max_node_id is not None and max_node_id >= min_node_id:
+        n_nodes = int((max_node_id - min_node_id) + 1)
+        start_label = str(min_node_id)
+        target_label = str(max_node_id)
+    else:
+        try:
+            temp_edges.unlink()
+        except OSError:
+            pass
+        raise RuntimeError("Could not derive node range for DIMACS conversion.")
+    if n_nodes < 2 or start_label == target_label:
+        try:
+            temp_edges.unlink()
+        except OSError:
+            pass
+        raise RuntimeError("DIMACS conversion produced an invalid node range.")
+
+    with dijkstra_csv.open("w", encoding="utf-8", newline="") as out_fh:
+        out_fh.write(f"# start={start_label} target={target_label}\n")
+        out_fh.write("source,target,weight\n")
+        with temp_edges.open("r", encoding="utf-8", errors="replace") as in_fh:
+            shutil.copyfileobj(in_fh, out_fh, length=1024 * 1024)
+    try:
+        temp_edges.unlink()
+    except OSError:
+        pass
+
+    density = 0.0
+    if n_nodes > 1:
+        density = min(1.0, float(edge_count) / float(n_nodes * (n_nodes - 1)))
+
+    return {
+        "raw_ready": True,
+        "converted_ready": True,
+        "source_kind": "dimacs_gr",
+        "inputs": {
+            "dijkstra_file": str(dijkstra_csv),
+        },
+        "graph_file_count": 1,
+        "pair_count": 1,
+        "nodes": int(n_nodes),
+        "edges": int(edge_count),
+        "density": float(density),
+        "start_label": start_label,
+        "target_label": target_label,
+    }
+
+
+def prepare_dataset(spec: DatasetSpec) -> dict:
+    dataset_dir = dataset_dir_for_spec(spec)
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+
+    download_kind = _dataset_download_kind(spec)
+    _download_dataset_raw_files(spec, dataset_dir)
+    raw_payload = read_dataset_meta(dataset_dir)
+    raw_ready = True if download_kind != "manual_request" else _raw_dataset_has_files(dataset_dir)
+    raw_payload.update(
+        {
+            "dataset_id": spec.dataset_id,
+            "name": spec.name,
+            "tab_id": spec.tab_id,
+            "source": spec.source,
+            "source_url": spec.source_url,
+            "raw_format": spec.raw_format,
+            "description": spec.description,
+            "raw_ready": bool(raw_ready),
+            "converted_ready": False,
+            "storage_size_bytes": int(_dir_total_size_bytes(dataset_dir)),
+            "graph_file_count": int(max(0, int(raw_payload.get("graph_file_count") or spec.estimated_graph_files or 0))),
+            "pair_count": int(max(0, int(raw_payload.get("pair_count") or spec.estimated_pair_count or 0))),
+        }
+    )
+    write_dataset_meta(dataset_dir, raw_payload)
+
+    prepare = dict(spec.prepare or {})
+    kind = str(prepare.get("kind") or "").strip().lower()
+    meta_core: dict
+
+    if kind == "subgraph_pair_from_grf_files":
+        pat_rel = str(prepare.get("pattern_relative_path") or "").strip()
+        tgt_rel = str(prepare.get("target_relative_path") or "").strip()
+        if not pat_rel or not tgt_rel:
+            raise RuntimeError(f"Missing grf pair paths for {spec.dataset_id}.")
+        pat = dataset_dir / pat_rel
+        tgt = dataset_dir / tgt_rel
+        meta_core = _convert_subgraph_from_adj_pair(
+            dataset_dir,
+            parse_vf_graph(pat),
+            parse_vf_graph(tgt),
+            source_kind="grf_pair",
+        )
+    elif kind == "subgraph_pair_from_tgz_members":
+        arc_rel = str(prepare.get("archive_relative_path") or "").strip()
+        member_pat = str(prepare.get("pattern_member") or "").strip()
+        member_tgt = str(prepare.get("target_member") or "").strip()
+        if not arc_rel or not member_pat or not member_tgt:
+            raise RuntimeError(f"Missing archive extraction config for {spec.dataset_id}.")
+        archive_path = dataset_dir / arc_rel
+        extracted_dir = dataset_dir / "extracted"
+        extracted_dir.mkdir(parents=True, exist_ok=True)
+        pat = extracted_dir / "pattern.lad"
+        tgt = extracted_dir / "target.lad"
+        _extract_member_from_tgz(archive_path, member_pat, pat)
+        _extract_member_from_tgz(archive_path, member_tgt, tgt)
+        meta_core = _convert_subgraph_from_adj_pair(
+            dataset_dir,
+            parse_lad_graph(pat),
+            parse_lad_graph(tgt),
+            source_kind="lad_pair_from_archive",
+        )
+    elif kind == "shortest_path_csv_from_edge_list_gz":
+        src_rel = str(prepare.get("source_relative_path") or "").strip()
+        if not src_rel:
+            raise RuntimeError(f"Missing shortest-path source path for {spec.dataset_id}.")
+        assume_undirected = bool(prepare.get("assume_undirected", True))
+        meta_core = _convert_shortest_path_from_edge_list(dataset_dir, dataset_dir / src_rel, assume_undirected=assume_undirected)
+    elif kind == "shortest_path_csv_from_dimacs_gr_gz":
+        src_rel = str(prepare.get("source_relative_path") or "").strip()
+        if not src_rel:
+            raise RuntimeError(f"Missing DIMACS source path for {spec.dataset_id}.")
+        meta_core = _convert_shortest_path_from_dimacs_gr(dataset_dir, dataset_dir / src_rel)
+    elif kind == "download_only":
+        meta_core = {
+            "raw_ready": bool(raw_ready),
+            "converted_ready": False,
+            "source_kind": "download_only",
+            "inputs": {},
+            "graph_file_count": int(max(0, int(raw_payload.get("graph_file_count") or spec.estimated_graph_files or 0))),
+            "pair_count": int(max(0, int(raw_payload.get("pair_count") or spec.estimated_pair_count or 0))),
+            "note": str(prepare.get("note") or "Dataset retained as raw-only archive.").strip(),
+        }
+    elif kind == "manual_request":
+        request_url = str(dict(spec.download or {}).get("request_url") or spec.source_url or "").strip()
+        meta_core = {
+            "raw_ready": bool(raw_ready),
+            "converted_ready": False,
+            "source_kind": "manual_request",
+            "inputs": {},
+            "graph_file_count": int(max(0, int(raw_payload.get("graph_file_count") or spec.estimated_graph_files or 0))),
+            "pair_count": int(max(0, int(raw_payload.get("pair_count") or spec.estimated_pair_count or 0))),
+            "request_url": request_url,
+            "note": str(prepare.get("note") or "Dataset requires manual request/import.").strip(),
+        }
+    else:
+        raise RuntimeError(f"Unsupported dataset prepare kind '{kind}' for {spec.dataset_id}.")
+
+    dataset_size = _dir_total_size_bytes(dataset_dir)
+    graph_file_count = int(meta_core.get("graph_file_count") or _count_graph_files(dataset_dir / "converted"))
+    pair_count = int(meta_core.get("pair_count") or 0)
+
+    payload = {
+        "dataset_id": spec.dataset_id,
+        "name": spec.name,
+        "tab_id": spec.tab_id,
+        "source": spec.source,
+        "source_url": spec.source_url,
+        "raw_format": spec.raw_format,
+        "description": spec.description,
+        "storage_size_bytes": int(dataset_size),
+        "graph_file_count": int(max(0, graph_file_count)),
+        "pair_count": int(max(0, pair_count)),
+        **meta_core,
+    }
+    write_dataset_meta(dataset_dir, payload)
+    return payload
+
 
 class BenchmarkRunnerApp(tk.Tk):
     def __init__(self):
@@ -1574,6 +2523,8 @@ class BenchmarkRunnerApp(tk.Tk):
         self.theme_toggle_btn: ttk.Button | None = None
 
         self.binary_paths = build_binary_path_map()
+        self.dataset_specs = load_dataset_catalog()
+        self.dataset_spec_by_id = {spec.dataset_id: spec for spec in self.dataset_specs}
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
@@ -1699,11 +2650,19 @@ class BenchmarkRunnerApp(tk.Tk):
         self.visualizer_fullscreen_sol_next_btn: ttk.Button | None = None
         self.visualizer_fullscreen_sol_fwd5_btn: ttk.Button | None = None
         self.visualizer_fullscreen_sol_fwd10_btn: ttk.Button | None = None
+        self.datasets_canvas: tk.Canvas | None = None
+        self.datasets_rows_frame: ttk.Frame | None = None
+        self.datasets_scrollbar_x: ttk.Scrollbar | None = None
+        self.datasets_scrollbar_y: ttk.Scrollbar | None = None
+        self.dataset_checks: dict[str, tk.BooleanVar] = {}
+        self.dataset_row_widgets: dict[str, dict[str, tk.Widget]] = {}
+        self.dataset_download_jobs: dict[str, bool] = {}
 
         self._build_state()
         self._build_ui()
         self._apply_theme(self.current_theme_mode)
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
+        self._on_input_mode_tab_changed()
         self._on_tab_changed()
         self.after(0, self._apply_default_window_state)
         self.after(120, self._set_default_body_split)
@@ -1903,6 +2862,11 @@ class BenchmarkRunnerApp(tk.Tk):
                 self._scroll_canvas.configure(bg=palette["panel_bg"])
             except Exception:
                 pass
+        if hasattr(self, "datasets_canvas") and self.datasets_canvas is not None:
+            try:
+                self.datasets_canvas.configure(bg=palette["panel_bg"])
+            except Exception:
+                pass
         if hasattr(self, "log_box"):
             try:
                 self.log_box.configure(
@@ -1969,6 +2933,7 @@ class BenchmarkRunnerApp(tk.Tk):
 
     def _build_state(self):
         self.tab_id_var = tk.StringVar(value="subgraph")
+        self.input_mode_var = tk.StringVar(value="independent")
         self.iterations_var = tk.StringVar(value="5")
         self.seed_var = tk.StringVar(value="")
         self.run_mode_var = tk.StringVar(value="threshold")
@@ -2027,6 +2992,9 @@ class BenchmarkRunnerApp(tk.Tk):
         for variant in SOLVER_VARIANTS:
             default = variant.tab_id == "subgraph"
             self.variant_checks[variant.variant_id] = tk.BooleanVar(value=default)
+        self.dataset_checks = {}
+        for spec in self.dataset_specs:
+            self.dataset_checks[spec.dataset_id] = tk.BooleanVar(value=False)
 
     def _build_ui(self):
         outer = ttk.Frame(self)
@@ -2178,46 +3146,17 @@ class BenchmarkRunnerApp(tk.Tk):
         right_col.bind("<Configure>", self._on_outlier_blurb_parent_resize)
         self._on_outlier_filter_changed()
 
-        sweep = ttk.LabelFrame(settings_row, text="Independent Variables", padding=10)
+        sweep = ttk.LabelFrame(settings_row, text="Independent Variables / Datasets", padding=10)
         sweep.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        ttk.Label(
-            sweep,
-            text="Select up to two variables to sweep. For unselected variables, Start is treated as the fixed value.",
-        ).grid(row=0, column=0, columnspan=5, sticky="w", padx=4, pady=(0, 8))
-        ttk.Label(sweep, text="K Mode").grid(row=1, column=0, sticky="w", padx=4, pady=(0, 8))
-        self.k_mode_combo = ttk.Combobox(
-            sweep,
-            state="readonly",
-            textvariable=self.k_mode_var,
-            values=["percent", "absolute"],
-            width=12,
-        )
-        self.k_mode_combo.grid(row=1, column=1, columnspan=2, sticky="w", padx=4, pady=(0, 8))
-        self.k_mode_combo.bind("<<ComboboxSelected>>", lambda _evt: self._on_variable_selection_changed())
-        headers = ["Use", "Variable", "Start", "End", "Step"]
-        for col, header in enumerate(headers):
-            ttk.Label(sweep, text=header, font=("Segoe UI", 9, "bold")).grid(row=2, column=col, sticky="w", padx=4, pady=(0, 6))
-
-        self.sweep_rows: dict[str, dict[str, tk.Widget]] = {}
-        ordered = [("n", "N"), ("density", "Density"), ("k", "k % of N")]
-        for i, (var_id, label) in enumerate(ordered, start=3):
-            use_cb = ttk.Checkbutton(sweep, variable=self.var_selected[var_id], command=self._on_variable_selection_changed)
-            use_cb.grid(row=i, column=0, padx=4, sticky="w")
-            name_label = ttk.Label(sweep, text=label)
-            name_label.grid(row=i, column=1, padx=4, sticky="w")
-            start_entry = ttk.Entry(sweep, textvariable=self.var_start[var_id], width=12)
-            start_entry.grid(row=i, column=2, padx=4, sticky="w")
-            end_entry = ttk.Entry(sweep, textvariable=self.var_end[var_id], width=12)
-            end_entry.grid(row=i, column=3, padx=4, sticky="w")
-            step_entry = ttk.Entry(sweep, textvariable=self.var_step[var_id], width=12)
-            step_entry.grid(row=i, column=4, padx=4, sticky="w")
-            self.sweep_rows[var_id] = {
-                "use_cb": use_cb,
-                "label": name_label,
-                "start": start_entry,
-                "end": end_entry,
-                "step": step_entry,
-            }
+        self.input_source_tabs = ttk.Notebook(sweep)
+        self.input_source_tabs.pack(fill=tk.BOTH, expand=True)
+        independent_tab = ttk.Frame(self.input_source_tabs)
+        datasets_tab = ttk.Frame(self.input_source_tabs)
+        self.input_source_tabs.add(independent_tab, text="Independent Variables")
+        self.input_source_tabs.add(datasets_tab, text="Datasets")
+        self.input_source_tabs.bind("<<NotebookTabChanged>>", lambda _evt: self._on_input_mode_tab_changed())
+        self._build_independent_variable_controls(independent_tab)
+        self._build_datasets_controls(datasets_tab)
 
         render_opts = ttk.LabelFrame(control_col, text="3D Options (used when two independent variables are selected)", padding=10)
         render_opts.pack(fill=tk.X, pady=(0, 8))
@@ -2782,6 +3721,341 @@ class BenchmarkRunnerApp(tk.Tk):
         except Exception:
             pass
 
+    def _build_independent_variable_controls(self, parent: ttk.Frame):
+        ttk.Label(
+            parent,
+            text="Select up to two variables to sweep. For unselected variables, Start is treated as the fixed value.",
+        ).grid(row=0, column=0, columnspan=5, sticky="w", padx=4, pady=(0, 8))
+        ttk.Label(parent, text="K Mode").grid(row=1, column=0, sticky="w", padx=4, pady=(0, 8))
+        self.k_mode_combo = ttk.Combobox(
+            parent,
+            state="readonly",
+            textvariable=self.k_mode_var,
+            values=["percent", "absolute"],
+            width=12,
+        )
+        self.k_mode_combo.grid(row=1, column=1, columnspan=2, sticky="w", padx=4, pady=(0, 8))
+        self.k_mode_combo.bind("<<ComboboxSelected>>", lambda _evt: self._on_variable_selection_changed())
+        headers = ["Use", "Variable", "Start", "End", "Step"]
+        for col, header in enumerate(headers):
+            ttk.Label(parent, text=header, font=("Segoe UI", 9, "bold")).grid(row=2, column=col, sticky="w", padx=4, pady=(0, 6))
+
+        self.sweep_rows = {}
+        ordered = [("n", "N"), ("density", "Density"), ("k", "k % of N")]
+        for i, (var_id, label) in enumerate(ordered, start=3):
+            use_cb = ttk.Checkbutton(parent, variable=self.var_selected[var_id], command=self._on_variable_selection_changed)
+            use_cb.grid(row=i, column=0, padx=4, sticky="w")
+            name_label = ttk.Label(parent, text=label)
+            name_label.grid(row=i, column=1, padx=4, sticky="w")
+            start_entry = ttk.Entry(parent, textvariable=self.var_start[var_id], width=12)
+            start_entry.grid(row=i, column=2, padx=4, sticky="w")
+            end_entry = ttk.Entry(parent, textvariable=self.var_end[var_id], width=12)
+            end_entry.grid(row=i, column=3, padx=4, sticky="w")
+            step_entry = ttk.Entry(parent, textvariable=self.var_step[var_id], width=12)
+            step_entry.grid(row=i, column=4, padx=4, sticky="w")
+            self.sweep_rows[var_id] = {
+                "use_cb": use_cb,
+                "label": name_label,
+                "start": start_entry,
+                "end": end_entry,
+                "step": step_entry,
+            }
+
+    def _build_datasets_controls(self, parent: ttk.Frame):
+        ttk.Label(
+            parent,
+            text=(
+                "Use this tab to benchmark downloaded external datasets. "
+                "Each row tracks raw download and converted-ready status."
+            ),
+            justify=tk.LEFT,
+            wraplength=560,
+        ).pack(fill=tk.X, pady=(0, 6))
+
+        tools = ttk.Frame(parent)
+        tools.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(tools, text="Check All", command=lambda: self._set_all_datasets_for_current_tab(True)).pack(side=tk.LEFT)
+        ttk.Button(tools, text="Clear All", command=lambda: self._set_all_datasets_for_current_tab(False)).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(tools, text="Download Selected", command=self._download_selected_datasets).pack(side=tk.LEFT, padx=(16, 0))
+
+        table_wrap = ttk.Frame(parent)
+        table_wrap.pack(fill=tk.BOTH, expand=True)
+        table_wrap.columnconfigure(0, weight=1)
+        table_wrap.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            table_wrap,
+            highlightthickness=0,
+            height=220,
+            bg=self._theme_palette().get("panel_bg", self._theme_palette().get("bg", "#FFFFFF")),
+        )
+        y_scroll = ttk.Scrollbar(table_wrap, orient=tk.VERTICAL, command=canvas.yview)
+        x_scroll = ttk.Scrollbar(table_wrap, orient=tk.HORIZONTAL, command=canvas.xview)
+        canvas.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+
+        rows_frame = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+
+        def _refresh_scroll(_evt=None):
+            try:
+                canvas.configure(scrollregion=canvas.bbox("all"))
+            except Exception:
+                pass
+
+        rows_frame.bind("<Configure>", _refresh_scroll)
+        canvas.bind("<Configure>", _refresh_scroll)
+
+        def _on_mousewheel(evt):
+            delta = int(getattr(evt, "delta", 0))
+            if delta != 0:
+                canvas.yview_scroll(int(-delta / 120), "units")
+            else:
+                btn_num = int(getattr(evt, "num", 0))
+                if btn_num == 4:
+                    canvas.yview_scroll(-1, "units")
+                elif btn_num == 5:
+                    canvas.yview_scroll(1, "units")
+
+        for widget in (canvas, rows_frame):
+            widget.bind("<MouseWheel>", _on_mousewheel)
+            widget.bind("<Button-4>", _on_mousewheel)
+            widget.bind("<Button-5>", _on_mousewheel)
+
+        self.datasets_canvas = canvas
+        self.datasets_rows_frame = rows_frame
+        self.datasets_scrollbar_x = x_scroll
+        self.datasets_scrollbar_y = y_scroll
+        self.after(0, self._refresh_dataset_rows)
+
+    def _on_input_mode_tab_changed(self):
+        if not hasattr(self, "input_source_tabs") or self.input_source_tabs is None:
+            self.input_mode_var.set("independent")
+            return
+        index = int(self.input_source_tabs.index(self.input_source_tabs.select()))
+        self.input_mode_var.set("independent" if index == 0 else "datasets")
+
+    def _input_mode(self) -> str:
+        mode = str(self.input_mode_var.get() or "independent").strip().lower()
+        return "datasets" if mode == "datasets" else "independent"
+
+    def _dataset_specs_for_current_tab(self) -> list[DatasetSpec]:
+        tab_id = self.tab_id_var.get()
+        return [spec for spec in self.dataset_specs if spec.tab_id == tab_id]
+
+    def _selected_dataset_specs_for_current_tab(self) -> list[DatasetSpec]:
+        selected: list[DatasetSpec] = []
+        for spec in self._dataset_specs_for_current_tab():
+            checker = self.dataset_checks.get(spec.dataset_id)
+            if checker is not None and bool(checker.get()):
+                selected.append(spec)
+        return selected
+
+    def _set_all_datasets_for_current_tab(self, checked: bool):
+        for spec in self._dataset_specs_for_current_tab():
+            checker = self.dataset_checks.get(spec.dataset_id)
+            if checker is not None:
+                checker.set(bool(checked))
+
+    def _dataset_info_text(self, spec: DatasetSpec) -> str:
+        dataset_dir = dataset_dir_for_spec(spec)
+        meta = read_dataset_meta(dataset_dir)
+        size_bytes = int(meta.get("storage_size_bytes") or spec.estimated_size_bytes or 0)
+        graph_count = int(meta.get("graph_file_count") or spec.estimated_graph_files or 0)
+        pair_count = int(meta.get("pair_count") or spec.estimated_pair_count or 0)
+        lines = [
+            f"Dataset: {spec.name}",
+            f"Source: {spec.source}",
+            f"Format: {spec.raw_format}",
+            f"Storage size: {format_bytes_human(size_bytes)}",
+            f"Graph files: {graph_count}",
+            f"Pattern/target pairs: {pair_count}",
+            "",
+            spec.description,
+        ]
+        if spec.source_url:
+            lines.extend(["", f"URL: {spec.source_url}"])
+        return "\n".join(lines)
+
+    def _show_dataset_info(self, spec: DatasetSpec):
+        messagebox.showinfo(f"{APP_TITLE} - Dataset Info", self._dataset_info_text(spec))
+
+    def _refresh_dataset_rows(self):
+        rows_frame = self.datasets_rows_frame
+        if rows_frame is None:
+            return
+        for child in list(rows_frame.winfo_children()):
+            try:
+                child.destroy()
+            except Exception:
+                pass
+
+        headers = ["Use", "Dataset", "Raw Downloaded", "Converted Ready", "Action", "Info"]
+        for col, header in enumerate(headers):
+            ttk.Label(rows_frame, text=header, font=("Segoe UI", 9, "bold")).grid(
+                row=0,
+                column=col,
+                padx=(4, 10),
+                pady=(0, 6),
+                sticky="w",
+            )
+
+        specs = self._dataset_specs_for_current_tab()
+        if not specs:
+            ttk.Label(rows_frame, text="No datasets in catalog for this algorithm tab.").grid(
+                row=1,
+                column=0,
+                columnspan=6,
+                sticky="w",
+                padx=4,
+                pady=(0, 6),
+            )
+            return
+
+        for row_idx, spec in enumerate(specs, start=1):
+            checker = self.dataset_checks.setdefault(spec.dataset_id, tk.BooleanVar(value=False))
+            dataset_dir = dataset_dir_for_spec(spec)
+            meta = read_dataset_meta(dataset_dir)
+            raw_ready = bool(meta.get("raw_ready", False))
+            converted_ready = bool(meta.get("converted_ready", False))
+            in_progress = bool(self.dataset_download_jobs.get(spec.dataset_id, False))
+            download_kind = _dataset_download_kind(spec)
+
+            ttk.Checkbutton(rows_frame, variable=checker).grid(row=row_idx, column=0, padx=(4, 8), pady=(0, 4), sticky="w")
+            ttk.Label(rows_frame, text=spec.name).grid(row=row_idx, column=1, padx=(4, 8), pady=(0, 4), sticky="w")
+            ttk.Label(rows_frame, text="Yes" if raw_ready else "No").grid(row=row_idx, column=2, padx=(4, 8), pady=(0, 4), sticky="w")
+            ttk.Label(rows_frame, text="Yes" if converted_ready else "No").grid(row=row_idx, column=3, padx=(4, 8), pady=(0, 4), sticky="w")
+
+            action_text = "Download"
+            action_state = tk.NORMAL
+            action_command = lambda sid=spec.dataset_id: self._start_dataset_download(sid)
+            if in_progress:
+                action_text = "Working..."
+                action_state = tk.DISABLED
+            elif download_kind == "manual_request":
+                action_text = "Request"
+                action_state = tk.NORMAL
+                action_command = lambda sid=spec.dataset_id: self._request_dataset_access(sid)
+            elif raw_ready:
+                action_text = "Downloaded"
+                action_state = tk.DISABLED
+
+            ttk.Button(
+                rows_frame,
+                text=action_text,
+                state=action_state,
+                command=action_command,
+                width=12,
+            ).grid(row=row_idx, column=4, padx=(4, 8), pady=(0, 4), sticky="w")
+            ttk.Button(
+                rows_frame,
+                text="i",
+                command=lambda s=spec: self._show_dataset_info(s),
+                width=2,
+            ).grid(row=row_idx, column=5, padx=(0, 8), pady=(0, 4), sticky="w")
+
+    def _download_selected_datasets(self):
+        selected = self._selected_dataset_specs_for_current_tab()
+        if not selected:
+            messagebox.showwarning(APP_TITLE, "Select one or more datasets in the Datasets tab.")
+            return
+        for spec in selected:
+            if _dataset_download_kind(spec) == "manual_request":
+                self._request_dataset_access(spec.dataset_id)
+            elif dataset_raw_ready(spec):
+                continue
+            else:
+                self._start_dataset_download(spec.dataset_id)
+
+    def _request_dataset_access(self, dataset_id: str):
+        spec = self.dataset_spec_by_id.get(str(dataset_id).strip().lower())
+        if spec is None:
+            return
+        dataset_dir = dataset_dir_for_spec(spec)
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        request_url = str(dict(spec.download or {}).get("request_url") or spec.source_url or "").strip()
+        raw_ready = _raw_dataset_has_files(dataset_dir)
+        payload = {
+            "dataset_id": spec.dataset_id,
+            "name": spec.name,
+            "tab_id": spec.tab_id,
+            "source": spec.source,
+            "source_url": spec.source_url,
+            "raw_format": spec.raw_format,
+            "description": spec.description,
+            "raw_ready": bool(raw_ready),
+            "converted_ready": False,
+            "source_kind": "manual_request",
+            "inputs": {},
+            "request_url": request_url,
+            "note": str(dict(spec.prepare or {}).get("note") or "Dataset requires manual request/import.").strip(),
+            "storage_size_bytes": int(_dir_total_size_bytes(dataset_dir)),
+            "graph_file_count": int(max(0, int(spec.estimated_graph_files or 0))),
+            "pair_count": int(max(0, int(spec.estimated_pair_count or 0))),
+        }
+        write_dataset_meta(dataset_dir, payload)
+        if request_url:
+            try:
+                webbrowser.open(request_url)
+            except Exception:
+                pass
+        self._append_log(
+            f"Manual-request dataset: {spec.name} | raw_dir={str((dataset_dir / 'raw').resolve())}",
+            level="notice",
+        )
+        self._refresh_dataset_rows()
+        if request_url:
+            messagebox.showinfo(
+                APP_TITLE,
+                f"Opened request page for '{spec.name}'.\n\n"
+                f"After access is granted, place raw files under:\n{str((dataset_dir / 'raw').resolve())}",
+            )
+        else:
+            messagebox.showinfo(
+                APP_TITLE,
+                f"'{spec.name}' requires manual access/import.\n\n"
+                f"Place raw files under:\n{str((dataset_dir / 'raw').resolve())}",
+            )
+
+    def _start_dataset_download(self, dataset_id: str):
+        spec = self.dataset_spec_by_id.get(str(dataset_id).strip().lower())
+        if spec is None:
+            return
+        if _dataset_download_kind(spec) == "manual_request":
+            self._request_dataset_access(spec.dataset_id)
+            return
+        if self.dataset_download_jobs.get(spec.dataset_id, False):
+            return
+        self.dataset_download_jobs[spec.dataset_id] = True
+        self._refresh_dataset_rows()
+        self._append_log(f"Dataset job started: {spec.name}", level="notice")
+
+        def _worker():
+            error_text = None
+            try:
+                payload = prepare_dataset(spec)
+                size_text = format_bytes_human(int(payload.get("storage_size_bytes") or 0))
+                graphs = int(payload.get("graph_file_count") or 0)
+                pairs = int(payload.get("pair_count") or 0)
+                self._append_log_threadsafe(
+                    f"Dataset ready: {spec.name} | size={size_text} graphs={graphs} pairs={pairs}",
+                    level="success",
+                )
+            except Exception as exc:
+                error_text = str(exc)
+                self._append_log_threadsafe(f"Dataset job failed for {spec.name}: {exc}", level="error")
+            finally:
+                def _finish():
+                    self.dataset_download_jobs[spec.dataset_id] = False
+                    self._refresh_dataset_rows()
+                    if error_text:
+                        messagebox.showerror(APP_TITLE, f"Dataset processing failed for '{spec.name}':\n{error_text}")
+                self.after(0, _finish)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _build_variant_section(self, parent: ttk.Frame, tab_id: str):
         container = ttk.Frame(parent, padding=8)
         container.pack(fill=tk.X)
@@ -2921,6 +4195,7 @@ class BenchmarkRunnerApp(tk.Tk):
         self._on_variable_selection_changed()
         self._on_parallel_settings_changed()
         self._refresh_3d_variant_choices()
+        self._refresh_dataset_rows()
 
     def _on_run_mode_changed(self):
         run_mode = self.run_mode_var.get().strip().lower()
@@ -3465,6 +4740,207 @@ class BenchmarkRunnerApp(tk.Tk):
             )
         return f"{label} fixed={self._format_point_value(var_id, float(start), config)}"
 
+    def _shortest_metrics_from_csv(self, path: Path) -> tuple[int, float]:
+        nodes: set[str] = set()
+        edge_count = 0
+        with path.open("r", encoding="utf-8", errors="replace", newline="") as fh:
+            for raw_line in fh:
+                line = str(raw_line or "").strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.lower().startswith("source,"):
+                    continue
+                parts = [part.strip() for part in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                src = parts[0]
+                dst = parts[1]
+                if not src or not dst:
+                    continue
+                nodes.add(src)
+                nodes.add(dst)
+                edge_count += 1
+        n_nodes = len(nodes)
+        density = 0.0
+        if n_nodes > 1:
+            density = min(1.0, float(edge_count) / float(n_nodes * (n_nodes - 1)))
+        return n_nodes, density
+
+    def _resolve_dataset_inputs_for_run(self, point: dict) -> dict[str, Path | str]:
+        resolved: dict[str, Path | str] = {}
+        raw_inputs = dict(point.get("dataset_inputs") or {})
+        for key, value in raw_inputs.items():
+            if not isinstance(value, str) or not value.strip():
+                continue
+            if key == "lad_format":
+                resolved[key] = str(value).strip()
+            else:
+                resolved[str(key)] = Path(value)
+        return resolved
+
+    def _build_dataset_mode_config(
+        self,
+        *,
+        tab_id: str,
+        selected_variants: list[SolverVariant],
+        iterations: int,
+        base_seed: int,
+        run_mode: str,
+        time_limit_minutes: float | None,
+        solver_timeout_seconds: float | None,
+        failure_policy: str,
+        retry_failed_trials: int,
+        timeout_as_missing: bool,
+        outlier_filter: str,
+        k_mode: str,
+        style: str,
+        variant_for_3d: str | None,
+        detected_cores: int,
+        parallel_requested: bool,
+        requested_workers: int,
+        max_workers: int,
+    ) -> dict:
+        if run_mode != "threshold":
+            raise ValueError("Datasets tab currently supports threshold mode only.")
+
+        selected_specs = self._selected_dataset_specs_for_current_tab()
+        if not selected_specs:
+            raise ValueError("Select at least one dataset in the Datasets tab.")
+
+        missing: list[str] = []
+        datapoints: list[dict] = []
+        observed_n: list[float] = []
+        observed_density: list[float] = []
+        for spec in selected_specs:
+            if not dataset_converted_ready(spec):
+                missing.append(f"{spec.name} (converted files not ready)")
+                continue
+            inputs = dataset_converted_inputs(spec)
+            if not isinstance(inputs, dict):
+                missing.append(f"{spec.name} (missing converted input map)")
+                continue
+
+            if tab_id == "subgraph":
+                needed = ("vf_pattern", "vf_target", "lad_pattern", "lad_target")
+                if any(key not in inputs for key in needed):
+                    missing.append(f"{spec.name} (missing subgraph converted files)")
+                    continue
+                for key in needed:
+                    if not inputs[key].exists():
+                        missing.append(f"{spec.name} ({key} file missing)")
+                        break
+                else:
+                    dataset_dir = dataset_dir_for_spec(spec)
+                    meta = read_dataset_meta(dataset_dir)
+                    n_nodes = int(meta.get("target_nodes") or 0)
+                    k_nodes = int(meta.get("pattern_nodes") or 0)
+                    target_edges = int(meta.get("target_edges") or 0)
+                    if n_nodes <= 0:
+                        target_adj = parse_vf_graph(inputs["vf_target"])
+                        n_nodes = len(target_adj)
+                        target_edges = count_adj_edges(target_adj)
+                    if k_nodes <= 0:
+                        pat_adj = parse_vf_graph(inputs["vf_pattern"])
+                        k_nodes = len(pat_adj)
+                    density = 0.0
+                    if n_nodes > 1:
+                        density = min(1.0, float(target_edges) / float(n_nodes * (n_nodes - 1)))
+                    if n_nodes < 3 or k_nodes < 2 or k_nodes >= n_nodes:
+                        missing.append(f"{spec.name} (invalid N/K derived from converted files)")
+                        continue
+                    k_value = float(k_nodes) if k_mode == "absolute" else float((100.0 * k_nodes) / float(n_nodes))
+                    point = {
+                        "n": float(n_nodes),
+                        "density": float(max(0.000001, density)),
+                        "k": float(max(0.000001, min(100.0, k_value))) if k_mode != "absolute" else float(k_nodes),
+                        "k_nodes": int(k_nodes),
+                        "dataset_id": spec.dataset_id,
+                        "dataset_name": spec.name,
+                        "dataset_inputs": {k: str(v) for k, v in inputs.items()},
+                    }
+                    datapoints.append(point)
+                    observed_n.append(float(point["n"]))
+                    observed_density.append(float(point["density"]))
+            else:
+                if "dijkstra_file" not in inputs or not inputs["dijkstra_file"].exists():
+                    missing.append(f"{spec.name} (missing converted shortest-path CSV)")
+                    continue
+                dataset_dir = dataset_dir_for_spec(spec)
+                meta = read_dataset_meta(dataset_dir)
+                n_nodes = int(meta.get("nodes") or 0)
+                density = float(meta.get("density") or 0.0)
+                if n_nodes < 2:
+                    n_nodes, density = self._shortest_metrics_from_csv(inputs["dijkstra_file"])
+                if n_nodes < 2:
+                    missing.append(f"{spec.name} (converted CSV has fewer than 2 nodes)")
+                    continue
+                point = {
+                    "n": float(n_nodes),
+                    "density": float(max(0.000001, min(1.0, density))),
+                    "dataset_id": spec.dataset_id,
+                    "dataset_name": spec.name,
+                    "dataset_inputs": {k: str(v) for k, v in inputs.items()},
+                }
+                datapoints.append(point)
+                observed_n.append(float(point["n"]))
+                observed_density.append(float(point["density"]))
+
+        if missing:
+            raise ValueError("Dataset readiness check failed:\n" + "\n".join(missing))
+        if not datapoints:
+            raise ValueError("No runnable datasets selected.")
+
+        var_ranges = {"n": sorted(observed_n), "density": sorted(observed_density)}
+        fixed_values = {
+            "n": float(datapoints[0]["n"]),
+            "density": float(datapoints[0]["density"]),
+        }
+        input_specs = {
+            "n": {"selected": True, "start": float(datapoints[0]["n"]), "end": None, "step": None},
+            "density": {"selected": False, "start": float(datapoints[0]["density"]), "end": None, "step": None},
+        }
+        if tab_id == "subgraph":
+            fixed_values["k"] = float(datapoints[0]["k"])
+            var_ranges["k"] = sorted({float(point["k"]) for point in datapoints})
+            input_specs["k"] = {"selected": False, "start": float(datapoints[0]["k"]), "end": None, "step": None}
+
+        return {
+            "tab_id": tab_id,
+            "input_mode": "datasets",
+            "selected_datasets": [spec.dataset_id for spec in selected_specs],
+            "selected_variants": [variant.variant_id for variant in selected_variants],
+            "selected_variant_labels": {variant.variant_id: variant.label for variant in selected_variants},
+            "iterations": iterations,
+            "base_seed": base_seed,
+            "run_mode": run_mode,
+            "time_limit_minutes": time_limit_minutes,
+            "solver_timeout_seconds": solver_timeout_seconds,
+            "failure_policy": failure_policy,
+            "retry_failed_trials": retry_failed_trials,
+            "timeout_as_missing": timeout_as_missing,
+            "outlier_filter": outlier_filter,
+            "k_mode": k_mode,
+            "primary_var": "n",
+            "secondary_var": None,
+            "var_ranges": var_ranges,
+            "fixed_values": fixed_values,
+            "datapoints": datapoints,
+            "timed_start": {},
+            "timed_step": {},
+            "input_specs": input_specs,
+            "plot3d_style": style,
+            "plot3d_variant": variant_for_3d,
+            "show_stddev_bars": bool(self.show_stddev_var.get()),
+            "show_regression_line": bool(self.show_regression_var.get()),
+            "show_trendlines_only": bool(self.show_trendlines_only_var.get()),
+            "parallel_requested": parallel_requested,
+            "requested_workers": requested_workers,
+            "max_workers": max_workers,
+            "detected_logical_cores": detected_cores,
+            "delete_generated_inputs": False,
+            "warmup_trials": 0,
+        }
+
     def _validate_and_build_config(self):
         tab_id = self.tab_id_var.get()
         selected_variants = self._selected_variants_for_current_tab()
@@ -3513,6 +4989,38 @@ class BenchmarkRunnerApp(tk.Tk):
         if outlier_filter not in {"none", "mad", "iqr"}:
             raise ValueError("Outlier filter must be none, mad, or iqr.")
         k_mode = self._k_mode()
+        input_mode = self._input_mode()
+
+        style = self.plot3d_style_var.get().strip().lower()
+        if style not in {"surface", "wireframe", "scatter"}:
+            style = "surface"
+        selected_variant_label = self.plot3d_variant_var.get().strip()
+        variant_lookup = {variant.label: variant.variant_id for variant in selected_variants}
+        variant_for_3d = variant_lookup.get(selected_variant_label)
+        if not variant_for_3d and selected_variants:
+            variant_for_3d = selected_variants[0].variant_id
+
+        if input_mode == "datasets":
+            return self._build_dataset_mode_config(
+                tab_id=tab_id,
+                selected_variants=selected_variants,
+                iterations=iterations,
+                base_seed=base_seed,
+                run_mode=run_mode,
+                time_limit_minutes=time_limit_minutes,
+                solver_timeout_seconds=solver_timeout_seconds,
+                failure_policy=failure_policy,
+                retry_failed_trials=retry_failed_trials,
+                timeout_as_missing=timeout_as_missing,
+                outlier_filter=outlier_filter,
+                k_mode=k_mode,
+                style=style,
+                variant_for_3d=variant_for_3d,
+                detected_cores=detected_cores,
+                parallel_requested=parallel_requested,
+                requested_workers=requested_workers,
+                max_workers=max_workers,
+            )
 
         variable_order = ["n", "density", "k"]
         allowed_vars = ["n", "density"] if tab_id == "shortest_path" else variable_order
@@ -3679,17 +5187,10 @@ class BenchmarkRunnerApp(tk.Tk):
                             raise ValueError("K (nodes) must be smaller than N in subgraph mode.")
                     point["k_nodes"] = k_nodes
 
-        style = self.plot3d_style_var.get().strip().lower()
-        if style not in {"surface", "wireframe", "scatter"}:
-            style = "surface"
-        selected_variant_label = self.plot3d_variant_var.get().strip()
-        variant_lookup = {variant.label: variant.variant_id for variant in selected_variants}
-        variant_for_3d = variant_lookup.get(selected_variant_label)
-        if not variant_for_3d and selected_variants:
-            variant_for_3d = selected_variants[0].variant_id
-
         return {
             "tab_id": tab_id,
+            "input_mode": "independent",
+            "selected_datasets": [],
             "selected_variants": [variant.variant_id for variant in selected_variants],
             "selected_variant_labels": {variant.variant_id: variant.label for variant in selected_variants},
             "iterations": iterations,
@@ -3747,8 +5248,15 @@ class BenchmarkRunnerApp(tk.Tk):
         config["deadline_monotonic"] = deadline
         self._append_log(f"Output directory: {self.session_output_dir}")
         datapoints_label = str(len(config["datapoints"])) if config["run_mode"] != "timed" else "unbounded (timed)"
-        vars_for_log = ["n", "density"] if config["tab_id"] == "shortest_path" else ["n", "k", "density"]
-        variable_segments = " | ".join(self._format_run_input_segment(config, var_id) for var_id in vars_for_log)
+        input_mode = str(config.get("input_mode") or "independent").strip().lower()
+        if input_mode == "datasets":
+            selected_dataset_ids = list(config.get("selected_datasets") or [])
+            variable_segments = (
+                f"input_mode=datasets | selected_datasets={len(selected_dataset_ids)}"
+            )
+        else:
+            vars_for_log = ["n", "density"] if config["tab_id"] == "shortest_path" else ["n", "k", "density"]
+            variable_segments = " | ".join(self._format_run_input_segment(config, var_id) for var_id in vars_for_log)
         if config["parallel_requested"] and config["requested_workers"] > config["max_workers"]:
             self._append_log(
                 f"Parallel workers clamped from {config['requested_workers']} to {config['max_workers']} "
@@ -3771,6 +5279,14 @@ class BenchmarkRunnerApp(tk.Tk):
             f"delete_generated_inputs={'on' if config.get('delete_generated_inputs') else 'off'} | "
             f"{variable_segments}"
         )
+        if input_mode == "datasets":
+            selected_dataset_ids = list(config.get("selected_datasets") or [])
+            selected_dataset_names = []
+            for dataset_id in selected_dataset_ids:
+                spec = self.dataset_spec_by_id.get(str(dataset_id).strip().lower())
+                selected_dataset_names.append(spec.name if spec is not None else str(dataset_id))
+            if selected_dataset_names:
+                self._append_log("Datasets: " + ", ".join(selected_dataset_names), level="notice")
 
         self.run_btn.configure(state=tk.DISABLED)
         self.abort_btn.configure(state=tk.NORMAL)
@@ -3847,16 +5363,36 @@ class BenchmarkRunnerApp(tk.Tk):
 
         variants = len(config["selected_variants"])
         iterations = int(config["iterations"])
-        warmups = int(config.get("warmup_trials", 0)) * variants
         mode = config["run_mode"]
+        input_mode = str(config.get("input_mode") or "independent").strip().lower()
+        warmups_per_variant = int(config.get("warmup_trials", 0))
+        if input_mode == "datasets":
+            warmups_per_variant = 0
+        warmups = warmups_per_variant * variants
         lines = [
             "Run Estimate",
             f"Tab: {config['tab_id']}",
+            f"Input mode: {input_mode}",
             f"Variants: {variants}",
             f"Iterations per datapoint: {iterations}",
             f"Discarded warm-up solver calls: {warmups}",
         ]
-        if mode == "threshold":
+        if input_mode == "datasets":
+            datapoints = len(config["datapoints"])
+            measured_trials = datapoints * variants * iterations
+            streamed_rows = datapoints * variants
+            selected_dataset_ids = list(config.get("selected_datasets") or [])
+            lines.extend(
+                [
+                    "Mode: threshold (datasets)",
+                    f"Selected datasets: {len(selected_dataset_ids)}",
+                    f"Datapoints (datasets): {datapoints}",
+                    f"Measured solver calls: {measured_trials}",
+                    f"Total solver calls (including warm-up): {measured_trials + warmups}",
+                    f"Result rows (NDJSON/CSV): {streamed_rows}",
+                ]
+            )
+        elif mode == "threshold":
             datapoints = len(config["datapoints"])
             measured_trials = datapoints * variants * iterations
             streamed_rows = datapoints * variants
@@ -4057,7 +5593,10 @@ class BenchmarkRunnerApp(tk.Tk):
             else:
                 accuracy_baseline_variant = "dijkstra_baseline"
         solver_timeout_seconds = config.get("solver_timeout_seconds")
+        input_mode = str(config.get("input_mode") or "independent").strip().lower()
         warmup_trials = int(max(0, config.get("warmup_trials", 0)))
+        if input_mode == "datasets":
+            warmup_trials = 0
         failure_policy = str(config.get("failure_policy", "stop")).strip().lower()
         retry_failed_trials = int(max(0, config.get("retry_failed_trials", 0)))
         timeout_as_missing = bool(config.get("timeout_as_missing", True))
@@ -4109,7 +5648,9 @@ class BenchmarkRunnerApp(tk.Tk):
                         n_value = int(round(warmup_point["n"]))
                         density_value = float(warmup_point["density"])
                         k_value = int(round(warmup_point.get("k_nodes", 1)))
-                        if config["tab_id"] == "shortest_path":
+                        if str(config.get("input_mode") or "independent").strip().lower() == "datasets":
+                            generated_warmup = self._resolve_dataset_inputs_for_run(warmup_point)
+                        elif config["tab_id"] == "shortest_path":
                             generated_warmup = {"dijkstra_file": generate_dijkstra_inputs(warmup_dir, n_value, density_value, warmup_seed)}
                         else:
                             generated_warmup = generate_subgraph_inputs(warmup_dir, n_value, k_value, density_value, warmup_seed)
@@ -4198,6 +5739,9 @@ class BenchmarkRunnerApp(tk.Tk):
                         "variant_label": config["selected_variant_labels"].get(variant_id, variant_id),
                         "x_value": x_value,
                         "y_value": y_value,
+                        "point_label": str(state.get("point_label") or ""),
+                        "dataset_id": state.get("dataset_id"),
+                        "dataset_name": state.get("dataset_name"),
                         "outlier_filter_mode": outlier_mode,
                         "outlier_filter_min_samples": int(DEFAULT_OUTLIER_MIN_SAMPLES),
                         "runtime_median_ms": median_or_none(runtimes),
@@ -4295,15 +5839,25 @@ class BenchmarkRunnerApp(tk.Tk):
                         observed_var_values[config["primary_var"]].add(x_value)
                         if config["secondary_var"] is not None and y_value is not None:
                             observed_var_values[config["secondary_var"]].add(y_value)
-                        point_label = f"{config['primary_var']}={self._format_point_value(config['primary_var'], x_value, config)}"
-                        if config["secondary_var"] is not None and y_value is not None:
-                            point_label += f", {config['secondary_var']}={self._format_point_value(config['secondary_var'], y_value, config)}"
+                        if str(config.get("input_mode") or "independent").strip().lower() == "datasets":
+                            dataset_name = str(point.get("dataset_name") or point.get("dataset_id") or f"dataset_{point_idx + 1}")
+                            point_label = f"dataset={dataset_name}"
+                        else:
+                            point_label = f"{config['primary_var']}={self._format_point_value(config['primary_var'], x_value, config)}"
+                            if config["secondary_var"] is not None and y_value is not None:
+                                point_label += f", {config['secondary_var']}={self._format_point_value(config['secondary_var'], y_value, config)}"
                         state = {
                             "point_idx": point_idx,
                             "point_label": point_label,
+                            "dataset_id": (str(point.get("dataset_id") or "").strip() if str(config.get("input_mode") or "independent").strip().lower() == "datasets" else None),
+                            "dataset_name": (str(point.get("dataset_name") or "").strip() if str(config.get("input_mode") or "independent").strip().lower() == "datasets" else None),
                             "x_value": x_value,
                             "y_value": y_value,
-                            "point_dir": generated_root / f"point_{point_idx + 1:05d}",
+                            "point_dir": (
+                                None
+                                if str(config.get("input_mode") or "independent").strip().lower() == "datasets"
+                                else generated_root / f"point_{point_idx + 1:05d}"
+                            ),
                             "samples_runtime": {variant_id: [] for variant_id in selected_variants},
                             "samples_memory": {variant_id: [] for variant_id in selected_variants},
                             "seed_records": {variant_id: [] for variant_id in selected_variants},
@@ -4346,16 +5900,19 @@ class BenchmarkRunnerApp(tk.Tk):
                         point_idx = int(cursor["point_idx"])
                         iter_idx = int(cursor["iter_idx"])
                         iter_seed = int(config["base_seed"]) + (point_idx * 100000) + iter_idx
-                        point_dir = cursor["state"]["point_dir"]
-                        iter_dir = point_dir / f"iter_{iter_idx + 1:03d}"
-                        iter_dir.mkdir(parents=True, exist_ok=True)
-                        n_value = int(round(point["n"]))
-                        density_value = float(point["density"])
-                        k_value = int(round(point.get("k_nodes", 1)))
-                        if config["tab_id"] == "shortest_path":
-                            generated = {"dijkstra_file": generate_dijkstra_inputs(iter_dir, n_value, density_value, iter_seed)}
+                        if str(config.get("input_mode") or "independent").strip().lower() == "datasets":
+                            generated = self._resolve_dataset_inputs_for_run(point)
                         else:
-                            generated = generate_subgraph_inputs(iter_dir, n_value, k_value, density_value, iter_seed)
+                            point_dir = cursor["state"]["point_dir"]
+                            iter_dir = point_dir / f"iter_{iter_idx + 1:03d}"
+                            iter_dir.mkdir(parents=True, exist_ok=True)
+                            n_value = int(round(point["n"]))
+                            density_value = float(point["density"])
+                            k_value = int(round(point.get("k_nodes", 1)))
+                            if config["tab_id"] == "shortest_path":
+                                generated = {"dijkstra_file": generate_dijkstra_inputs(iter_dir, n_value, density_value, iter_seed)}
+                            else:
+                                generated = generate_subgraph_inputs(iter_dir, n_value, k_value, density_value, iter_seed)
                         cursor["generated"] = generated
                         cursor["iter_seed"] = iter_seed
 
@@ -4751,12 +6308,20 @@ class BenchmarkRunnerApp(tk.Tk):
         self.abort_btn.configure(state=tk.DISABLED)
         self.pause_btn.configure(state=tk.DISABLED, text="Pause")
         if self.last_run_payload:
+            run_cfg = self.last_run_payload.get("run_config") if isinstance(self.last_run_payload, dict) else None
+            input_mode = str(run_cfg.get("input_mode") or "independent").strip().lower() if isinstance(run_cfg, dict) else "independent"
             self.save_btn.configure(state=tk.NORMAL)
             self._refresh_visualizer_controls(self.last_run_payload)
-            self.load_visualizer_btn.configure(state=tk.NORMAL if self.visualizer_point_rows else tk.DISABLED)
-            self.open_visualizer_btn.configure(state=tk.NORMAL)
-            self.visualizer_fullscreen_btn.configure(state=tk.NORMAL if self.visualizer_point_rows else tk.DISABLED)
-            self.visualizer_status_var.set("Ready. Choose a datapoint tuple and click Load In Tab.")
+            if input_mode == "datasets":
+                self.load_visualizer_btn.configure(state=tk.DISABLED)
+                self.open_visualizer_btn.configure(state=tk.DISABLED)
+                self.visualizer_fullscreen_btn.configure(state=tk.DISABLED)
+                self.visualizer_status_var.set("Visualizer is currently available for generated-input runs only.")
+            else:
+                self.load_visualizer_btn.configure(state=tk.NORMAL if self.visualizer_point_rows else tk.DISABLED)
+                self.open_visualizer_btn.configure(state=tk.NORMAL)
+                self.visualizer_fullscreen_btn.configure(state=tk.NORMAL if self.visualizer_point_rows else tk.DISABLED)
+                self.visualizer_status_var.set("Ready. Choose a datapoint tuple and click Load In Tab.")
         else:
             self.load_visualizer_btn.configure(state=tk.DISABLED)
             self.open_visualizer_btn.configure(state=tk.DISABLED)
@@ -4767,7 +6332,7 @@ class BenchmarkRunnerApp(tk.Tk):
     def _run_solver_variant(
         self,
         variant_id: str,
-        generated: dict[str, Path],
+        generated: dict[str, Path | str],
         heartbeat_label: str | None = None,
         solver_timeout_seconds: float | None = None,
     ):
@@ -4785,8 +6350,9 @@ class BenchmarkRunnerApp(tk.Tk):
             else:
                 command = [str(binary), str(generated["vf_pattern"]), str(generated["vf_target"])]
         elif family == "glasgow":
+            lad_format = str(generated.get("lad_format") or "lad").strip() or "lad"
             if variant_id == "glasgow_baseline":
-                command = [str(binary), "--count-solutions", "--format", "vertexlabelledlad", str(generated["lad_pattern"]), str(generated["lad_target"])]
+                command = [str(binary), "--count-solutions", "--format", lad_format, str(generated["lad_pattern"]), str(generated["lad_target"])]
             else:
                 command = [str(binary), str(generated["lad_pattern"]), str(generated["lad_target"])]
         else:
@@ -4972,6 +6538,8 @@ class BenchmarkRunnerApp(tk.Tk):
             "planned_trials": total_trials_planned,
             "run_config": {
                 "tab_id": config["tab_id"],
+                "input_mode": config.get("input_mode", "independent"),
+                "selected_datasets": list(config.get("selected_datasets") or []),
                 "selected_variants": config["selected_variants"],
                 "selected_variant_labels": config["selected_variant_labels"],
                 "iterations_per_datapoint": config["iterations"],
@@ -5079,10 +6647,190 @@ class BenchmarkRunnerApp(tk.Tk):
     def _collect_payload_datapoints(self, payload: dict):
         return list(self._iter_payload_datapoints(payload))
 
-    def _make_metric_2d_figure(self, payload: dict, metric: str, datapoints: list[dict]):
+    def _make_dataset_metric_bar_figure(self, payload: dict, metric: str, datapoints: list[dict]):
         fig = Figure(figsize=(7.5, 5.0), dpi=100)
         ax = fig.add_subplot(111)
         config = payload["run_config"]
+        selected_variants = list(config.get("selected_variants") or [])
+        label_map = dict(config.get("selected_variant_labels") or {})
+        show_stddev = bool(self.show_stddev_var.get())
+        use_log_y = bool(self.log_y_scale_var.get())
+        y_key = "runtime_median_ms" if metric == "runtime" else "memory_median_kb"
+        e_key = "runtime_stdev_ms" if metric == "runtime" else "memory_stdev_kb"
+
+        dataset_ids = [str(item).strip().lower() for item in list(config.get("selected_datasets") or []) if str(item).strip()]
+        dataset_labels: list[str] = []
+        if dataset_ids:
+            for dataset_id in dataset_ids:
+                spec = self.dataset_spec_by_id.get(dataset_id)
+                dataset_labels.append(spec.name if spec is not None else dataset_id)
+        else:
+            seen_keys: set[str] = set()
+            for row in datapoints:
+                key = str(row.get("dataset_id") or row.get("dataset_name") or row.get("point_label") or "").strip()
+                if not key or key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                dataset_ids.append(key)
+                dataset_labels.append(str(row.get("dataset_name") or key))
+        if not dataset_ids:
+            ax.text(0.1, 0.5, "No dataset datapoints to plot.", transform=ax.transAxes)
+            fig.tight_layout()
+            setattr(fig, "_legend_hover_state", None)
+            setattr(fig, "_drilldown_pick_map", {})
+            setattr(fig, "_drilldown_metric", metric)
+            return fig
+
+        lookup_by_id: dict[tuple[str, str], dict] = {}
+        lookup_by_name: dict[tuple[str, str], dict] = {}
+        for row in datapoints:
+            variant_id = str(row.get("variant_id") or "").strip().lower()
+            if not variant_id:
+                continue
+            dataset_id = str(row.get("dataset_id") or "").strip().lower()
+            dataset_name = str(row.get("dataset_name") or "").strip()
+            if dataset_id and (variant_id, dataset_id) not in lookup_by_id:
+                lookup_by_id[(variant_id, dataset_id)] = row
+            if dataset_name and (variant_id, dataset_name) not in lookup_by_name:
+                lookup_by_name[(variant_id, dataset_name)] = row
+
+        pick_map: dict[object, dict] = {}
+        series_artist_map: dict[str, list] = {}
+        centers = [float(i) for i in range(len(dataset_ids))]
+        variant_count = max(1, len(selected_variants))
+        total_width = 0.82
+        bar_width = total_width / float(variant_count)
+
+        for variant_idx, variant_id in enumerate(selected_variants):
+            label = str(label_map.get(variant_id, variant_id))
+            offset = (float(variant_idx) - (float(variant_count - 1) / 2.0)) * bar_width
+            xs: list[float] = []
+            ys: list[float] = []
+            errs: list[float] = []
+            rows_for_bars: list[dict] = []
+            for dataset_idx, dataset_id in enumerate(dataset_ids):
+                dataset_name = dataset_labels[dataset_idx] if dataset_idx < len(dataset_labels) else dataset_id
+                row = lookup_by_id.get((variant_id, dataset_id))
+                if row is None:
+                    row = lookup_by_name.get((variant_id, dataset_name))
+                if row is None:
+                    continue
+                y_val = row.get(y_key)
+                if y_val is None:
+                    continue
+                xs.append(centers[dataset_idx] + offset)
+                ys.append(float(y_val))
+                errs.append(float(row.get(e_key) or 0.0))
+                rows_for_bars.append(row)
+            if not xs:
+                continue
+            bars = ax.bar(
+                xs,
+                ys,
+                width=bar_width * 0.9,
+                yerr=(errs if show_stddev else None),
+                capsize=(3 if show_stddev else 0),
+                label=label,
+                align="center",
+            )
+            patches = list(getattr(bars, "patches", []) or [])
+            if patches:
+                series_artist_map[label] = patches
+            for idx, rect in enumerate(patches):
+                try:
+                    rect.set_picker(True)
+                except Exception:
+                    pass
+                row = rows_for_bars[idx] if idx < len(rows_for_bars) else None
+                if row is None:
+                    continue
+                pick_map[rect] = {
+                    "rows": [row],
+                    "xs": [float(row.get("x_value", 0.0) or 0.0)],
+                    "ys": [float(row.get(y_key, 0.0) or 0.0)],
+                }
+
+        ax.set_xticks(centers)
+        ax.set_xticklabels(dataset_labels, rotation=25, ha="right")
+        ax.set_xlabel("Dataset")
+        if metric == "runtime":
+            ax.set_ylabel("Runtime (ms)")
+            ax.set_title("Runtime by Dataset")
+        else:
+            ax.set_ylabel("Peak Child Process Memory (KiB)")
+            ax.set_title("Peak Child Process Memory by Dataset")
+        if centers:
+            ax.set_xlim(min(centers) - 0.6, max(centers) + 0.6)
+        try:
+            if use_log_y:
+                ax.set_yscale("log")
+        except Exception:
+            pass
+        ax.grid(True, axis="y", linestyle="--", linewidth=0.5, alpha=0.5)
+
+        handles, legend_labels = ax.get_legend_handles_labels()
+        legend_entry_map: dict[str, dict] = {}
+        all_series_artists = []
+        if handles:
+            ncols = 1 if len(handles) <= 3 else 2
+            legend_title = "Error bars: +/-1 SD" if show_stddev else None
+            legend = ax.legend(
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.22),
+                ncol=ncols,
+                fontsize=8,
+                title=legend_title,
+            )
+            legend_texts = list(legend.get_texts())
+            legend_handles = list(getattr(legend, "legend_handles", []) or getattr(legend, "legendHandles", []) or [])
+            for idx, label in enumerate(legend_labels):
+                data_artists = list(series_artist_map.get(label, []))
+                if not data_artists:
+                    continue
+                legend_artists = []
+                if idx < len(legend_handles):
+                    legend_artists.append(legend_handles[idx])
+                if idx < len(legend_texts):
+                    legend_artists.append(legend_texts[idx])
+                legend_entry_map[label] = {
+                    "legend_artists": legend_artists,
+                    "data_artists": data_artists,
+                }
+                all_series_artists.extend(data_artists)
+            fig.tight_layout(rect=(0.0, 0.08, 1.0, 1.0))
+        else:
+            fig.tight_layout()
+
+        if all_series_artists:
+            deduped_all = []
+            seen_ids: set[int] = set()
+            for artist in all_series_artists:
+                artist_id = id(artist)
+                if artist_id in seen_ids:
+                    continue
+                seen_ids.add(artist_id)
+                deduped_all.append(artist)
+            setattr(
+                fig,
+                "_legend_hover_state",
+                {
+                    "entries": legend_entry_map,
+                    "all_artists": deduped_all,
+                    "active_label": None,
+                },
+            )
+        else:
+            setattr(fig, "_legend_hover_state", None)
+        setattr(fig, "_drilldown_pick_map", pick_map)
+        setattr(fig, "_drilldown_metric", metric)
+        return fig
+
+    def _make_metric_2d_figure(self, payload: dict, metric: str, datapoints: list[dict]):
+        config = payload["run_config"]
+        if str(config.get("input_mode") or "independent").strip().lower() == "datasets":
+            return self._make_dataset_metric_bar_figure(payload, metric, datapoints)
+        fig = Figure(figsize=(7.5, 5.0), dpi=100)
+        ax = fig.add_subplot(111)
         primary_var = config["primary_variable"]
         secondary_var = config["secondary_variable"]
         x_values_full = list(config["var_ranges"].get(primary_var, []))
@@ -5846,12 +7594,16 @@ class BenchmarkRunnerApp(tk.Tk):
             if not contains:
                 continue
             inds = list((info or {}).get("ind", []) or [])
-            if not inds:
-                continue
-            idx = int(inds[0])
             rows = list(payload.get("rows", []))
             xs = list(payload.get("xs", []))
             ys = list(payload.get("ys", []))
+            if not inds:
+                if len(rows) == 1:
+                    idx = 0
+                else:
+                    continue
+            else:
+                idx = int(inds[0])
             if idx < 0 or idx >= len(rows):
                 continue
             x_val = float(xs[idx]) if idx < len(xs) else float(rows[idx].get("x_value", 0.0))
@@ -6806,6 +8558,10 @@ class BenchmarkRunnerApp(tk.Tk):
         if not isinstance(run_config, dict):
             if not auto:
                 messagebox.showwarning(APP_TITLE, "Run config is unavailable for this benchmark payload.")
+            return
+        if str(run_config.get("input_mode") or "independent").strip().lower() == "datasets":
+            if not auto:
+                messagebox.showwarning(APP_TITLE, "Visualizer is currently available for generated-input runs only.")
             return
         selected_point = self._selected_visualizer_point(run_config)
         if not selected_point:

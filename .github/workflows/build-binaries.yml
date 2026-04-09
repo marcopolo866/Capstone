@@ -25,6 +25,13 @@ jobs:
           set -euo pipefail
           python3 -m unittest discover -s tests -p "test_*.py" -v
 
+      - name: Run C++ oracle/property tests (CMake/CTest)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/cmake -DCAPSTONE_BUILD_SOLVERS=OFF
+          cmake --build build/cmake --target capstone_graph_oracle_tests --config Release
+          ctest --test-dir build/cmake -C Release -R capstone_graph_oracle_tests --output-on-failure
+
       - name: Write binary manifest
         run: |
           set -euo pipefail

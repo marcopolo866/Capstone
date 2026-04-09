@@ -1,0 +1,179 @@
+﻿{
+  "schema_version": 1,
+  "datasets": [
+    {
+      "dataset_id": "subgraph_sip_full",
+      "name": "SIP Full Archive",
+      "tab_id": "subgraph",
+      "source": "SIP Benchmarks (Solnon)",
+      "source_url": "https://perso.citi-lab.fr/csolnon/SIP.html",
+      "raw_format": "TGZ archive of subgraph benchmark suites",
+      "description": "Large benchmark archive containing multiple subgraph isomorphism suites (si, scalefree, image, mesh, etc.).",
+      "estimated_size_bytes": 27882629,
+      "estimated_graph_files": 8294,
+      "estimated_pair_count": 1170,
+      "download": {
+        "kind": "single_file",
+        "url": "http://perso.citi-lab.fr/csolnon/newSIPbenchmarks.tgz",
+        "relative_path": "raw/newSIPbenchmarks.tgz"
+      },
+      "prepare": {
+        "kind": "subgraph_pair_from_tgz_members",
+        "archive_relative_path": "raw/newSIPbenchmarks.tgz",
+        "pattern_member": "newSIPbenchmarks/si/si2_bvg_b03m_200/si2_b03m_m200.04/pattern",
+        "target_member": "newSIPbenchmarks/si/si2_bvg_b03m_200/si2_b03m_m200.04/target"
+      }
+    },
+    {
+      "dataset_id": "subgraph_mivia_arg",
+      "name": "MIVIA ARG Database",
+      "tab_id": "subgraph",
+      "source": "MIVIA",
+      "source_url": "https://mivia.unisa.it/datasets/graph-database/arg-database/",
+      "raw_format": "ZIP archive (binary graph files + gtr files)",
+      "description": "Large ARG benchmark collection (binary format). Downloaded and retained locally; conversion to runner formats is currently not automated.",
+      "estimated_size_bytes": 418262348,
+      "estimated_graph_files": 143600,
+      "estimated_pair_count": 168000,
+      "download": {
+        "kind": "single_file",
+        "url": "https://mivia.unisa.it/database/graphsdb.zip",
+        "relative_path": "raw/graphsdb.zip"
+      },
+      "prepare": {
+        "kind": "download_only",
+        "note": "Binary ARG format is not yet auto-converted by this runner."
+      }
+    },
+    {
+      "dataset_id": "subgraph_practical_bigraphs",
+      "name": "Practical Bigraphs (Zenodo)",
+      "tab_id": "subgraph",
+      "source": "Zenodo",
+      "source_url": "https://zenodo.org/records/4597074",
+      "raw_format": "TAR.XZ archive",
+      "description": "Practical Bigraphs benchmark archive (11,176 instances). Downloaded and retained locally; conversion to runner formats is currently not automated.",
+      "estimated_size_bytes": 14312140,
+      "estimated_graph_files": 11176,
+      "estimated_pair_count": 11176,
+      "download": {
+        "kind": "single_file",
+        "url": "https://zenodo.org/records/4597074/files/instances.tar.xz?download=1",
+        "relative_path": "raw/instances.tar.xz"
+      },
+      "prepare": {
+        "kind": "download_only",
+        "note": "Bigraph archive format is not yet auto-converted by this runner."
+      }
+    },
+    {
+      "dataset_id": "shortest_dimacs_usa_road_d",
+      "name": "DIMACS USA-road-d",
+      "tab_id": "shortest_path",
+      "source": "DIMACS Challenge 9",
+      "source_url": "https://www.diag.uniroma1.it/challenge9/download.shtml",
+      "raw_format": "DIMACS .gr.gz",
+      "description": "Full USA road network from DIMACS challenge data (directed, weighted arcs).",
+      "estimated_size_bytes": 351265214,
+      "estimated_graph_files": 1,
+      "estimated_pair_count": 1,
+      "download": {
+        "kind": "single_file",
+        "url": "https://www.diag.uniroma1.it/challenge9/data/USA-road-d/USA-road-d.USA.gr.gz",
+        "relative_path": "raw/USA-road-d.USA.gr.gz"
+      },
+      "prepare": {
+        "kind": "shortest_path_csv_from_dimacs_gr_gz",
+        "source_relative_path": "raw/USA-road-d.USA.gr.gz"
+      }
+    },
+    {
+      "dataset_id": "shortest_snap_roadnet_ca",
+      "name": "SNAP roadNet-CA",
+      "tab_id": "shortest_path",
+      "source": "SNAP",
+      "source_url": "https://snap.stanford.edu/data/roadNet-CA.html",
+      "raw_format": "Edge-list .txt.gz",
+      "description": "California road network graph from SNAP.",
+      "estimated_size_bytes": 17892860,
+      "estimated_graph_files": 1,
+      "estimated_pair_count": 1,
+      "download": {
+        "kind": "single_file",
+        "url": "https://snap.stanford.edu/data/roadNet-CA.txt.gz",
+        "relative_path": "raw/roadNet-CA.txt.gz"
+      },
+      "prepare": {
+        "kind": "shortest_path_csv_from_edge_list_gz",
+        "source_relative_path": "raw/roadNet-CA.txt.gz",
+        "assume_undirected": true
+      }
+    },
+    {
+      "dataset_id": "shortest_snap_roadnet_tx",
+      "name": "SNAP roadNet-TX",
+      "tab_id": "shortest_path",
+      "source": "SNAP",
+      "source_url": "https://snap.stanford.edu/data/roadNet-TX.html",
+      "raw_format": "Edge-list .txt.gz",
+      "description": "Texas road network graph from SNAP.",
+      "estimated_size_bytes": 12442024,
+      "estimated_graph_files": 1,
+      "estimated_pair_count": 1,
+      "download": {
+        "kind": "single_file",
+        "url": "https://snap.stanford.edu/data/roadNet-TX.txt.gz",
+        "relative_path": "raw/roadNet-TX.txt.gz"
+      },
+      "prepare": {
+        "kind": "shortest_path_csv_from_edge_list_gz",
+        "source_relative_path": "raw/roadNet-TX.txt.gz",
+        "assume_undirected": true
+      }
+    },
+    {
+      "dataset_id": "shortest_snap_wiki_talk",
+      "name": "SNAP Wiki-Talk",
+      "tab_id": "shortest_path",
+      "source": "SNAP",
+      "source_url": "https://snap.stanford.edu/data/wiki-Talk.html",
+      "raw_format": "Edge-list .txt.gz",
+      "description": "Wikipedia user talk network from SNAP (directed).",
+      "estimated_size_bytes": 16947922,
+      "estimated_graph_files": 1,
+      "estimated_pair_count": 1,
+      "download": {
+        "kind": "single_file",
+        "url": "https://snap.stanford.edu/data/wiki-Talk.txt.gz",
+        "relative_path": "raw/wiki-Talk.txt.gz"
+      },
+      "prepare": {
+        "kind": "shortest_path_csv_from_edge_list_gz",
+        "source_relative_path": "raw/wiki-Talk.txt.gz",
+        "assume_undirected": false
+      }
+    },
+    {
+      "dataset_id": "shortest_snap_livejournal",
+      "name": "SNAP LiveJournal",
+      "tab_id": "shortest_path",
+      "source": "SNAP",
+      "source_url": "https://snap.stanford.edu/data/com-LiveJournal.html",
+      "raw_format": "Edge-list .txt.gz",
+      "description": "Large LiveJournal social graph from SNAP.",
+      "estimated_size_bytes": 124262769,
+      "estimated_graph_files": 1,
+      "estimated_pair_count": 1,
+      "download": {
+        "kind": "single_file",
+        "url": "https://snap.stanford.edu/data/bigdata/communities/com-lj.ungraph.txt.gz",
+        "relative_path": "raw/com-lj.ungraph.txt.gz"
+      },
+      "prepare": {
+        "kind": "shortest_path_csv_from_edge_list_gz",
+        "source_relative_path": "raw/com-lj.ungraph.txt.gz",
+        "assume_undirected": true
+      }
+    }
+  ]
+}

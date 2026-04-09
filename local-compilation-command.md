@@ -1,6 +1,7 @@
 # Local Compilation Command
 
 Run from the repository root. These scripts compile the binaries used by the current native benchmarking / GitHub artifact pipeline outputs.
+Native builds enforce `-std=c++20` for project solvers/baselines.
 
 ## Prerequisites
 

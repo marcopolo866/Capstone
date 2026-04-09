@@ -30,6 +30,16 @@ Both scripts:
 - initialize submodules
 - build baseline + LLM binaries
 - run Glasgow parity checks
+- run subgraph witness-mapping correctness checks
+
+## 1b. Optional CMake Build Path (C++20)
+
+```bash
+cmake -S . -B build/cmake
+cmake --build build/cmake --parallel
+```
+
+The root `CMakeLists.txt` enforces `CMAKE_CXX_STANDARD=20` and exposes CTest targets for oracle/property tests.
 
 ## 2. Run Automated Regression Tests
 

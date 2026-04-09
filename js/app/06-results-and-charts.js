@@ -470,9 +470,9 @@
 
         function renderStatisticalTests(result) {
             const statsPanel = document.getElementById('stats-panel');
-            const statsGrid = document.getElementById('stats-grid');
-            if (!statsPanel || !statsGrid) return;
-            statsGrid.replaceChildren();
+            const statsHost = document.getElementById('stats-grid');
+            if (!statsPanel || !statsHost) return;
+            statsHost.replaceChildren();
 
             const block = result && result.statistical_tests && typeof result.statistical_tests === 'object'
                 ? result.statistical_tests
@@ -482,6 +482,40 @@
                 statsPanel.hidden = true;
                 return;
             }
+
+            const alphaRaw = block && Number.isFinite(Number(block.alpha)) ? Number(block.alpha) : 0.05;
+            const alpha = alphaRaw > 0 ? alphaRaw : 0.05;
+            const tableWrap = document.createElement('div');
+            tableWrap.className = 'stats-table-wrap';
+            const table = document.createElement('table');
+            table.className = 'stats-table';
+
+            const thead = document.createElement('thead');
+            const headRow = document.createElement('tr');
+            [
+                'Variant',
+                'Baseline',
+                'N',
+                'p-value',
+                'Significance',
+                'Direction',
+                'Mean Delta (ms)',
+                '95% CI Delta (ms)',
+                'Hedges g',
+                "Cliff's delta",
+                'Mode'
+            ].forEach((label) => {
+                const th = document.createElement('th');
+                th.textContent = label;
+                headRow.appendChild(th);
+            });
+            thead.appendChild(headRow);
+            table.appendChild(thead);
+
+            const tbody = document.createElement('tbody');
+            let inserted = 0;
+            let significantCount = 0;
+            let insufficientCount = 0;
 
             for (const raw of rows) {
                 const row = raw && typeof raw === 'object' ? raw : null;
@@ -497,37 +531,76 @@
                 const pValue = paired.p_value_two_sided;
                 const meanDelta = row.mean_delta_ms;
                 const direction = String(row.direction || 'n/a');
-
-                const card = document.createElement('article');
-                card.className = 'stats-card';
-
-                const title = document.createElement('h4');
-                title.className = 'stats-card-title';
-                title.textContent = `${variantLabel} vs ${baselineLabel}`;
-
-                const subtitle = document.createElement('div');
-                subtitle.className = 'stats-card-subtitle';
-                subtitle.textContent = `Mode: ${mode} | Matched samples: ${n}`;
-
-                const list = document.createElement('div');
-                list.className = 'stats-card-metrics';
                 const ciLow = ci.low;
                 const ciHigh = ci.high;
-                list.innerHTML = [
-                    `<div><strong>Mean delta:</strong> ${formatStatNumber(meanDelta, 3)} ms (${direction})</div>`,
-                    `<div><strong>t-test p-value:</strong> ${formatStatNumber(pValue, 6)}</div>`,
-                    `<div><strong>95% CI (delta):</strong> [${formatStatNumber(ciLow, 3)}, ${formatStatNumber(ciHigh, 3)}] ms</div>`,
-                    `<div><strong>Hedges g:</strong> ${formatStatNumber(effects.hedges_g, 4)}</div>`,
-                    `<div><strong>Cliff's delta:</strong> ${formatStatNumber(effects.cliffs_delta, 4)}</div>`
-                ].join('');
+                const pFinite = Number.isFinite(Number(pValue));
+                let significanceClass = 'stats-significance-ns';
+                let significanceText = `Not significant (p >= ${alpha.toFixed(3)})`;
+                if (n < 2 || !pFinite) {
+                    significanceClass = 'stats-significance-insufficient';
+                    significanceText = 'Insufficient data';
+                    insufficientCount += 1;
+                } else if (Number(pValue) < alpha) {
+                    significanceClass = 'stats-significance-significant';
+                    significanceText = `Significant (p < ${alpha.toFixed(3)})`;
+                    significantCount += 1;
+                }
 
-                card.appendChild(title);
-                card.appendChild(subtitle);
-                card.appendChild(list);
-                statsGrid.appendChild(card);
+                const tr = document.createElement('tr');
+                tr.className = significanceClass;
+
+                const cells = [
+                    variantLabel,
+                    baselineLabel,
+                    String(n),
+                    formatStatNumber(pValue, 6),
+                    significanceText,
+                    direction,
+                    formatStatNumber(meanDelta, 3),
+                    `[${formatStatNumber(ciLow, 3)}, ${formatStatNumber(ciHigh, 3)}]`,
+                    formatStatNumber(effects.hedges_g, 4),
+                    formatStatNumber(effects.cliffs_delta, 4),
+                    mode
+                ];
+                cells.forEach((value) => {
+                    const td = document.createElement('td');
+                    td.textContent = value;
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+                inserted += 1;
             }
 
-            statsPanel.hidden = !statsGrid.children.length;
+            if (!inserted) {
+                statsPanel.hidden = true;
+                return;
+            }
+
+            table.appendChild(tbody);
+            tableWrap.appendChild(table);
+            statsHost.appendChild(tableWrap);
+
+            const blurb = statsPanel.querySelector('.stats-blurb');
+            if (blurb) {
+                const nonSignificantCount = Math.max(0, inserted - significantCount - insufficientCount);
+                blurb.textContent = [
+                    `Comparisons: ${inserted}.`,
+                    `Significant (p < ${alpha.toFixed(3)}): ${significantCount}.`,
+                    `Not significant: ${nonSignificantCount}.`,
+                    `Insufficient: ${insufficientCount}.`
+                ].join(' ');
+            }
+
+            const legend = statsPanel.querySelector('.stats-legend');
+            if (legend) {
+                legend.innerHTML = [
+                    '<span class="stats-legend-item stats-significance-significant"><strong>Significant</strong>: p-value below alpha</span>',
+                    '<span class="stats-legend-item stats-significance-ns"><strong>Not significant</strong>: p-value at/above alpha</span>',
+                    '<span class="stats-legend-item stats-significance-insufficient"><strong>Insufficient</strong>: too few samples or missing p-value</span>'
+                ].join('');
+            }
+
+            statsPanel.hidden = false;
         }
 
         function renderExportButtons(result) {

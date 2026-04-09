@@ -865,7 +865,7 @@ def make_mode_commands(row: SolverRow, inputs: dict[str, Path], via_label: str) 
             }
         base = [str(binary), str(inputs["lad_pattern"]), str(inputs["lad_target"])]
         return {
-            "first": base,
+            "first": [*base, "--print-mappings"],
             "all": list(base),
         }
     raise RuntimeError(f"Unsupported family: {row.family}")
@@ -1148,6 +1148,77 @@ def normalize_mappings(
         if len(out) >= max_items:
             break
     return out
+
+
+def undirected_edge_set(adj: list[list[int]]) -> set[tuple[int, int]]:
+    edges: set[tuple[int, int]] = set()
+    for u, neighbors in enumerate(adj):
+        for v in neighbors:
+            ek = edge_key(u, v)
+            if ek is not None:
+                edges.add(ek)
+    return edges
+
+
+def is_valid_subgraph_witness_mapping(
+    pattern_adj: list[list[int]],
+    target_adj: list[list[int]],
+    mapping: dict[int, int],
+) -> bool:
+    pattern_n = len(pattern_adj)
+    target_n = len(target_adj)
+    if pattern_n <= 0 or target_n <= 0:
+        return False
+    if len(mapping) < pattern_n:
+        return False
+
+    normalized: dict[int, int] = {}
+    used_targets: set[int] = set()
+    for p in range(pattern_n):
+        raw_t = mapping.get(p)
+        if raw_t is None:
+            return False
+        try:
+            t = int(raw_t)
+        except (TypeError, ValueError):
+            return False
+        if t < 0 or t >= target_n:
+            return False
+        if t in used_targets:
+            return False
+        used_targets.add(t)
+        normalized[p] = t
+
+    target_edges = undirected_edge_set(target_adj)
+    for u, neighbors in enumerate(pattern_adj):
+        for v in neighbors:
+            ek_pattern = edge_key(u, v)
+            if ek_pattern is None:
+                continue
+            tu = normalized.get(u)
+            tv = normalized.get(v)
+            if tu is None or tv is None:
+                return False
+            ek_target = edge_key(tu, tv)
+            if ek_target is None or ek_target not in target_edges:
+                return False
+    return True
+
+
+def evaluate_witness_mapping_output(
+    output_text: str,
+    *,
+    pattern_adj: list[list[int]],
+    target_adj: list[list[int]],
+    limit: int = 64,
+) -> tuple[bool, int, int]:
+    parsed = extract_mappings_from_text(output_text, limit=limit)
+    normalized = normalize_mappings(parsed, len(pattern_adj), len(target_adj), limit=limit)
+    valid = 0
+    for mapping in normalized:
+        if is_valid_subgraph_witness_mapping(pattern_adj, target_adj, mapping):
+            valid += 1
+    return (valid > 0), len(normalized), valid
 
 
 def find_subgraph_mappings(
@@ -1535,6 +1606,7 @@ def main() -> int:
     memory_kb: dict[str, int] = {}
     memory_kb_stdev: dict[str, int] = {}
     match_counts: dict[str, dict] = {}
+    witness_counts: dict[str, dict] = {}
     statistical_tests: dict = {"metric": "runtime_ms", "alpha": 0.05, "pairs": [], "notes": []}
     variant_metadata: list[dict] = []
     output_lines: list[str] = []
@@ -1830,6 +1902,76 @@ def main() -> int:
                 key = row.variant_id
             match_counts[key] = {"matches": matches, "total": total, "mismatches": mismatches}
 
+        if selected_family == "glasgow":
+            graph_cache: dict[int, tuple[list[list[int]], list[list[int]]]] = {}
+
+            def get_iteration_lad_graphs(iteration_idx: int) -> tuple[list[list[int]], list[list[int]]]:
+                cached = graph_cache.get(iteration_idx)
+                if cached is not None:
+                    return cached
+                inputs = per_iteration_inputs[iteration_idx]
+                pattern_path = Path(inputs["lad_pattern"])
+                target_path = Path(inputs["lad_target"])
+                pattern_adj = parse_lad_graph(pattern_path)
+                target_adj = parse_lad_graph(target_path)
+                cached = (pattern_adj, target_adj)
+                graph_cache[iteration_idx] = cached
+                return cached
+
+            total_iterations = min(iterations, len(per_iteration_inputs))
+            for row in by_role:
+                if row.role == "baseline":
+                    continue
+                key = row.llm_key or row.variant_id
+                if algorithm_input == "subgraph":
+                    key = row.variant_id
+
+                first_outputs = list(per_solver_outputs.get((row.variant_id, "first"), []))
+                all_outputs = list(per_solver_outputs.get((row.variant_id, "all"), []))
+
+                required = 0
+                valid = 0
+                parsed = 0
+                missing_iterations: list[int] = []
+                errors: list[str] = []
+
+                for i in range(total_iterations):
+                    first_text = first_outputs[i] if i < len(first_outputs) else ""
+                    all_text = all_outputs[i] if i < len(all_outputs) else first_text
+                    count = parse_solution_count(all_text)
+                    if count is None:
+                        count = parse_solution_count(first_text)
+                    if count is None or count <= 0:
+                        continue
+
+                    required += 1
+                    try:
+                        pattern_adj, target_adj = get_iteration_lad_graphs(i)
+                        has_valid, parsed_now, _valid_now = evaluate_witness_mapping_output(
+                            first_text,
+                            pattern_adj=pattern_adj,
+                            target_adj=target_adj,
+                            limit=64,
+                        )
+                        parsed += int(parsed_now)
+                        if has_valid:
+                            valid += 1
+                        else:
+                            missing_iterations.append(i + 1)
+                    except Exception as exc:
+                        missing_iterations.append(i + 1)
+                        errors.append(f"iteration {i + 1}: {exc}")
+
+                witness_counts[key] = {
+                    "valid": valid,
+                    "required": required,
+                    "missing": max(0, required - valid),
+                    "parsed_mappings": parsed,
+                    "missing_iterations": missing_iterations,
+                }
+                if errors:
+                    witness_counts[key]["errors"] = errors
+
         statistical_tests = build_runtime_statistical_tests(
             by_role=by_role,
             baseline_row=baseline_row,
@@ -1951,6 +2093,25 @@ def main() -> int:
                                 f"{matched}/{total} matched ({mismatches} mismatches)",
                             )
                         )
+                    witness_row = witness_counts.get(match_key)
+                    if isinstance(witness_row, dict):
+                        witness_valid = witness_row.get("valid", "n/a")
+                        witness_required = witness_row.get("required", "n/a")
+                        witness_missing = witness_row.get("missing", "n/a")
+                        output_lines.append(
+                            fmt_labeled_value(
+                                "Witness mapping",
+                                f"{witness_valid}/{witness_required} valid ({witness_missing} missing)",
+                            )
+                        )
+                        missing_iters = witness_row.get("missing_iterations")
+                        if isinstance(missing_iters, list) and missing_iters:
+                            output_lines.append(
+                                fmt_labeled_value(
+                                    "Witness missing Iters",
+                                    ",".join(str(int(x)) for x in missing_iters[:12]),
+                                )
+                            )
                 output_lines.append(
                     fmt_labeled_median_stdev(
                         "Runtime First (ms)",
@@ -2034,6 +2195,7 @@ def main() -> int:
         "MEMORY_KB_JSON": json.dumps(memory_kb, separators=(",", ":"), sort_keys=True),
         "MEMORY_KB_STDEV_JSON": json.dumps(memory_kb_stdev, separators=(",", ":"), sort_keys=True),
         "MATCH_COUNTS_JSON": json.dumps(match_counts, separators=(",", ":"), sort_keys=True),
+        "WITNESS_COUNTS_JSON": json.dumps(witness_counts, separators=(",", ":"), sort_keys=True),
         "STATISTICAL_TESTS_JSON": json.dumps(statistical_tests, separators=(",", ":"), sort_keys=True),
         "VARIANT_METADATA_JSON": json.dumps(variant_metadata, separators=(",", ":"), sort_keys=True),
     }

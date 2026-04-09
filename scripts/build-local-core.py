@@ -97,21 +97,50 @@ def ensure_valid_temp_env(env: dict[str, str]) -> Path:
     return fallback
 
 
+def _compiler_can_compile_cpp(gpp_path: Path) -> bool:
+    try:
+        with tempfile.TemporaryDirectory(prefix="capstone-gpp-probe-") as tmp:
+            tmp_dir = Path(tmp)
+            src = tmp_dir / "probe.cpp"
+            out = tmp_dir / "probe.o"
+            src.write_text("int main() { return 0; }\n", encoding="utf-8")
+            completed = subprocess.run(
+                [str(gpp_path), "-std=c++20", "-c", str(src), "-o", str(out)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            return completed.returncode == 0 and out.is_file()
+    except OSError:
+        return False
+
+
 def prefer_msys2_toolchain(env: dict[str, str]) -> None:
     if os.name != "nt":
         return
     msys_mingw_bin = Path(r"C:\msys64\mingw64\bin")
     msys_usr_bin = Path(r"C:\msys64\usr\bin")
-    if not (msys_mingw_bin / "g++.exe").is_file():
+    msys_gpp = msys_mingw_bin / "g++.exe"
+    if not msys_gpp.is_file():
         return
+
     current_gpp = shutil.which("g++", path=env.get("PATH")) or ""
     if current_gpp:
         try:
-            resolved = str(Path(current_gpp).resolve())
+            current_resolved = Path(current_gpp).resolve()
         except OSError:
-            resolved = current_gpp
-        if resolved.lower().startswith(str(msys_mingw_bin).lower()):
+            current_resolved = Path(current_gpp)
+        if str(current_resolved).lower().startswith(str(msys_mingw_bin).lower()):
             return
+        if _compiler_can_compile_cpp(current_resolved):
+            return
+
+    if not _compiler_can_compile_cpp(msys_gpp):
+        print(f"Skipping MSYS2 MinGW toolchain preference; compiler probe failed for {msys_gpp}")
+        return
+
     print(f"Preferring MSYS2 MinGW toolchain from {msys_mingw_bin}")
     prepend_path(env, str(msys_usr_bin))
     prepend_path(env, str(msys_mingw_bin))
@@ -378,7 +407,7 @@ def compile_discovered_variants_for_family(catalog: dict, family: str, env: dict
         suppress_diagnostics = env_truthy(env.get("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS", ""))
         compile_flags = [
             "g++",
-            "-std=c++17",
+            "-std=c++20",
             "-O3",
         ]
         if suppress_diagnostics:
@@ -534,6 +563,29 @@ def maybe_run_glasgow_parity_check(python_exe: str, env: dict[str, str]) -> None
     run_step("Checking Glasgow parity", lambda: run_cmd([python_exe, "scripts/check-glasgow-parity.py"], env=env))
 
 
+def maybe_run_subgraph_witness_check(python_exe: str, env: dict[str, str]) -> None:
+    baseline = resolve_binary_path("baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver")
+    if not baseline:
+        print()
+        print("==> Skipping subgraph witness correctness check (missing Glasgow baseline binary)")
+        return
+
+    optional = [
+        resolve_binary_path("src/glasgow_chatgpt"),
+        resolve_binary_path("src/glasgow_gemini"),
+        resolve_binary_path("src/glasgow_claude"),
+    ]
+    if not any(optional):
+        print()
+        print("==> Skipping subgraph witness correctness check (no Glasgow LLM binaries found)")
+        return
+
+    run_step(
+        "Checking subgraph witness correctness",
+        lambda: run_cmd([python_exe, "scripts/check-subgraph-witness-correctness.py"], env=env),
+    )
+
+
 def maybe_run_sp_via_correctness_check(python_exe: str, env: dict[str, str]) -> None:
     baseline = resolve_binary_path("baselines/via_dijkstra")
     if not baseline:
@@ -629,7 +681,7 @@ def main() -> int:
         lambda: run_cmd(
             [
                 "g++",
-                "-std=c++17",
+                "-std=c++20",
                 "-O3",
                 *([] if not suppress_diagnostics else ["-w"]),
                 *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
@@ -647,7 +699,7 @@ def main() -> int:
         lambda: run_cmd(
             [
                 "g++",
-                "-std=c++17",
+                "-std=c++20",
                 "-O3",
                 *([] if not suppress_diagnostics else ["-w"]),
                 *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
@@ -665,7 +717,7 @@ def main() -> int:
         lambda: run_cmd(
             [
                 "g++",
-                "-std=c++17",
+                "-std=c++20",
                 "-O3",
                 *([] if not suppress_diagnostics else ["-w"]),
                 *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
@@ -681,7 +733,7 @@ def main() -> int:
         lambda: run_cmd(
             [
                 "g++",
-                "-std=c++17",
+                "-std=c++20",
                 "-O3",
                 *([] if not suppress_diagnostics else ["-w"]),
                 *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
@@ -778,6 +830,12 @@ def main() -> int:
         print("==> Skipping Glasgow parity check (BUILD_LOCAL_FAST=1)")
     else:
         maybe_run_glasgow_parity_check(python_exe, env)
+
+    if fast_mode:
+        print()
+        print("==> Skipping subgraph witness correctness check (BUILD_LOCAL_FAST=1)")
+    else:
+        maybe_run_subgraph_witness_check(python_exe, env)
 
     verify_expected_outputs(
         catalog,
