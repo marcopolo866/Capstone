@@ -112,19 +112,15 @@
             const iterationsEl = document.getElementById('iterations');
             const warmupEl = document.getElementById('warmup');
             const iterationsRaw = iterationsEl ? String(iterationsEl.value || '').trim() : '';
-            const warmupRaw = warmupEl ? String(warmupEl.value || '').trim() : '';
             let iterations = 1;
             if (iterationsRaw) {
                 const parsed = parseInt(iterationsRaw, 10);
                 if (Number.isFinite(parsed) && parsed >= 1) iterations = parsed;
             }
 
-            let warmup = 0;
-            if (warmupRaw) {
-                const parsed = parseInt(warmupRaw, 10);
-                if (Number.isFinite(parsed) && parsed >= 0) warmup = parsed;
-            }
-            if (warmup > 50) warmup = 50;
+            // Force no warmup for website runs.
+            const warmup = 0;
+            if (warmupEl) warmupEl.value = '0';
 
             const branchRef = config.ref || 'main';
             runCtx.branchRef = branchRef;
