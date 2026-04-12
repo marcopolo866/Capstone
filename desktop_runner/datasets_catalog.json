@@ -31,7 +31,7 @@
       "source": "MIVIA",
       "source_url": "https://mivia.unisa.it/datasets/graph-database/arg-database/",
       "raw_format": "ZIP archive (binary graph files + gtr files)",
-      "description": "Large ARG benchmark collection (binary format). Downloaded and retained locally; conversion to runner formats is currently not automated.",
+      "description": "Large ARG benchmark collection (binary format). A representative non-induced subgraph pair is converted on demand after download.",
       "estimated_size_bytes": 418262348,
       "estimated_graph_files": 143600,
       "estimated_pair_count": 168000,
@@ -41,8 +41,10 @@
         "relative_path": "raw/graphsdb.zip"
       },
       "prepare": {
-        "kind": "download_only",
-        "note": "Binary ARG format is not yet auto-converted by this runner."
+        "kind": "subgraph_pair_from_mivia_archive",
+        "archive_relative_path": "raw/graphsdb.zip",
+        "inner_zip_prefix": "si2_",
+        "labeled": false
       }
     },
     {
@@ -52,7 +54,7 @@
       "source": "Zenodo",
       "source_url": "https://zenodo.org/records/4597074",
       "raw_format": "TAR.XZ archive",
-      "description": "Practical Bigraphs benchmark archive (11,176 instances). Downloaded and retained locally; conversion to runner formats is currently not automated.",
+      "description": "Practical Bigraphs benchmark archive (11,176 instances). A representative non-induced subgraph pair is converted on demand after download.",
       "estimated_size_bytes": 14312140,
       "estimated_graph_files": 11176,
       "estimated_pair_count": 11176,
@@ -62,8 +64,9 @@
         "relative_path": "raw/instances.tar.xz"
       },
       "prepare": {
-        "kind": "download_only",
-        "note": "Bigraph archive format is not yet auto-converted by this runner."
+        "kind": "subgraph_pair_from_bigraph_archive",
+        "archive_relative_path": "raw/instances.tar.xz",
+        "instances_member": "instances/savannah_instances.txt"
       }
     },
     {

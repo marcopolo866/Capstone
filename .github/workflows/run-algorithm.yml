@@ -70,7 +70,7 @@ on:
 
 jobs:
   run-algorithm:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       ALGORITHM_INPUT: ${{ github.event.inputs.algorithm || github.event.client_payload.algorithm }}
       ITERATIONS_INPUT: ${{ github.event.inputs.iterations || github.event.client_payload.iterations }}

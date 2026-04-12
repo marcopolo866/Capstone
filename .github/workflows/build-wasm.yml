@@ -16,7 +16,7 @@ jobs:
   build-wasm:
     # Prevent infinite loops when this workflow commits WASM artifacts back to the repo.
     if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -41,8 +41,8 @@ jobs:
             git clone https://github.com/emscripten-core/emsdk.git emsdk
           fi
           cd emsdk
-          ./emsdk install latest
-          ./emsdk activate latest
+          ./emsdk install 5.0.5
+          ./emsdk activate 5.0.5
 
       - name: Build VF3 WASM modules
         run: |

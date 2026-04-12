@@ -1,0 +1,201 @@
+﻿name: Benchmark CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_os:
+        description: Runner image
+        required: true
+        type: choice
+        default: windows-2022
+        options:
+          - windows-2022
+          - ubuntu-24.04
+          - macos-14
+      manifest_path:
+        description: Repo-relative manifest path (optional)
+        required: false
+        type: string
+        default: ''
+      preset:
+        description: Benchmark preset
+        required: false
+        type: choice
+        default: standard
+        options:
+          - smoke
+          - standard
+          - full
+      tab_id:
+        description: Benchmark tab
+        required: false
+        type: choice
+        default: subgraph
+        options:
+          - subgraph
+          - shortest_path
+      input_mode:
+        description: Input mode
+        required: false
+        type: choice
+        default: independent
+        options:
+          - independent
+          - datasets
+      variants:
+        description: Comma-separated variant ids
+        required: false
+        type: string
+        default: vf3_chatgpt
+      datasets:
+        description: Comma-separated dataset ids
+        required: false
+        type: string
+        default: subgraph_sip_full
+      n_values:
+        description: Comma-separated N values
+        required: false
+        type: string
+        default: 64
+      density_values:
+        description: Comma-separated density values
+        required: false
+        type: string
+        default: 0.05
+      k_values:
+        description: Comma-separated k values (subgraph only)
+        required: false
+        type: string
+        default: 10
+      iterations:
+        description: Override iteration count
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  benchmark-cli:
+    runs-on: ${{ inputs.runner_os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSYS2 toolchain (Windows)
+        if: startsWith(inputs.runner_os, 'windows')
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            git
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-gmp
+            mingw-w64-x86_64-python
+
+      - name: Add MinGW to PATH (Windows)
+        if: startsWith(inputs.runner_os, 'windows')
+        shell: pwsh
+        run: |
+          "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+
+      - name: Install system build dependencies (Linux)
+        if: startsWith(inputs.runner_os, 'ubuntu')
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential make cmake libgmp-dev python3-tk
+
+      - name: Install system build dependencies (macOS)
+        if: startsWith(inputs.runner_os, 'macos')
+        run: |
+          set -euo pipefail
+          brew install gmp cmake ccache || true
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r desktop_runner/requirements.txt
+
+      - name: Build native binaries (Windows)
+        if: startsWith(inputs.runner_os, 'windows')
+        shell: msys2 {0}
+        run: |
+          set -o pipefail
+          export BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1
+          python scripts/build-local.py --backend sh --cmake-generator "MinGW Makefiles" --validation full 2>&1 | tee benchmark-cli-build.log
+
+      - name: Build native binaries (Linux/macOS)
+        if: ${{ !startsWith(inputs.runner_os, 'windows') }}
+        run: |
+          set -euo pipefail
+          export BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1
+          python scripts/build-local.py --backend sh --validation full 2>&1 | tee benchmark-cli-build.log
+
+      - name: Run benchmark CLI from manifest
+        if: inputs.manifest_path != ''
+        run: |
+          python scripts/benchmark-runner.py --manifest "${{ inputs.manifest_path }}" --run --out-dir benchmark_cli_output
+
+      - name: Run benchmark CLI from workflow inputs (Windows)
+        if: inputs.manifest_path == '' && startsWith(inputs.runner_os, 'windows')
+        shell: msys2 {0}
+        run: |
+          set -o pipefail
+          extra_args=()
+          if [ -n "${{ inputs.iterations }}" ]; then
+            extra_args+=(--iterations "${{ inputs.iterations }}")
+          fi
+          python scripts/benchmark-runner.py \
+            --run \
+            --preset "${{ inputs.preset }}" \
+            --tab-id "${{ inputs.tab_id }}" \
+            --input-mode "${{ inputs.input_mode }}" \
+            --variants "${{ inputs.variants }}" \
+            --datasets "${{ inputs.datasets }}" \
+            --n-values "${{ inputs.n_values }}" \
+            --density-values "${{ inputs.density_values }}" \
+            --k-values "${{ inputs.k_values }}" \
+            "${extra_args[@]}" \
+            --out-dir benchmark_cli_output
+
+      - name: Run benchmark CLI from workflow inputs (Linux/macOS)
+        if: inputs.manifest_path == '' && !startsWith(inputs.runner_os, 'windows')
+        run: |
+          set -euo pipefail
+          EXTRA_ITERATIONS=""
+          if [ -n "${{ inputs.iterations }}" ]; then
+            EXTRA_ITERATIONS="--iterations ${{ inputs.iterations }}"
+          fi
+          python scripts/benchmark-runner.py \
+            --run \
+            --preset "${{ inputs.preset }}" \
+            --tab-id "${{ inputs.tab_id }}" \
+            --input-mode "${{ inputs.input_mode }}" \
+            --variants "${{ inputs.variants }}" \
+            --datasets "${{ inputs.datasets }}" \
+            --n-values "${{ inputs.n_values }}" \
+            --density-values "${{ inputs.density_values }}" \
+            --k-values "${{ inputs.k_values }}" \
+            $EXTRA_ITERATIONS \
+            --out-dir benchmark_cli_output
+
+      - name: Upload benchmark CLI output
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-cli-output-${{ inputs.runner_os }}
+          path: benchmark_cli_output/**
+          if-no-files-found: error
+          retention-days: 30

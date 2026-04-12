@@ -10,6 +10,7 @@ import importlib.util
 import argparse
 import gzip
 import hashlib
+import io
 import json
 import math
 import os
@@ -25,6 +26,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1108,7 +1110,7 @@ DEFAULT_DATASET_CATALOG_ROWS = [
         "source": "MIVIA",
         "source_url": "https://mivia.unisa.it/datasets/graph-database/arg-database/",
         "raw_format": "ZIP archive (binary graph files + gtr files)",
-        "description": "Large ARG benchmark collection (binary format). Downloaded and retained locally; conversion to runner formats is currently not automated.",
+        "description": "Large ARG benchmark collection (binary format). A representative non-induced subgraph pair is converted on demand after download.",
         "estimated_size_bytes": 418262348,
         "estimated_graph_files": 143600,
         "estimated_pair_count": 168000,
@@ -1118,8 +1120,10 @@ DEFAULT_DATASET_CATALOG_ROWS = [
             "relative_path": "raw/graphsdb.zip",
         },
         "prepare": {
-            "kind": "download_only",
-            "note": "Binary ARG format is not yet auto-converted by this runner.",
+            "kind": "subgraph_pair_from_mivia_archive",
+            "archive_relative_path": "raw/graphsdb.zip",
+            "inner_zip_prefix": "si2_",
+            "labeled": False,
         },
     },
     {
@@ -1129,7 +1133,7 @@ DEFAULT_DATASET_CATALOG_ROWS = [
         "source": "Zenodo",
         "source_url": "https://zenodo.org/records/4597074",
         "raw_format": "TAR.XZ archive",
-        "description": "Practical Bigraphs benchmark archive (11,176 instances). Downloaded and retained locally; conversion to runner formats is currently not automated.",
+        "description": "Practical Bigraphs benchmark archive (11,176 instances). A representative non-induced subgraph pair is converted on demand after download.",
         "estimated_size_bytes": 14312140,
         "estimated_graph_files": 11176,
         "estimated_pair_count": 11176,
@@ -1139,8 +1143,9 @@ DEFAULT_DATASET_CATALOG_ROWS = [
             "relative_path": "raw/instances.tar.xz",
         },
         "prepare": {
-            "kind": "download_only",
-            "note": "Bigraph archive format is not yet auto-converted by this runner.",
+            "kind": "subgraph_pair_from_bigraph_archive",
+            "archive_relative_path": "raw/instances.tar.xz",
+            "instances_member": "instances/savannah_instances.txt",
         },
     },
     {
@@ -1653,6 +1658,36 @@ def build_binary_path_map() -> dict[str, Path]:
     return dict(_DEFAULT_BINARY_PATH_MAP)
 
 
+def _prepend_env_path(env: dict[str, str], path_value: Path | str) -> None:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return
+    current = str(env.get("PATH") or "")
+    parts = [part for part in current.split(os.pathsep) if part]
+    if os.name == "nt":
+        if any(part.lower() == raw.lower() for part in parts):
+            return
+    elif raw in parts:
+        return
+    env["PATH"] = os.pathsep.join([raw, *parts])
+
+
+def runtime_env_for_binary(binary_path: Path, base_env: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(base_env or os.environ)
+    if not sys.platform.startswith("win"):
+        return env
+    for candidate in (Path(r"C:\msys64\usr\bin"), Path(r"C:\msys64\mingw64\bin")):
+        if candidate.is_dir():
+            _prepend_env_path(env, candidate)
+    try:
+        parent = binary_path.resolve().parent
+    except OSError:
+        parent = binary_path.parent
+    if parent.is_dir():
+        _prepend_env_path(env, parent)
+    return env
+
+
 def generate_directed_edges(n: int, rng: random.Random, density: float):
     edges: dict[tuple[int, int], int] = {}
     for i in range(n - 1):
@@ -2085,11 +2120,201 @@ def _extract_member_from_tgz(archive_path: Path, member_name: str, destination: 
     destination.write_bytes(data)
 
 
+def _encode_label_tokens(pattern_tokens: list[str], target_tokens: list[str]) -> tuple[list[int], list[int]]:
+    lookup: dict[str, int] = {}
+
+    def _encode(items: list[str]) -> list[int]:
+        encoded: list[int] = []
+        for item in items:
+            token = str(item or "__node__").strip() or "__node__"
+            if token not in lookup:
+                lookup[token] = len(lookup)
+            encoded.append(int(lookup[token]))
+        return encoded
+
+    return _encode(pattern_tokens), _encode(target_tokens)
+
+
+def _decode_text_lines(blob: bytes) -> list[str]:
+    text = blob.decode("utf-8", errors="replace")
+    return [line.strip() for line in text.replace("\r", "").split("\n") if line.strip()]
+
+
+def _parse_mivia_graph_bytes(data: bytes, labeled: bool) -> tuple[list[list[int]], list[str] | None]:
+    if len(data) < 2:
+        raise RuntimeError("MIVIA graph payload is too small.")
+    words = [int.from_bytes(data[idx : idx + 2], "little", signed=False) for idx in range(0, len(data) - 1, 2)]
+    if not words:
+        raise RuntimeError("MIVIA graph payload is empty.")
+    n = int(words[0])
+    if n <= 0:
+        raise RuntimeError("MIVIA graph has an invalid node count.")
+    cursor = 1
+    labels: list[str] | None = None
+    if labeled:
+        if len(words) < 1 + n:
+            raise RuntimeError("Labeled MIVIA graph payload is truncated.")
+        labels = [f"label_{int(words[cursor + idx])}" for idx in range(n)]
+        cursor += n
+    adj: list[list[int]] = []
+    for _node in range(n):
+        if cursor >= len(words):
+            raise RuntimeError("MIVIA graph payload ended before adjacency rows were complete.")
+        degree = int(words[cursor])
+        cursor += 1
+        row: list[int] = []
+        for _edge in range(max(0, degree)):
+            if cursor >= len(words):
+                raise RuntimeError("MIVIA graph payload ended during an adjacency row.")
+            dst = int(words[cursor])
+            cursor += 1
+            row.append(dst)
+            if labeled:
+                if cursor >= len(words):
+                    raise RuntimeError("Labeled MIVIA graph payload ended during edge attributes.")
+                cursor += 1
+        adj.append(row)
+    return normalize_adj_lists(adj), labels
+
+
+def _select_mivia_pair(archive_path: Path, prepare: dict) -> tuple[list[list[int]], list[list[int]], list[str] | None, list[str] | None, dict]:
+    desired_prefix = str(prepare.get("inner_zip_prefix") or "si2_").strip().lower()
+    labeled = bool(prepare.get("labeled", False))
+    with zipfile.ZipFile(archive_path) as outer_zip:
+        names = outer_zip.namelist()
+        inner_candidates = sorted(name for name in names if name.lower().endswith(".zip"))
+        if not inner_candidates:
+            raise RuntimeError("MIVIA outer archive does not contain any inner ZIP members.")
+        inner_name = next((name for name in inner_candidates if Path(name).name.lower().startswith(desired_prefix)), inner_candidates[0])
+        stem = Path(inner_name).stem.lower()
+        gtr_name = next(
+            (
+                name
+                for name in names
+                if name.lower().endswith(".gtr") and Path(name).stem.lower() == stem
+            ),
+            None,
+        )
+        if gtr_name is None:
+            raise RuntimeError(f"No .gtr file found for MIVIA archive member: {inner_name}")
+        gtr_lines = _decode_text_lines(outer_zip.read(gtr_name))
+        if not gtr_lines:
+            raise RuntimeError(f"MIVIA .gtr file is empty: {gtr_name}")
+        graph_a_name = str(gtr_lines[0].split()[0]).strip()
+        if ".a" not in graph_a_name.lower():
+            raise RuntimeError(f"Unexpected MIVIA pair token in {gtr_name}: {graph_a_name}")
+        graph_b_name = re.sub(r"\.A", ".B", graph_a_name, count=1, flags=re.IGNORECASE)
+        inner_data = outer_zip.read(inner_name)
+    with zipfile.ZipFile(io.BytesIO(inner_data)) as inner_zip:
+        inner_names = inner_zip.namelist()
+        member_a = next((name for name in inner_names if Path(name).name == graph_a_name), None)
+        member_b = next((name for name in inner_names if Path(name).name == graph_b_name), None)
+        if member_a is None or member_b is None:
+            raise RuntimeError(f"Could not resolve MIVIA pair members for {graph_a_name} / {graph_b_name}")
+        pattern_adj, pattern_labels = _parse_mivia_graph_bytes(inner_zip.read(member_a), labeled=labeled)
+        target_adj, target_labels = _parse_mivia_graph_bytes(inner_zip.read(member_b), labeled=labeled)
+    return pattern_adj, target_adj, pattern_labels, target_labels, {
+        "selected_archive": Path(inner_name).name,
+        "selected_pair": f"{graph_a_name}|{graph_b_name}",
+    }
+
+
+def _parse_bigraph_control_labels(header_line: str) -> list[str]:
+    labels: list[str] = []
+    for match in re.finditer(r"\((\d+),\s*([^:]+):\s*\d+\)", header_line):
+        idx = int(match.group(1))
+        token = str(match.group(2)).strip() or "__node__"
+        while len(labels) <= idx:
+            labels.append("__node__")
+        labels[idx] = token
+    return labels
+
+
+def _parse_bigraph_instance(text: str) -> tuple[list[list[int]], list[str]]:
+    lines = [line.strip() for line in str(text or "").replace("\r", "").split("\n") if line.strip()]
+    if len(lines) < 2:
+        raise RuntimeError("Bigraph instance is too short.")
+    node_labels = _parse_bigraph_control_labels(lines[0])
+    header_values = parse_int_tokens(lines[1])
+    if len(header_values) < 3:
+        raise RuntimeError("Bigraph header is missing root/node/site counts.")
+    root_count = int(header_values[0])
+    node_count = int(header_values[1])
+    site_count = int(header_values[2])
+    if node_count <= 0:
+        raise RuntimeError("Bigraph instance has no nodes.")
+    while len(node_labels) < node_count:
+        node_labels.append("__node__")
+    matrix_rows = root_count + node_count
+    matrix_cols = node_count + site_count
+    adj: list[set[int]] = [set() for _ in range(root_count + node_count + site_count)]
+    cursor = 2
+    parsed_rows = 0
+    while cursor < len(lines) and parsed_rows < matrix_rows:
+        bits = "".join(ch for ch in lines[cursor] if ch in {"0", "1"})
+        cursor += 1
+        if not bits:
+            continue
+        row = bits[:matrix_cols].ljust(matrix_cols, "0")
+        parent_idx = parsed_rows
+        parent_vertex = parent_idx if parent_idx < root_count else root_count + (parent_idx - root_count)
+        for col_idx, bit in enumerate(row):
+            if bit != "1":
+                continue
+            child_vertex = root_count + col_idx if col_idx < node_count else root_count + node_count + (col_idx - node_count)
+            if child_vertex != parent_vertex:
+                adj[parent_vertex].add(child_vertex)
+                adj[child_vertex].add(parent_vertex)
+        parsed_rows += 1
+    label_tokens = (["__root__"] * root_count) + node_labels[:node_count] + (["__site__"] * site_count)
+    for line in lines[cursor:]:
+        node_ids = sorted({int(match.group(1)) for match in re.finditer(r"\((\d+),\s*\d+\)", line) if int(match.group(1)) < node_count})
+        if not node_ids:
+            continue
+        handle_idx = len(adj)
+        adj.append(set())
+        label_tokens.append("__handle__")
+        for node_id in node_ids:
+            node_vertex = root_count + node_id
+            adj[handle_idx].add(node_vertex)
+            adj[node_vertex].add(handle_idx)
+    return normalize_adj_lists([sorted(row) for row in adj]), label_tokens
+
+
+def _select_bigraph_pair(archive_path: Path, prepare: dict) -> tuple[list[list[int]], list[list[int]], list[str], list[str], dict]:
+    list_member = str(prepare.get("instances_member") or "instances/savannah_instances.txt").strip()
+    with tarfile.open(archive_path, "r:xz") as tf:
+        try:
+            listing_member = tf.getmember(list_member)
+        except KeyError as exc:
+            raise RuntimeError(f"Bigraph instance listing missing: {list_member}") from exc
+        listing_fh = tf.extractfile(listing_member)
+        if listing_fh is None:
+            raise RuntimeError(f"Failed to extract bigraph instance listing: {list_member}")
+        listing_lines = _decode_text_lines(listing_fh.read())
+        if not listing_lines:
+            raise RuntimeError(f"Bigraph instance listing is empty: {list_member}")
+        instance_id, pattern_member, target_member = listing_lines[0].split()[:3]
+        pattern_fh = tf.extractfile(pattern_member)
+        target_fh = tf.extractfile(target_member)
+        if pattern_fh is None or target_fh is None:
+            raise RuntimeError(f"Failed to extract bigraph pair members: {pattern_member} / {target_member}")
+        pattern_adj, pattern_labels = _parse_bigraph_instance(pattern_fh.read().decode("utf-8", errors="replace"))
+        target_adj, target_labels = _parse_bigraph_instance(target_fh.read().decode("utf-8", errors="replace"))
+    return pattern_adj, target_adj, pattern_labels, target_labels, {
+        "selected_instance": instance_id,
+        "selected_pair": f"{pattern_member}|{target_member}",
+    }
+
+
 def _convert_subgraph_from_adj_pair(
     dataset_dir: Path,
     pattern_adj: list[list[int]],
     target_adj: list[list[int]],
     source_kind: str,
+    pattern_labels: list[str] | None = None,
+    target_labels: list[str] | None = None,
+    extra_meta: dict | None = None,
 ) -> dict:
     pattern_adj = normalize_adj_lists(pattern_adj)
     target_adj = normalize_adj_lists(target_adj)
@@ -2101,10 +2326,25 @@ def _convert_subgraph_from_adj_pair(
     lad_pattern = converted_dir / "glasgow_pattern.lad"
     lad_target = converted_dir / "glasgow_target.lad"
 
-    write_vf(vf_pattern, pattern_adj, [0] * len(pattern_adj))
-    write_vf(vf_target, target_adj, [0] * len(target_adj))
-    write_unlabelled_lad(lad_pattern, pattern_adj)
-    write_unlabelled_lad(lad_target, target_adj)
+    lad_format = "lad"
+    if pattern_labels is not None or target_labels is not None:
+        if pattern_labels is None:
+            pattern_labels = ["__node__"] * len(pattern_adj)
+        if target_labels is None:
+            target_labels = ["__node__"] * len(target_adj)
+        if len(pattern_labels) != len(pattern_adj) or len(target_labels) != len(target_adj):
+            raise RuntimeError("Subgraph conversion label counts do not match adjacency sizes.")
+        encoded_pattern_labels, encoded_target_labels = _encode_label_tokens(pattern_labels, target_labels)
+        write_vf(vf_pattern, pattern_adj, encoded_pattern_labels)
+        write_vf(vf_target, target_adj, encoded_target_labels)
+        write_vertex_labelled_lad(lad_pattern, pattern_adj, encoded_pattern_labels)
+        write_vertex_labelled_lad(lad_target, target_adj, encoded_target_labels)
+        lad_format = "vertexlabelledlad"
+    else:
+        write_vf(vf_pattern, pattern_adj, [0] * len(pattern_adj))
+        write_vf(vf_target, target_adj, [0] * len(target_adj))
+        write_unlabelled_lad(lad_pattern, pattern_adj)
+        write_unlabelled_lad(lad_target, target_adj)
 
     parsed_vf_pattern = normalize_adj_lists(parse_vf_graph(vf_pattern))
     parsed_vf_target = normalize_adj_lists(parse_vf_graph(vf_target))
@@ -2125,7 +2365,7 @@ def _convert_subgraph_from_adj_pair(
             "vf_target": str(vf_target),
             "lad_pattern": str(lad_pattern),
             "lad_target": str(lad_target),
-            "lad_format": "lad",
+            "lad_format": lad_format,
         },
         "graph_file_count": 2,
         "pair_count": 1,
@@ -2133,6 +2373,7 @@ def _convert_subgraph_from_adj_pair(
         "target_nodes": len(target_adj),
         "pattern_edges": count_adj_edges(pattern_adj),
         "target_edges": count_adj_edges(target_adj),
+        **(dict(extra_meta or {})),
     }
 
 
@@ -2452,6 +2693,34 @@ def prepare_dataset(spec: DatasetSpec) -> dict:
             parse_lad_graph(pat),
             parse_lad_graph(tgt),
             source_kind="lad_pair_from_archive",
+        )
+    elif kind == "subgraph_pair_from_mivia_archive":
+        arc_rel = str(prepare.get("archive_relative_path") or "").strip()
+        if not arc_rel:
+            raise RuntimeError(f"Missing MIVIA archive path for {spec.dataset_id}.")
+        pattern_adj, target_adj, pattern_labels, target_labels, extra_meta = _select_mivia_pair(dataset_dir / arc_rel, prepare)
+        meta_core = _convert_subgraph_from_adj_pair(
+            dataset_dir,
+            pattern_adj,
+            target_adj,
+            source_kind="mivia_archive_pair",
+            pattern_labels=pattern_labels,
+            target_labels=target_labels,
+            extra_meta=extra_meta,
+        )
+    elif kind == "subgraph_pair_from_bigraph_archive":
+        arc_rel = str(prepare.get("archive_relative_path") or "").strip()
+        if not arc_rel:
+            raise RuntimeError(f"Missing bigraph archive path for {spec.dataset_id}.")
+        pattern_adj, target_adj, pattern_labels, target_labels, extra_meta = _select_bigraph_pair(dataset_dir / arc_rel, prepare)
+        meta_core = _convert_subgraph_from_adj_pair(
+            dataset_dir,
+            pattern_adj,
+            target_adj,
+            source_kind="bigraph_archive_pair",
+            pattern_labels=pattern_labels,
+            target_labels=target_labels,
+            extra_meta=extra_meta,
         )
     elif kind == "shortest_path_csv_from_edge_list_gz":
         src_rel = str(prepare.get("source_relative_path") or "").strip()
@@ -3185,6 +3454,10 @@ class BenchmarkRunnerApp(tk.Tk):
         self.estimate_btn.pack(side=tk.LEFT, padx=(8, 0))
         self.open_dir_btn = ttk.Button(actions, text="Open Output Folder", command=self._open_output_dir, state=tk.DISABLED)
         self.open_dir_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self.export_manifest_btn = ttk.Button(actions, text="Export Manifest", command=self._export_reproducible_manifest)
+        self.export_manifest_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self.import_manifest_btn = ttk.Button(actions, text="Import Manifest", command=self._import_reproducible_manifest)
+        self.import_manifest_btn.pack(side=tk.LEFT, padx=(8, 0))
         self.save_btn = ttk.Button(actions, text="Save Exports Again", command=self._save_exports_again, state=tk.DISABLED)
         self.save_btn.pack(side=tk.LEFT, padx=(8, 0))
         self.clear_log_btn = ttk.Button(actions, text="Clear Log", command=self._clear_run_log)
@@ -3698,14 +3971,22 @@ class BenchmarkRunnerApp(tk.Tk):
 
     def _apply_default_window_state(self):
         try:
-            self.attributes("-fullscreen", True)
-            self.bind("<Escape>", lambda _evt: self.attributes("-fullscreen", False))
-            self.bind("<F11>", lambda _evt: self.attributes("-fullscreen", not bool(self.attributes("-fullscreen"))))
-            return
+            self.attributes("-fullscreen", False)
         except Exception:
             pass
         try:
             self.state("zoomed")
+            return
+        except Exception:
+            pass
+        try:
+            self.attributes("-zoomed", True)
+            return
+        except Exception:
+            pass
+        try:
+            self.update_idletasks()
+            self.geometry(f"{int(self.winfo_screenwidth())}x{int(self.winfo_screenheight())}+0+0")
         except Exception:
             pass
 
@@ -4681,6 +4962,200 @@ class BenchmarkRunnerApp(tk.Tk):
             messagebox.showinfo(APP_TITLE, f"Exports updated in:\n{self.session_output_dir}")
         except Exception as exc:
             messagebox.showerror(APP_TITLE, f"Failed to save exports:\n{exc}")
+
+    def _build_headless_manifest_from_config(self, config: dict) -> dict:
+        run_mode = str(config.get("run_mode") or "threshold").strip().lower()
+        if run_mode != "threshold":
+            raise ValueError("Timed GUI runs cannot be exported as a reproducible headless manifest. Switch Stop Mode to Threshold first.")
+
+        input_mode = str(config.get("input_mode") or "independent").strip().lower()
+        manifest: dict[str, object] = {
+            "schema_version": "capstone-benchmark-manifest-v1",
+            "preset": "standard",
+            "tab_id": str(config.get("tab_id") or "").strip().lower(),
+            "input_mode": input_mode,
+            "selected_variants": [str(item).strip().lower() for item in list(config.get("selected_variants") or []) if str(item).strip()],
+            "selected_datasets": [str(item).strip().lower() for item in list(config.get("selected_datasets") or []) if str(item).strip()],
+            "k_mode": str(config.get("k_mode") or "absolute").strip().lower() or "absolute",
+            "prepare_datasets": True,
+            "iterations": int(config.get("iterations") or 1),
+            "base_seed": int(config.get("base_seed") or 1),
+            "timeout_as_missing": bool(config.get("timeout_as_missing", True)),
+            "delete_generated_inputs": bool(config.get("delete_generated_inputs", True)),
+        }
+        solver_timeout = config.get("solver_timeout_seconds")
+        if solver_timeout not in {None, ""}:
+            manifest["solver_timeout_seconds"] = float(solver_timeout)
+        failure_policy = str(config.get("failure_policy") or "").strip().lower()
+        if failure_policy:
+            manifest["failure_policy"] = failure_policy
+        retry_failed_trials = config.get("retry_failed_trials")
+        if retry_failed_trials is not None:
+            manifest["retry_failed_trials"] = int(retry_failed_trials)
+        outlier_filter = str(config.get("outlier_filter") or "").strip().lower()
+        if outlier_filter:
+            manifest["outlier_filter"] = outlier_filter
+
+        if input_mode == "independent":
+            values: dict[str, list[float]] = {}
+            fixed_values = dict(config.get("fixed_values") or {})
+            var_ranges = dict(config.get("var_ranges") or {})
+            value_keys = ["n", "density"] if manifest["tab_id"] == "shortest_path" else ["n", "density", "k"]
+            for key in value_keys:
+                current = list(var_ranges.get(key) or [])
+                if current:
+                    values[key] = [float(value) for value in current]
+                elif key in fixed_values:
+                    values[key] = [float(fixed_values[key])]
+            manifest["values"] = values
+
+        return manifest
+
+    def _infer_manifest_range_fields(self, var_id: str, raw_values: object) -> tuple[bool, str, str, str]:
+        values = [float(item) for item in list(raw_values or [])]
+        if not values:
+            raise ValueError(f"Manifest is missing values for '{var_id}'.")
+        if len(values) == 1:
+            return False, self._format_point_value(var_id, float(values[0])), "", ""
+
+        ordered = [float(item) for item in values]
+        step = ordered[1] - ordered[0]
+        if abs(step) <= 1e-12:
+            raise ValueError(f"Manifest values for '{var_id}' must not repeat.")
+        for idx in range(2, len(ordered)):
+            delta = ordered[idx] - ordered[idx - 1]
+            if abs(delta - step) > 1e-9:
+                raise ValueError(
+                    f"Manifest values for '{var_id}' are not representable by the GUI sweep controls. "
+                    "Only single values or arithmetic progressions can be imported."
+                )
+        return (
+            True,
+            self._format_point_value(var_id, float(ordered[0])),
+            self._format_point_value(var_id, float(ordered[-1])),
+            self._format_point_value(var_id, float(step)),
+        )
+
+    def _apply_headless_manifest_to_controls(self, manifest: dict):
+        tab_id = str(manifest.get("tab_id") or "").strip().lower()
+        if tab_id not in {"subgraph", "shortest_path"}:
+            raise ValueError("Manifest requires tab_id=subgraph or tab_id=shortest_path.")
+
+        input_mode = str(manifest.get("input_mode") or "independent").strip().lower()
+        if input_mode not in {"independent", "datasets"}:
+            raise ValueError("Manifest input_mode must be independent or datasets.")
+
+        self.main_tab.select(0 if tab_id == "subgraph" else 1)
+        self._on_tab_changed()
+
+        self.input_source_tabs.select(0 if input_mode == "independent" else 1)
+        self._on_input_mode_tab_changed()
+
+        for variant in SOLVER_VARIANTS:
+            if variant.tab_id == tab_id:
+                self.variant_checks[variant.variant_id].set(False)
+        selected_variants = [str(item).strip().lower() for item in list(manifest.get("selected_variants") or []) if str(item).strip()]
+        for variant_id in selected_variants:
+            checker = self.variant_checks.get(variant_id)
+            if checker is None:
+                raise ValueError(f"Manifest references unknown variant: {variant_id}")
+            checker.set(True)
+        self._on_variants_changed()
+
+        for spec in self.dataset_specs:
+            if spec.tab_id == tab_id:
+                self.dataset_checks[spec.dataset_id].set(False)
+        selected_datasets = [str(item).strip().lower() for item in list(manifest.get("selected_datasets") or []) if str(item).strip()]
+        for dataset_id in selected_datasets:
+            checker = self.dataset_checks.get(dataset_id)
+            if checker is None:
+                raise ValueError(f"Manifest references unknown dataset: {dataset_id}")
+            checker.set(True)
+        self._refresh_dataset_rows()
+
+        self.iterations_var.set(str(int(manifest.get("iterations") or 1)))
+        base_seed = manifest.get("base_seed")
+        self.seed_var.set("" if base_seed in {None, ""} else str(int(base_seed)))
+        self.run_mode_var.set("threshold")
+        self.time_limit_minutes_var.set("10")
+        solver_timeout = manifest.get("solver_timeout_seconds")
+        self.solver_timeout_seconds_var.set("0" if solver_timeout in {None, ""} else str(float(solver_timeout)))
+        self.failure_policy_var.set(str(manifest.get("failure_policy") or "continue").strip().lower() or "continue")
+        self.retry_failed_trials_var.set(str(int(manifest.get("retry_failed_trials") or 0)))
+        self.timeout_as_missing_var.set(bool(manifest.get("timeout_as_missing", True)))
+        self.outlier_filter_var.set(str(manifest.get("outlier_filter") or "none").strip().lower() or "none")
+        self.delete_generated_inputs_var.set(bool(manifest.get("delete_generated_inputs", True)))
+        self.k_mode_var.set(str(manifest.get("k_mode") or "absolute").strip().lower() or "absolute")
+        self._on_run_mode_changed()
+        self._on_outlier_filter_changed()
+
+        valid_ids = ["n", "density"] if tab_id == "shortest_path" else ["n", "density", "k"]
+        for var_id in ["n", "density", "k"]:
+            self.var_selected[var_id].set(False)
+            self.var_end[var_id].set("")
+            self.var_step[var_id].set("1" if var_id != "density" else "0.01")
+
+        if input_mode == "independent":
+            values = dict(manifest.get("values") or {})
+            for var_id in valid_ids:
+                selected, start_value, end_value, step_value = self._infer_manifest_range_fields(var_id, values.get(var_id) or [])
+                self.var_selected[var_id].set(selected)
+                self.var_start[var_id].set(start_value)
+                self.var_end[var_id].set(end_value)
+                self.var_step[var_id].set(step_value if step_value else ("1" if var_id != "density" else "0.01"))
+        else:
+            defaults = {"n": "64", "density": "0.05", "k": "10"}
+            for var_id in valid_ids:
+                self.var_start[var_id].set(defaults[var_id])
+                self.var_end[var_id].set("")
+                self.var_step[var_id].set("1" if var_id != "density" else "0.01")
+
+        self._on_variable_selection_changed()
+        self._refresh_3d_variant_choices()
+
+    def _export_reproducible_manifest(self):
+        try:
+            config = self._validate_and_build_config()
+            manifest = self._build_headless_manifest_from_config(config)
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+
+        target = filedialog.asksaveasfilename(
+            title="Export Benchmark Manifest",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not target:
+            return
+
+        target_path = Path(target)
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(json.dumps(manifest, indent=2, default=serialize_for_json) + "\n", encoding="utf-8")
+            self._append_log(f"Exported reproducible manifest: {target_path}", level="notice")
+            messagebox.showinfo(APP_TITLE, f"Manifest written to:\n{target_path}")
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"Failed to export manifest:\n{exc}")
+
+    def _import_reproducible_manifest(self):
+        target = filedialog.askopenfilename(
+            title="Import Benchmark Manifest",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not target:
+            return
+
+        try:
+            from desktop_runner import headless_runner as headless_mod
+
+            manifest_path = Path(target)
+            manifest = headless_mod.merge_preset_defaults(headless_mod.load_manifest(manifest_path))
+            self._apply_headless_manifest_to_controls(manifest)
+            self._append_log(f"Imported reproducible manifest: {manifest_path}", level="notice")
+            messagebox.showinfo(APP_TITLE, f"Manifest loaded from:\n{manifest_path}")
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"Failed to import manifest:\n{exc}")
 
     def _selected_variants_for_current_tab(self):
         tab_id = self.tab_id_var.get()
@@ -6345,8 +6820,8 @@ class BenchmarkRunnerApp(tk.Tk):
             command = [str(binary), str(generated["dijkstra_file"])]
         elif family == "vf3":
             if variant_id == "vf3_baseline":
-                # Match the web runner's stable baseline invocation on generated VF inputs.
-                command = [str(binary), "-u", "-r", "0", "-e", str(generated["vf_pattern"]), str(generated["vf_target"])]
+                # Generated subgraph benchmarks are non-induced and undirected.
+                command = [str(binary), "-u", "-r", "0", str(generated["vf_pattern"]), str(generated["vf_target"])]
             else:
                 command = [str(binary), str(generated["vf_pattern"]), str(generated["vf_target"])]
         elif family == "glasgow":
@@ -6382,9 +6857,9 @@ class BenchmarkRunnerApp(tk.Tk):
             code_hex = f"0x{code_u32:08X}"
             cmdline = subprocess.list2cmdline(command)
             raise RuntimeError(f"{variant_id} failed with code {return_code} ({code_hex}) | cmd: {cmdline} | {detail[:300]}")
+        combined_output = stdout_text + "\n" + stderr_text
         solution_count = None
         answer_signature = None
-        combined_output = stdout_text + "\n" + stderr_text
         if family in {"vf3", "glasgow"}:
             solution_count = parse_solution_count(combined_output)
             if solution_count is not None:
@@ -6416,6 +6891,7 @@ class BenchmarkRunnerApp(tk.Tk):
             "text": True,
             "encoding": "utf-8",
             "errors": "replace",
+            "env": runtime_env_for_binary(Path(command[0])),
         }
         if sys.platform.startswith("win"):
             startupinfo = subprocess.STARTUPINFO()
@@ -9816,6 +10292,7 @@ class BenchmarkRunnerApp(tk.Tk):
             "encoding": "utf-8",
             "errors": "replace",
             "timeout": max(1.0, float(timeout_seconds)),
+            "env": runtime_env_for_binary(Path(command[0])),
         }
         if sys.platform.startswith("win"):
             startupinfo = subprocess.STARTUPINFO()
@@ -10776,6 +11253,7 @@ class BenchmarkRunnerApp(tk.Tk):
 
 def main():
     parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--headless", action="store_true")
     parser.add_argument("--visualizer-webview-url", dest="visualizer_webview_url", default=None)
     parser.add_argument("--visualizer-webview-title", dest="visualizer_webview_title", default=APP_TITLE)
     parser.add_argument("--visualizer-webview-fullscreen", dest="visualizer_webview_fullscreen", default="0")
@@ -10788,6 +11266,16 @@ def main():
             title=str(args.visualizer_webview_title or APP_TITLE),
             fullscreen=fullscreen_flag,
         )
+
+    headless_switches = {"--manifest", "--write-manifest", "--run", "--list-variants", "--list-datasets"}
+    if args.headless or any(flag in sys.argv[1:] for flag in headless_switches):
+        repo_root = Path(__file__).resolve().parent.parent
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from desktop_runner.headless_runner import main as headless_main
+
+        forwarded = [arg for arg in sys.argv[1:] if arg != "--headless"]
+        return headless_main(forwarded)
 
     app = BenchmarkRunnerApp()
     app.mainloop()

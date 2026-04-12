@@ -13,12 +13,53 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def env_truthy(value: str) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_validation_mode(value: str) -> str:
+    token = str(value or "").strip().lower()
+    return "fast" if token == "fast" else "full"
+
+
+def normalize_sanitizer_mode(value: str) -> str:
+    token = str(value or "").strip().lower()
+    return token if token in {"none", "address", "undefined"} else "none"
+
+
+def sanitizer_flag_tokens(sanitizer_mode: str) -> list[str]:
+    if sanitizer_mode == "address":
+        return ["-fsanitize=address", "-fno-omit-frame-pointer"]
+    if sanitizer_mode == "undefined":
+        return ["-fsanitize=undefined", "-fno-omit-frame-pointer"]
+    return []
+
+
+def optimization_flag_tokens(sanitizer_mode: str) -> list[str]:
+    if sanitizer_mode == "none":
+        return ["-O3"]
+    return ["-O1", "-g"]
+
+
+def common_compile_flag_tokens(suppress_diagnostics: bool, sanitizer_mode: str) -> list[str]:
+    flags: list[str] = []
+    flags.extend(optimization_flag_tokens(sanitizer_mode))
+    flags.extend(sanitizer_flag_tokens(sanitizer_mode))
+    if suppress_diagnostics:
+        flags.append("-w")
+    else:
+        flags.extend(["-Wall", "-Wextra"])
+    return flags
+
+
+def shell_join_flags(*groups: list[str]) -> str:
+    tokens: list[str] = []
+    for group in groups:
+        tokens.extend(group)
+    return " ".join(tokens)
 
 
 def prepend_path(env: dict[str, str], value: str) -> None:
@@ -381,7 +422,7 @@ def ensure_cxxgraph_checkout(env: dict[str, str]) -> None:
     )
 
 
-def compile_discovered_variants_for_family(catalog: dict, family: str, env: dict[str, str]) -> list[dict]:
+def compile_discovered_variants_for_family(catalog: dict, family: str, env: dict[str, str], sanitizer_mode: str) -> list[dict]:
     rows = [
         row
         for row in (catalog.get("variants") or [])
@@ -405,15 +446,7 @@ def compile_discovered_variants_for_family(catalog: dict, family: str, env: dict
         print()
         print(f"==> Building {label}")
         suppress_diagnostics = env_truthy(env.get("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS", ""))
-        compile_flags = [
-            "g++",
-            "-std=c++20",
-            "-O3",
-        ]
-        if suppress_diagnostics:
-            compile_flags.append("-w")
-        else:
-            compile_flags.extend(["-Wall", "-Wextra"])
+        compile_flags = ["g++", "-std=c++20", *common_compile_flag_tokens(suppress_diagnostics, sanitizer_mode)]
         completed = subprocess.run(
             [*compile_flags, source, "-o", binary],
             cwd=str(REPO_ROOT),
@@ -487,7 +520,7 @@ def run_vf3_smoke_test(python_exe: str, env: dict[str, str]) -> None:
             raise RuntimeError(f"Generated VF target missing: {vf_target}")
 
         completed = subprocess.run(
-            [str(vf3_binary), "-u", "-r", "0", "-e", str(vf_pattern), str(vf_target)],
+            [str(vf3_binary), "-u", "-r", "0", str(vf_pattern), str(vf_target)],
             cwd=str(REPO_ROOT),
             env=env,
             stdout=subprocess.DEVNULL,
@@ -623,9 +656,21 @@ def parse_args() -> argparse.Namespace:
         help="Optional CMake generator override.",
     )
     parser.add_argument(
+        "--validation",
+        choices=("fast", "full"),
+        default="",
+        help="Validation tier. 'fast' skips expensive correctness checks, 'full' runs all validation.",
+    )
+    parser.add_argument(
         "--fast",
         action="store_true",
-        help="Skip expensive validation checks (VF3 smoke + Glasgow parity).",
+        help="Deprecated alias for --validation fast.",
+    )
+    parser.add_argument(
+        "--sanitizer",
+        choices=("none", "address", "undefined"),
+        default="",
+        help="Optional sanitizer build mode.",
     )
     parser.add_argument(
         "passthrough",
@@ -649,7 +694,11 @@ def main() -> int:
     assert_gmp_available_windows(env)
 
     python_exe = sys.executable
-    fast_mode = bool(args.fast or env_truthy(env.get("BUILD_LOCAL_FAST", "")))
+    validation_mode = normalize_validation_mode(
+        args.validation or ("fast" if args.fast or env_truthy(env.get("BUILD_LOCAL_FAST", "")) else env.get("BUILD_LOCAL_VALIDATION", "full"))
+    )
+    fast_mode = validation_mode == "fast"
+    sanitizer_mode = normalize_sanitizer_mode(args.sanitizer or env.get("BUILD_LOCAL_SANITIZER", "none"))
     portable_mode = bool(
         env_truthy(env.get("BUILD_LOCAL_PORTABLE", ""))
         or (
@@ -658,7 +707,11 @@ def main() -> int:
         )
     )
     if fast_mode:
-        print("BUILD_LOCAL_FAST enabled: skipping VF3 smoke + Glasgow parity checks")
+        print("Validation tier: fast (skipping expensive correctness checks)")
+    else:
+        print("Validation tier: full")
+    if sanitizer_mode != "none":
+        print(f"Sanitizer mode enabled: {sanitizer_mode}")
     if portable_mode:
         print("BUILD_LOCAL_PORTABLE enabled: disabling Glasgow -march=native for portable binaries")
     suppress_diagnostics = env_truthy(env.get("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS", ""))
@@ -682,9 +735,7 @@ def main() -> int:
             [
                 "g++",
                 "-std=c++20",
-                "-O3",
-                *([] if not suppress_diagnostics else ["-w"]),
-                *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
+                *common_compile_flag_tokens(suppress_diagnostics, sanitizer_mode),
                 "-I",
                 "baselines/nyaan-library",
                 "baselines/dijkstra_main.cpp",
@@ -700,9 +751,7 @@ def main() -> int:
             [
                 "g++",
                 "-std=c++20",
-                "-O3",
-                *([] if not suppress_diagnostics else ["-w"]),
-                *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
+                *common_compile_flag_tokens(suppress_diagnostics, sanitizer_mode),
                 "-I",
                 "baselines/cxxgraph/include",
                 "baselines/dial_main.cpp",
@@ -718,9 +767,7 @@ def main() -> int:
             [
                 "g++",
                 "-std=c++20",
-                "-O3",
-                *([] if not suppress_diagnostics else ["-w"]),
-                *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
+                *common_compile_flag_tokens(suppress_diagnostics, sanitizer_mode),
                 "baselines/via_dijkstra_main.cpp",
                 "-o",
                 "baselines/via_dijkstra",
@@ -734,9 +781,7 @@ def main() -> int:
             [
                 "g++",
                 "-std=c++20",
-                "-O3",
-                *([] if not suppress_diagnostics else ["-w"]),
-                *([] if suppress_diagnostics else ["-Wall", "-Wextra"]),
+                *common_compile_flag_tokens(suppress_diagnostics, sanitizer_mode),
                 "-I",
                 "baselines/cxxgraph/include",
                 "baselines/via_dial_main.cpp",
@@ -747,8 +792,8 @@ def main() -> int:
         ),
     )
     skipped_variants: list[dict] = []
-    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "dijkstra", env))
-    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "sp_via", env))
+    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "dijkstra", env, sanitizer_mode))
+    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "sp_via", env, sanitizer_mode))
 
     if fast_mode:
         print()
@@ -756,11 +801,11 @@ def main() -> int:
     else:
         maybe_run_sp_via_correctness_check(python_exe, env)
 
-    vf3_cflags = "-std=c++11 -O2 -DNDEBUG -Wno-deprecated -fno-strict-aliasing -fwrapv"
+    vf3_flag_tokens = ["-std=c++11", *optimization_flag_tokens(sanitizer_mode), "-DNDEBUG", "-Wno-deprecated", "-fno-strict-aliasing", "-fwrapv", *sanitizer_flag_tokens(sanitizer_mode)]
     if suppress_diagnostics:
-        vf3_cflags += " -w"
+        vf3_flag_tokens.append("-w")
     if os.name == "nt":
-        vf3_cflags += " -DWIN32 -include getopt.h"
+        vf3_flag_tokens.extend(["-DWIN32", "-include", "getopt.h"])
 
     def clean_vf3_outputs() -> None:
         for rel in ("baselines/vf3lib/bin/vf3", "baselines/vf3lib/bin/vf3.exe"):
@@ -769,7 +814,10 @@ def main() -> int:
                 path.unlink()
 
     run_step("Cleaning VF3 baseline outputs (fresh rebuild)", clean_vf3_outputs)
-    run_step("Building VF3 baseline (vf3lib)", lambda: run_cmd(["make", "-C", "baselines/vf3lib", "vf3", f"CFLAGS={vf3_cflags}"], env=env))
+    run_step(
+        "Building VF3 baseline (vf3lib)",
+        lambda: run_cmd(["make", "-C", "baselines/vf3lib", "vf3", f"CFLAGS={shell_join_flags(vf3_flag_tokens)}"], env=env),
+    )
 
     if fast_mode:
         print()
@@ -777,8 +825,8 @@ def main() -> int:
     else:
         run_step("VF3 baseline smoke test (small generated subgraph case)", lambda: run_vf3_smoke_test(python_exe, env))
 
-    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "vf3", env))
-    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "glasgow", env))
+    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "vf3", env, sanitizer_mode))
+    skipped_variants.extend(compile_discovered_variants_for_family(catalog, "glasgow", env, sanitizer_mode))
 
     run_step("Patching Glasgow submodule for MinGW loooong/size_t ambiguity", patch_glasgow_submodule)
 
@@ -786,8 +834,8 @@ def main() -> int:
     if not generator and is_msys_or_cygwin_shell():
         generator = "MinGW Makefiles"
 
-    cmake_cxx_flags = "-O3 -w" if suppress_diagnostics else "-O3"
-    cmake_c_flags = "-O3 -w" if suppress_diagnostics else "-O3"
+    cmake_compile_flags = shell_join_flags(common_compile_flag_tokens(suppress_diagnostics, sanitizer_mode))
+    cmake_link_flags = shell_join_flags(sanitizer_flag_tokens(sanitizer_mode))
     cmake_args = [
         "cmake",
         *(["-Wno-dev"] if suppress_diagnostics else []),
@@ -796,8 +844,9 @@ def main() -> int:
         "-B",
         "baselines/glasgow-subgraph-solver/build",
         "-DCMAKE_BUILD_TYPE=Release",
-        f"-DCMAKE_CXX_FLAGS={cmake_cxx_flags}",
-        f"-DCMAKE_C_FLAGS={cmake_c_flags}",
+        f"-DCMAKE_CXX_FLAGS={cmake_compile_flags}",
+        f"-DCMAKE_C_FLAGS={cmake_compile_flags}",
+        f"-DCMAKE_EXE_LINKER_FLAGS={cmake_link_flags}",
         *([] if not suppress_diagnostics else ["-DCMAKE_SUPPRESS_DEVELOPER_WARNINGS=ON"]),
         f"-DGCS_ENABLE_MARCH_NATIVE={'OFF' if portable_mode else 'ON'}",
     ]

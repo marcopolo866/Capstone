@@ -5,11 +5,11 @@ This folder contains project documentation for setup, workflow behavior, and res
 ## Core Documents
 
 - [quickstart.md](quickstart.md)
-  - Build/run instructions for local and GitHub Actions paths, plus desktop runner download.
+  - Build/run instructions for local, headless CLI, GitHub Actions, and desktop runner download.
 - [datasets.md](datasets.md)
-  - Dataset inventory and file format notes.
+  - Dataset inventory, on-demand conversion rules, and file format notes.
 - [result-schema.md](result-schema.md)
-  - `outputs/result.json` and desktop `benchmark-session.json` schema notes.
+  - `outputs/result.json`, desktop session artifacts, and normalized trial/datapoint schema notes.
 - [prompting_protocol.md](prompting_protocol.md)
   - LLM prompting process used in this capstone.
 - [refactor-split-structure.md](refactor-split-structure.md)

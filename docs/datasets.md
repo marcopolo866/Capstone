@@ -21,13 +21,27 @@ Determinism contract:
 - Fixed `(algorithm, n, k, density, seed)` must generate identical graph files.
 - Subgraph flow records equivalence diagnostics in `outputs/equivalence_report.jsonl`.
 
-## Notes for Benchmark Reporting
+## Desktop Runner Dataset Catalog
 
-If you use additional external datasets for final reporting, record:
+The desktop runner dataset catalog lives at `desktop_runner/datasets_catalog.json`.
 
-- dataset source URL
-- license/usage terms
-- exact commit/hash or download date
-- preprocessing steps
+Current external datasets:
 
-This keeps performance/correctness claims reproducible.
+- `subgraph_sip_full`
+  - TGZ archive with a representative LAD pattern/target pair extracted on demand.
+- `subgraph_mivia_arg`
+  - Outer ZIP archive with nested benchmark ZIPs and `.gtr` files.
+  - The runner now converts one representative `si2_*` non-induced subgraph pair on demand after download.
+- `subgraph_practical_bigraphs`
+  - `instances.tar.xz` archive in BigraphER string format.
+  - The runner now converts one representative pair from `instances/savannah_instances.txt` on demand after download.
+- `shortest_dimacs_usa_road_d`
+  - DIMACS `.gr.gz` converted to runner CSV on demand.
+- `shortest_snap_*`
+  - SNAP edge-list archives converted to runner CSV on demand.
+
+Operational rules:
+
+- Dataset downloads and conversions happen before measured solver trials.
+- Conversion time and conversion memory are not included in solver runtime or peak-memory statistics.
+- Subgraph dataset conversion normalizes graphs into non-induced, undirected runner inputs only.

@@ -90,6 +90,12 @@ def main() -> int:
         help="Backend script to use. Default: auto",
     )
     parser.add_argument(
+        "--validation",
+        choices=("fast", "full"),
+        default="",
+        help="Validation tier. 'fast' skips expensive correctness checks, 'full' runs all validation.",
+    )
+    parser.add_argument(
         "--cmake-generator",
         default="",
         help="Optional CMake generator override.",
@@ -98,6 +104,12 @@ def main() -> int:
         "--fast",
         action="store_true",
         help="Skip expensive validation checks (VF3 smoke + Glasgow parity).",
+    )
+    parser.add_argument(
+        "--sanitizer",
+        choices=("none", "address", "undefined"),
+        default="",
+        help="Optional sanitizer build mode.",
     )
     parser.add_argument(
         "passthrough",
@@ -120,6 +132,10 @@ def main() -> int:
 
     if args.fast:
         env["BUILD_LOCAL_FAST"] = "1"
+    if args.validation:
+        env["BUILD_LOCAL_VALIDATION"] = args.validation
+    if args.sanitizer:
+        env["BUILD_LOCAL_SANITIZER"] = args.sanitizer
 
     passthrough = list(args.passthrough or [])
     if passthrough and passthrough[0] == "--":

@@ -16,13 +16,13 @@ Optional:
 Windows (PowerShell):
 
 ```powershell
-./scripts/build-local.ps1
+python scripts/build-local.py --backend sh --validation full
 ```
 
 Linux/macOS:
 
 ```bash
-bash scripts/build-local.sh
+python scripts/build-local.py --backend sh --validation full
 ```
 
 Both scripts:
@@ -31,6 +31,12 @@ Both scripts:
 - build baseline + LLM binaries
 - run Glasgow parity checks
 - run subgraph witness-mapping correctness checks
+
+Variants:
+
+- fast smoke build: add `--validation fast`
+- AddressSanitizer: add `--sanitizer address`
+- UBSan: add `--sanitizer undefined`
 
 ## 1b. Optional CMake Build Path (C++20)
 
@@ -70,6 +76,53 @@ Open:
 3. Choose run mode:
    - `Standard Run (GitHub Actions)`: remote workflow run + artifacts.
    - `Run Locally (WebAssembly)`: browser-local execution with wasm modules.
+
+## 4b. Run The Headless Benchmark CLI
+
+Independent-input example:
+
+```bash
+python scripts/benchmark-runner.py \
+  --run \
+  --preset smoke \
+  --tab-id subgraph \
+  --input-mode independent \
+  --variants vf3_chatgpt \
+  --n-values 64 \
+  --density-values 0.05 \
+  --k-values 10
+```
+
+Dataset example:
+
+```bash
+python scripts/benchmark-runner.py \
+  --run \
+  --preset smoke \
+  --tab-id subgraph \
+  --input-mode datasets \
+  --variants vf3_chatgpt \
+  --datasets subgraph_sip_full
+```
+
+Manifest workflow:
+
+```bash
+python scripts/benchmark-runner.py --write-manifest benchmarks/smoke.json --preset smoke --tab-id subgraph --variants vf3_chatgpt --n-values 64 --density-values 0.05 --k-values 10
+python scripts/benchmark-runner.py --manifest benchmarks/smoke.json --run
+```
+
+GUI workflow:
+
+- Configure the benchmark in the desktop runner.
+- Keep `Stop Mode` set to `Threshold`.
+- Click `Export Manifest`.
+- Later, use `Import Manifest` in the GUI to restore the same setup.
+- Run it later with:
+
+```bash
+python scripts/benchmark-runner.py --manifest path/to/exported-manifest.json --run
+```
 
 ## 5. Build WASM Modules (if local wasm is missing)
 
@@ -118,3 +171,10 @@ The button pulls the latest successful artifact from:
 - artifact name: `benchmark-runner-windows`, `benchmark-runner-macos`, or `benchmark-runner-linux` (based on your browser OS)
 
 The downloaded artifact zip contains the packaged desktop runner plus bundled solver binaries for that platform.
+
+Trusted packaging and validation workflows:
+
+- `.github/workflows/build-benchmark-runner.yml`: fully validated packaged artifacts
+- `.github/workflows/build-benchmark-runner-smoke.yml`: fast smoke-packaging artifacts
+- `.github/workflows/native-sanitizers.yml`: Windows/Linux/macOS sanitizer validation
+- `.github/workflows/benchmark-cli.yml`: manifest-driven headless benchmark workflow

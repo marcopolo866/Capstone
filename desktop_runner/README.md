@@ -3,10 +3,12 @@
 Packaging inputs:
 
 - GUI source: `desktop_runner/app.py`
+- Headless CLI source: `desktop_runner/headless_runner.py`
 - Packager scripts:
   - Windows: `desktop_runner/build_windows_exe.ps1`
   - Linux/macOS: `desktop_runner/build_unix_bundle.py`
 - Cross-platform launcher: `desktop_runner/build_runner.py`
+- CLI wrapper: `scripts/benchmark-runner.py`
 - Workflow: `.github/workflows/build-benchmark-runner.yml`
 
 ## Add More Solver Executables
@@ -49,3 +51,36 @@ python scripts/prepare-datasets.py --list
 python scripts/prepare-datasets.py --id subgraph_sip_full
 python scripts/prepare-datasets.py --all
 ```
+
+Optional headless benchmark CLI:
+
+```bash
+python scripts/benchmark-runner.py --list-variants
+python scripts/benchmark-runner.py --list-datasets
+python scripts/benchmark-runner.py \
+  --run \
+  --preset smoke \
+  --tab-id subgraph \
+  --input-mode datasets \
+  --variants vf3_chatgpt \
+  --datasets subgraph_sip_full
+```
+
+The desktop app can invoke the same headless path:
+
+```bash
+python desktop_runner/app.py --headless --manifest path/to/benchmark-manifest.json
+```
+
+The GUI can export the same reproducible manifest directly via `Export Manifest`, and load one back in via `Import Manifest`.
+Use `Threshold` stop mode when exporting; timed runs are intentionally rejected because they are not reproducible in the headless manifest model.
+
+Windows runtime note:
+
+- The desktop runner and headless CLI automatically prepend `C:\msys64\mingw64\bin` and `C:\msys64\usr\bin` when those directories exist, so MinGW-built baseline binaries launch correctly outside the build shell.
+
+Dataset notes:
+
+- `subgraph_mivia_arg` now converts one representative `si2_*` pair on demand after download.
+- `subgraph_practical_bigraphs` now converts one representative pair from `instances/savannah_instances.txt` on demand after download.
+- Dataset preparation happens before measured trials, so conversion time and memory are not included in benchmark statistics.

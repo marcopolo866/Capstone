@@ -22,6 +22,9 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - `test_create_result_json_step.py`
   - Validates structured metrics ingestion from `outputs/run_metrics.json`.
   - Validates fallback behavior to environment variables.
+- `test_headless_runner.py`
+  - Validates manifest baseline injection and independent-variable config building.
+  - Validates on-demand MIVIA and Practical Bigraphs conversion helpers.
 - `tests/cpp/graph_oracle_tests.cpp` (via CMake/CTest)
   - C++ edge-case checks for shortest-path and subgraph mapping oracles.
   - Property-based randomized checks for path optimality and witness mapping validity.

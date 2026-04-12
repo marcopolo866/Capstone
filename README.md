@@ -10,6 +10,7 @@ This repository benchmarks baseline vs LLM-generated C++ implementations for:
 The project provides:
 
 - A browser UI (`index.html`) for local WASM runs and GitHub Actions runs
+- A manifest-driven headless benchmark CLI (`scripts/benchmark-runner.py`)
 - Native build scripts for baseline + LLM binaries
 - Workflow-driven benchmark execution and artifact generation
 - Visualization and result export (`outputs/result.json`, `outputs/visualization.json`)
@@ -18,9 +19,12 @@ The project provides:
 ## Quick Start
 
 1. Build native binaries:
-   - Windows: `./scripts/build-local.ps1`
-   - Linux/macOS: `bash scripts/build-local.sh`
+   - Windows: `python scripts/build-local.py --backend sh --validation full`
+   - Linux/macOS: `python scripts/build-local.py --backend sh --validation full`
+   - Fast smoke build: add `--validation fast`
+   - Sanitizer builds: add `--sanitizer address` or `--sanitizer undefined`
    - Optional CMake path: `cmake -S . -B build/cmake && cmake --build build/cmake`
+   - Windows runtime note: the desktop runner and headless CLI automatically prepend `C:\msys64\mingw64\bin` and `C:\msys64\usr\bin` when those directories exist.
 2. Open `index.html` from a local static server.
 3. Connect to a repository/branch in the UI.
 4. Select algorithm + input mode (`premade` or `generate`).
@@ -29,6 +33,20 @@ The project provides:
    - `Run Locally (WebAssembly)` for browser-local execution.
 6. (Optional) Download the desktop benchmark runner from the UI button:
    - `Download Benchmark Runner` (latest successful artifact for your OS)
+
+Headless CLI example:
+
+```bash
+python scripts/benchmark-runner.py \
+  --run \
+  --preset smoke \
+  --tab-id subgraph \
+  --input-mode independent \
+  --variants vf3_chatgpt \
+  --n-values 64 \
+  --density-values 0.05 \
+  --k-values 10
+```
 
 For detailed setup/run instructions, see [docs/quickstart.md](docs/quickstart.md).
 

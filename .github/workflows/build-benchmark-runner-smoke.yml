@@ -1,0 +1,120 @@
+﻿name: Build Benchmark Runner Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-benchmark-runner-smoke.yml'
+      - 'desktop_runner/**'
+      - 'scripts/build-local*.py'
+      - 'scripts/build-local*.sh'
+      - 'scripts/build-local*.ps1'
+      - 'src/**'
+      - 'baselines/**'
+
+jobs:
+  build-runner-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner_os: windows-2022
+            os_tag: windows
+          - runner_os: ubuntu-24.04
+            os_tag: linux
+          - runner_os: macos-14
+            os_tag: macos
+    runs-on: ${{ matrix.runner_os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSYS2 toolchain (Windows)
+        if: matrix.os_tag == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            git
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-gmp
+            mingw-w64-x86_64-python
+
+      - name: Add MinGW to PATH (Windows)
+        if: matrix.os_tag == 'windows'
+        shell: pwsh
+        run: |
+          "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+
+      - name: Install system build dependencies (Linux)
+        if: matrix.os_tag == 'linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential make cmake libgmp-dev python3-tk
+
+      - name: Install system build dependencies (macOS)
+        if: matrix.os_tag == 'macos'
+        run: |
+          set -euo pipefail
+          brew install gmp cmake ccache || true
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r desktop_runner/requirements.txt
+
+      - name: Build native benchmark binaries (Windows/MSYS2)
+        if: matrix.os_tag == 'windows'
+        shell: msys2 {0}
+        run: |
+          set -o pipefail
+          export BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1
+          python scripts/build-local.py --backend sh --cmake-generator "MinGW Makefiles" --validation fast 2>&1 | tee build-local-smoke.log
+
+      - name: Build native benchmark binaries (Linux/macOS)
+        if: matrix.os_tag != 'windows'
+        run: |
+          set -euo pipefail
+          export BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1
+          python scripts/build-local.py --backend sh --validation fast 2>&1 | tee build-local-smoke.log
+
+      - name: Package desktop benchmark runner
+        run: |
+          python desktop_runner/build_runner.py
+
+      - name: Upload smoke runner artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-runner-smoke-${{ matrix.os_tag }}
+          path: |
+            dist/capstone-benchmark-runner.exe
+            dist/capstone-benchmark-runner
+            dist/capstone-benchmark-runner.app/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload smoke build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-runner-smoke-logs-${{ matrix.os_tag }}
+          path: build-local-smoke.log
+          if-no-files-found: warn
+          retention-days: 14
