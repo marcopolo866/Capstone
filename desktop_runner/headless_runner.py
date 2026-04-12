@@ -16,6 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from desktop_runner import app as app_mod
+from utilities import generate_graphs as generator_mod
+from utilities.benchmark_provenance import collect_runtime_provenance
+from utilities.benchmark_validation import (
+    extract_path_tokens,
+    validate_shortest_path_result,
+    validate_subgraph_result,
+)
 
 MANIFEST_SCHEMA_VERSION = "capstone-benchmark-manifest-v1"
 SESSION_SCHEMA_VERSION = "desktop-benchmark-v2"
@@ -96,6 +103,7 @@ def merge_preset_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     merged.setdefault("schema_version", MANIFEST_SCHEMA_VERSION)
     merged.setdefault("tab_id", "")
     merged.setdefault("input_mode", "independent")
+    merged.setdefault("graph_family", "random_density")
     merged.setdefault("selected_variants", [])
     merged.setdefault("selected_datasets", [])
     merged.setdefault("k_mode", "absolute")
@@ -111,6 +119,7 @@ def build_manifest_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "preset": str(args.preset or "standard").strip().lower() or "standard",
         "tab_id": str(args.tab_id or "").strip().lower(),
         "input_mode": str(args.input_mode or "independent").strip().lower() or "independent",
+        "graph_family": str(args.graph_family or "random_density").strip().lower() or "random_density",
         "selected_variants": parse_csv_items(args.variants),
         "selected_datasets": parse_csv_items(args.datasets),
         "k_mode": str(args.k_mode or "absolute").strip().lower() or "absolute",
@@ -309,6 +318,7 @@ def build_runtime_config(payload: dict[str, Any], logger) -> dict[str, Any]:
         "preset": merged.get("preset"),
         "tab_id": tab_id,
         "input_mode": str(merged.get("input_mode") or "independent").strip().lower(),
+        "graph_family": generator_mod.normalize_graph_family(str(merged.get("graph_family") or "random_density")),
         "selected_variants_requested": list(merged.get("selected_variants") or []),
         "selected_variants": selected_variants,
         "selected_variant_labels": {variant_id: solver_variants_by_id()[variant_id].label for variant_id in selected_variants},
@@ -336,19 +346,6 @@ def build_runtime_config(payload: dict[str, Any], logger) -> dict[str, Any]:
     config["primary_var"] = primary_var
     config["secondary_var"] = secondary_var
     return config
-
-
-def extract_path_tokens(output_text: str) -> list[str]:
-    lines = [line.strip() for line in str(output_text or "").replace("\r", "").split("\n") if line.strip()]
-    for line in reversed(lines):
-        if re.match(r"(?i)^runtime\s*:", line) or re.search(r"(?i)\bdistance\s*[:=]", line) or re.fullmatch(r"[+-]?\d+", line):
-            continue
-        raw = line.split(";", 1)[0].strip()
-        parts = [part.strip() for part in raw.replace("->", ",").split(",") if part.strip()]
-        if len(parts) >= 2:
-            return parts
-    return []
-
 
 class Runner:
     def __init__(self, output_dir: Path | None = None, logger=None):
@@ -397,6 +394,20 @@ class Runner:
             return [str(binary), "--count-solutions", "--format", lad_format, str(inputs["lad_pattern"]), str(inputs["lad_target"])]
         return [str(binary), str(inputs["lad_pattern"]), str(inputs["lad_target"])]
 
+    def build_witness_command(self, variant_id: str, inputs: dict[str, Path | str]) -> list[str] | None:
+        binary = self.binary_paths[variant_id]
+        family = app_mod.variant_family_from_id(variant_id)
+        if family == "vf3":
+            if variant_id == "vf3_baseline":
+                return [str(binary), "-u", "-r", "0", "-F", "-e", str(inputs["vf_pattern"]), str(inputs["vf_target"])]
+            return [str(binary), "--first-only", str(inputs["vf_pattern"]), str(inputs["vf_target"])]
+        if family == "glasgow":
+            lad_format = str(inputs.get("lad_format") or "lad").strip() or "lad"
+            if variant_id == "glasgow_baseline":
+                return [str(binary), "--format", lad_format, str(inputs["lad_pattern"]), str(inputs["lad_target"])]
+            return [str(binary), str(inputs["lad_pattern"]), str(inputs["lad_target"]), "--print-mappings"]
+        return None
+
     def run_trial(self, *, tab_id: str, variant_id: str, inputs: dict[str, Path | str], solver_timeout_seconds: float | None, output_dir: Path) -> dict[str, Any]:
         binary = self.binary_paths[variant_id]
         command = self.build_command(variant_id, inputs)
@@ -427,6 +438,47 @@ class Runner:
                 answer_kind, answer_value, answer_signature = "distance", str(distance_value), ("distance", str(distance_value))
         path_tokens = extract_path_tokens(combined)
         mappings = app_mod.extract_mappings_from_text(combined)
+        if family in {"dijkstra", "sp_via"}:
+            validation = validate_shortest_path_result(
+                input_path=Path(inputs["dijkstra_file"]),
+                reported_distance=distance_value,
+                path_tokens=path_tokens,
+            )
+        else:
+            validation = validate_subgraph_result(
+                family=family,
+                inputs=inputs,
+                output_text=combined,
+                reported_solution_count=solution_count,
+                allow_metadata_fallback=False,
+            )
+            if bool(validation.get("required_witness")) and not bool(validation.get("valid")):
+                witness_command = self.build_witness_command(variant_id, inputs)
+                if witness_command:
+                    try:
+                        _w_ms, _w_kb, witness_rc, witness_stdout, witness_stderr = self.run_process(
+                            witness_command,
+                            binary.parent,
+                            None,
+                            solver_timeout_seconds,
+                        )
+                        if witness_rc == 0:
+                            witness_combined = (witness_stdout or "") + ("\n" + witness_stderr if witness_stderr else "")
+                            validation = validate_subgraph_result(
+                                family=family,
+                                inputs=inputs,
+                                output_text=witness_combined,
+                                reported_solution_count=solution_count,
+                                allow_metadata_fallback=True,
+                            )
+                    except Exception:
+                        validation = validate_subgraph_result(
+                            family=family,
+                            inputs=inputs,
+                            output_text=combined,
+                            reported_solution_count=solution_count,
+                            allow_metadata_fallback=True,
+                        )
         status = "timeout" if timed_out else ("failed" if return_code not in {None, 0} else "ok")
         return {
             "schema_version": TRIAL_SCHEMA_VERSION,
@@ -447,15 +499,25 @@ class Runner:
                 "distance": distance_value,
                 "path_length": max(0, len(path_tokens) - 1) if path_tokens else None,
                 "mapping_count": len(mappings),
+                "structural_validation": validation,
+                "structural_valid": bool(validation.get("valid", False)),
             },
             "answer_signature": answer_signature,
         }
 
 
-def build_shortest_path_input(out_dir: Path, *, family: str, n: int, density: float, seed: int) -> dict[str, Path | str]:
+def build_shortest_path_input(
+    out_dir: Path,
+    *,
+    family: str,
+    n: int,
+    density: float,
+    seed: int,
+    graph_family: str,
+) -> dict[str, Path | str]:
     rng = random.Random(seed)
     labels = [f"v{i}" for i in range(n)]
-    edges = app_mod.generate_directed_edges(n, rng, density)
+    edges = generator_mod.generate_directed_edges(n, rng, density, graph_family=graph_family)
     via_label = None
     if family == "sp_via":
         via_index = max(0, min(n - 1, n // 2))
@@ -472,15 +534,43 @@ def build_shortest_path_input(out_dir: Path, *, family: str, n: int, density: fl
         writer.writerow(["source", "target", "weight"])
         for u, v, weight in edges:
             writer.writerow([labels[u], labels[v], weight])
+    max_edges = n * (n - 1)
+    metadata = {
+        "algorithm": family,
+        "graph_family": generator_mod.normalize_graph_family(graph_family),
+        "n": int(n),
+        "k": None,
+        "density": float(density),
+        "actual_density": 0.0 if max_edges <= 0 else float(len(edges)) / float(max_edges),
+        "seed": int(seed),
+        "files": [path.as_posix()],
+    }
+    if via_label:
+        metadata["via"] = via_label
+    (out_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return {"dijkstra_file": path}
 
 
 def build_generated_inputs(config: dict[str, Any], point: dict[str, Any], point_dir: Path, iter_seed: int) -> dict[str, Path | str]:
     if config["tab_id"] == "subgraph":
-        return app_mod.generate_subgraph_inputs(point_dir, int(round(point["n"])), int(point.get("k_nodes") or round(point.get("k") or 0)), float(point["density"]), int(iter_seed))
+        return app_mod.generate_subgraph_inputs(
+            point_dir,
+            int(round(point["n"])),
+            int(point.get("k_nodes") or round(point.get("k") or 0)),
+            float(point["density"]),
+            int(iter_seed),
+            graph_family=str(config.get("graph_family") or "random_density"),
+        )
     families = {app_mod.variant_family_from_id(variant_id) for variant_id in config["selected_variants"]}
     family = "sp_via" if "sp_via" in families else "dijkstra"
-    return build_shortest_path_input(point_dir, family=family, n=int(round(point["n"])), density=float(point["density"]), seed=int(iter_seed))
+    return build_shortest_path_input(
+        point_dir,
+        family=family,
+        n=int(round(point["n"])),
+        density=float(point["density"]),
+        seed=int(iter_seed),
+        graph_family=str(config.get("graph_family") or "random_density"),
+    )
 
 
 def build_point_label(config: dict[str, Any], point: dict[str, Any]) -> str:
@@ -539,6 +629,8 @@ def finalize_point(config: dict[str, Any], state: dict[str, Any], stream) -> lis
             "answer_kind": next((item.get("answer_kind") for item in answer_rows if item.get("answer_kind")), None),
             "path_length_median": aggregate_metric([item.get("path_length") for item in answer_rows]),
             "mappings_reported_median": aggregate_metric([item.get("mapping_count") for item in answer_rows]),
+            "structural_validation_passes": int(sum(1 for item in answer_rows if item.get("structural_valid") is True)),
+            "structural_validation_total": int(sum(1 for item in answer_rows if item.get("structural_valid") is not None)),
         }
         stream.write(json.dumps(row, default=app_mod.serialize_for_json) + "\n")
         rows.append(row)
@@ -575,7 +667,7 @@ def write_session_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerow([
             "variant_id", "variant_label", "dataset_id", "dataset_name", "x_value", "y_value", "runtime_median_ms", "runtime_stdev_ms", "runtime_samples_n",
             "memory_median_kb", "memory_stdev_kb", "memory_samples_n", "completed_iterations", "requested_iterations", "answer_kind", "path_length_median",
-            "mappings_reported_median",
+            "mappings_reported_median", "structural_validation_passes", "structural_validation_total",
             "runtime_samples_json", "memory_samples_json", "runtime_samples_raw_json", "memory_samples_raw_json", "seeds_json",
         ])
         for row in rows:
@@ -584,7 +676,8 @@ def write_session_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                 app_mod.number_or_blank(row.get("y_value")) if row.get("y_value") is not None else "", app_mod.number_or_blank(row.get("runtime_median_ms")),
                 app_mod.number_or_blank(row.get("runtime_stdev_ms")), row.get("runtime_samples_n"), app_mod.number_or_blank(row.get("memory_median_kb")),
                 app_mod.number_or_blank(row.get("memory_stdev_kb")), row.get("memory_samples_n"), row.get("completed_iterations"), row.get("requested_iterations"),
-                row.get("answer_kind") or "", app_mod.number_or_blank(row.get("path_length_median")), app_mod.number_or_blank(row.get("mappings_reported_median")), json.dumps(row.get("runtime_samples_ms", [])),
+                row.get("answer_kind") or "", app_mod.number_or_blank(row.get("path_length_median")), app_mod.number_or_blank(row.get("mappings_reported_median")),
+                row.get("structural_validation_passes") or 0, row.get("structural_validation_total") or 0, json.dumps(row.get("runtime_samples_ms", [])),
                 json.dumps(row.get("memory_samples_kb", [])), json.dumps(row.get("runtime_samples_raw_ms", [])), json.dumps(row.get("memory_samples_raw_kb", [])), json.dumps(row.get("seeds", [])),
             ])
 
@@ -668,7 +761,14 @@ def execute_manifest(manifest: dict[str, Any], manifest_path: Path | None, outpu
                     trial_stream.flush()
                     completed_trials += 1
                     normalized = dict(trial.get("normalized_result") or {})
-                    state["answer_rows"][variant_id].append({"answer_kind": normalized.get("answer_kind"), "path_length": normalized.get("path_length"), "mapping_count": normalized.get("mapping_count")})
+                    state["answer_rows"][variant_id].append(
+                        {
+                            "answer_kind": normalized.get("answer_kind"),
+                            "path_length": normalized.get("path_length"),
+                            "mapping_count": normalized.get("mapping_count"),
+                            "structural_valid": normalized.get("structural_valid"),
+                        }
+                    )
                     state["seed_records"][variant_id].append(int(iter_seed))
                     state["iter_answer_signatures"][iter_idx][variant_id] = trial.get("answer_signature")
                     if isinstance(trial.get("runtime_ms"), (int, float)):
@@ -698,7 +798,7 @@ def execute_manifest(manifest: dict[str, Any], manifest_path: Path | None, outpu
         "datapoints_path": str(datapoints_path),
         "trials_path": str(trials_path),
         "run_config": {
-            "preset": config.get("preset"), "tab_id": config["tab_id"], "input_mode": config["input_mode"],
+            "preset": config.get("preset"), "tab_id": config["tab_id"], "input_mode": config["input_mode"], "graph_family": str(config.get("graph_family") or "random_density"),
             "selected_variants_requested": list(config.get("selected_variants_requested") or []), "selected_variants": list(config["selected_variants"]),
             "selected_variant_labels": dict(config["selected_variant_labels"]), "injected_baselines": list(config.get("injected_baselines") or []),
             "selected_datasets": list(config.get("selected_datasets") or []), "iterations_per_datapoint": int(config["iterations"]), "seed": int(config["base_seed"]),
@@ -708,6 +808,7 @@ def execute_manifest(manifest: dict[str, Any], manifest_path: Path | None, outpu
             "var_ranges": config["var_ranges"], "fixed_values": config["fixed_values"], "delete_generated_inputs": config.get("delete_generated_inputs", True),
         },
         "dataset_selection": list(config.get("dataset_selection") or []),
+        "provenance": collect_runtime_provenance(repo_root=Path(__file__).resolve().parents[1]),
         "statistical_tests": app_mod.build_desktop_runtime_statistical_tests(config=config, point_states=point_states, selected_variants=list(config["selected_variants"])),
         "datapoints": datapoint_rows,
     }
@@ -726,6 +827,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preset", default="standard", choices=sorted(PRESET_DEFAULTS), help="Benchmark preset.")
     parser.add_argument("--tab-id", default="", choices=["", "subgraph", "shortest_path"], help="Benchmark tab/family bucket.")
     parser.add_argument("--input-mode", default="independent", choices=["independent", "datasets"], help="Use generated inputs or prepared datasets.")
+    parser.add_argument("--graph-family", default="random_density", choices=list(generator_mod.GRAPH_FAMILIES), help="Synthetic graph family for generated runs.")
     parser.add_argument("--variants", default="", help="Comma-separated variant ids.")
     parser.add_argument("--datasets", default="", help="Comma-separated dataset ids.")
     parser.add_argument("--n-values", default="", help="Comma-separated N values for independent runs.")

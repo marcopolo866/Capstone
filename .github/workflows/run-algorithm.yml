@@ -47,6 +47,16 @@ on:
         required: false
         type: string
         default: '0.01'
+      graph_family:
+        description: 'Synthetic graph family for generated inputs'
+        required: false
+        type: choice
+        options:
+          - random_density
+          - erdos_renyi
+          - barabasi_albert
+          - grid
+        default: random_density
       seed:
         description: 'Generator seed (optional)'
         required: false
@@ -79,6 +89,7 @@ jobs:
       GENERATOR_N_INPUT: ${{ github.event.inputs.n || github.event.client_payload.n }}
       GENERATOR_K_INPUT: ${{ github.event.inputs.k || github.event.client_payload.k }}
       GENERATOR_DENSITY_INPUT: ${{ github.event.inputs.density || github.event.client_payload.density }}
+      GENERATOR_GRAPH_FAMILY_INPUT: ${{ github.event.inputs.graph_family || github.event.client_payload.graph_family }}
       GENERATOR_SEED_INPUT: ${{ github.event.inputs.seed || github.event.client_payload.seed }}
       VIA_NODE_INPUT: ${{ github.event.inputs.via_node || github.event.client_payload.via_node }}
       INPUT_FILES_INPUT: ${{ github.event.inputs.input_files || github.event.client_payload.input_files }}

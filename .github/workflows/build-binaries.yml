@@ -57,6 +57,10 @@ jobs:
           import hashlib
           import json
           import os
+          import platform
+          import shutil
+          import subprocess
+          import sys
           from pathlib import Path
           import scripts.solver_discovery as solver_discovery
 
@@ -80,8 +84,64 @@ jobs:
               if str(row.get("binary_path") or "").strip()
           }
 
+          def tool_info(name: str):
+              path = shutil.which(name)
+              if not path:
+                  return None
+              try:
+                  completed = subprocess.run(
+                      [path, "--version"],
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                      text=True,
+                      encoding="utf-8",
+                      errors="replace",
+                      timeout=10,
+                      check=False,
+                  )
+                  version = (completed.stdout or "").splitlines()[0].strip()
+              except Exception:
+                  version = ""
+              return {"path": path, "version": version or None}
+
           manifest = {
               "commit_sha": os.environ.get("GITHUB_SHA", ""),
+              "build_provenance": {
+                  "platform": {
+                      "system": platform.system(),
+                      "release": platform.release(),
+                      "version": platform.version(),
+                      "machine": platform.machine(),
+                      "processor": platform.processor(),
+                      "platform": platform.platform(),
+                  },
+                  "python": {
+                      "version": sys.version.splitlines()[0].strip(),
+                      "executable": sys.executable,
+                  },
+                  "toolchains": {
+                      k: v for k, v in {
+                          "cmake": tool_info("cmake"),
+                          "gcc": tool_info("gcc"),
+                          "g++": tool_info("g++"),
+                          "clang": tool_info("clang"),
+                          "clang++": tool_info("clang++"),
+                          "make": tool_info("make"),
+                      }.items() if v is not None
+                  },
+                  "build_flags": {
+                      "CMAKE_GENERATOR": os.environ.get("CMAKE_GENERATOR", ""),
+                      "CFLAGS": os.environ.get("CFLAGS", ""),
+                      "CXXFLAGS": os.environ.get("CXXFLAGS", ""),
+                      "CPPFLAGS": os.environ.get("CPPFLAGS", ""),
+                      "LDFLAGS": os.environ.get("LDFLAGS", ""),
+                  },
+                  "workflow": {
+                      "name": os.environ.get("GITHUB_WORKFLOW", ""),
+                      "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+                      "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+                  },
+              },
               "sources": {},
               "binaries": {},
               "skipped_variants": [],

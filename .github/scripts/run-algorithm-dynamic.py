@@ -18,7 +18,6 @@ from dataclasses import dataclass
 import importlib.util
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUTS_DIR = REPO_ROOT / "outputs"
 RESULT_TEXT_PATH = OUTPUTS_DIR / "result.txt"
@@ -26,6 +25,14 @@ METRICS_PATH = OUTPUTS_DIR / "run_metrics.json"
 VISUALIZATION_SOLUTION_CAP = 2000
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from utilities import generate_graphs as generator_mod
+from utilities.benchmark_provenance import collect_runtime_provenance
+from utilities.benchmark_validation import (
+    extract_path_tokens as shared_extract_path_tokens,
+    validate_shortest_path_result as shared_validate_shortest_path_result,
+    validate_subgraph_result as shared_validate_subgraph_result,
+)
 
 
 def load_solver_discovery_module():
@@ -561,6 +568,41 @@ def normalize_dijkstra_output(text: str) -> str:
     return "\n".join(cleaned).strip()
 
 
+def parse_dijkstra_distance(output_text: str) -> str | None:
+    text = str(output_text or "").strip()
+    if not text:
+        return None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or re.match(r"(?i)^runtime\s*:", line):
+            continue
+        token = line.split(";", 1)[0].strip()
+        if not token:
+            continue
+        token_upper = token.upper()
+        if token_upper in {"INF", "INFINITY"}:
+            return "INF"
+        if token == "-1":
+            return "INF"
+        if re.fullmatch(r"[+-]?\d+", token):
+            try:
+                value = int(token)
+            except Exception:
+                continue
+            return "INF" if value < 0 else str(value)
+        match = re.search(r"(?i)\bdistance\s*[:=]\s*([+-]?\d+|INF|INFINITY)\b", line)
+        if match:
+            raw_value = str(match.group(1)).strip()
+            if raw_value.upper() in {"INF", "INFINITY"}:
+                return "INF"
+            try:
+                parsed = int(raw_value)
+            except Exception:
+                continue
+            return "INF" if parsed < 0 else str(parsed)
+    return None
+
+
 def format_return_code(rc: int) -> str:
     if rc >= 0:
         return str(rc)
@@ -745,6 +787,7 @@ def generate_inputs_for_iteration(
     k: int,
     density: float,
     base_seed: int,
+    graph_family: str,
 ) -> dict[str, Path]:
     out_dir = OUTPUTS_DIR / "generated" / algorithm / f"iter_{iteration_index + 1}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -759,6 +802,8 @@ def generate_inputs_for_iteration(
             str(n),
             "--density",
             str(density),
+            "--graph-family",
+            str(graph_family),
             "--seed",
             str(seed),
             "--out-dir",
@@ -782,6 +827,8 @@ def generate_inputs_for_iteration(
         str(k),
         "--density",
         str(density),
+        "--graph-family",
+        str(graph_family),
         "--seed",
         str(seed),
         "--out-dir",
@@ -854,7 +901,7 @@ def make_mode_commands(row: SolverRow, inputs: dict[str, Path], via_label: str) 
                 "all": [str(binary), "-u", "-r", "0", "-e", str(inputs["vf_pattern"]), str(inputs["vf_target"])],
             }
         return {
-            "first": [str(binary), str(inputs["vf_pattern"]), str(inputs["vf_target"])],
+            "first": [str(binary), "--first-only", str(inputs["vf_pattern"]), str(inputs["vf_target"])],
             "all": [str(binary), str(inputs["vf_pattern"]), str(inputs["vf_target"])],
         }
     if row.family == "glasgow":
@@ -1575,6 +1622,7 @@ def main() -> int:
     n = parse_int_env("GENERATOR_N_INPUT", 100, minimum=2)
     k = parse_int_env("GENERATOR_K_INPUT", 10, minimum=1)
     density = parse_float_env("GENERATOR_DENSITY_INPUT", 0.01, minimum=0.000001, maximum=1.0)
+    graph_family = generator_mod.normalize_graph_family(str(os.environ.get("GENERATOR_GRAPH_FAMILY_INPUT", "random_density") or "random_density"))
 
     seed_raw = str(os.environ.get("GENERATOR_SEED_INPUT", "") or "").strip()
     if seed_raw:
@@ -1607,6 +1655,7 @@ def main() -> int:
     memory_kb_stdev: dict[str, int] = {}
     match_counts: dict[str, dict] = {}
     witness_counts: dict[str, dict] = {}
+    structural_validation_counts: dict[str, dict] = {}
     statistical_tests: dict = {"metric": "runtime_ms", "alpha": 0.05, "pairs": [], "notes": []}
     variant_metadata: list[dict] = []
     output_lines: list[str] = []
@@ -1689,6 +1738,7 @@ def main() -> int:
                     k=k,
                     density=density,
                     base_seed=base_seed,
+                    graph_family=graph_family,
                 )
             else:
                 inputs = get_premade_inputs(selected_family, input_files)
@@ -1902,38 +1952,54 @@ def main() -> int:
                 key = row.variant_id
             match_counts[key] = {"matches": matches, "total": total, "mismatches": mismatches}
 
-        if selected_family == "glasgow":
-            graph_cache: dict[int, tuple[list[list[int]], list[list[int]]]] = {}
-
-            def get_iteration_lad_graphs(iteration_idx: int) -> tuple[list[list[int]], list[list[int]]]:
-                cached = graph_cache.get(iteration_idx)
-                if cached is not None:
-                    return cached
-                inputs = per_iteration_inputs[iteration_idx]
-                pattern_path = Path(inputs["lad_pattern"])
-                target_path = Path(inputs["lad_target"])
-                pattern_adj = parse_lad_graph(pattern_path)
-                target_adj = parse_lad_graph(target_path)
-                cached = (pattern_adj, target_adj)
-                graph_cache[iteration_idx] = cached
-                return cached
-
+        if selected_family in {"dijkstra", "sp_via"}:
             total_iterations = min(iterations, len(per_iteration_inputs))
             for row in by_role:
-                if row.role == "baseline":
-                    continue
-                key = row.llm_key or row.variant_id
-                if algorithm_input == "subgraph":
-                    key = row.variant_id
+                single_outputs = list(per_solver_outputs.get((row.variant_id, "single"), []))
+                passed = 0
+                total = 0
+                invalid_iterations: list[int] = []
+                errors: list[str] = []
+                for i in range(total_iterations):
+                    if i >= len(single_outputs):
+                        continue
+                    try:
+                        validation = shared_validate_shortest_path_result(
+                            input_path=Path(per_iteration_inputs[i]["dijkstra"]),
+                            reported_distance=parse_dijkstra_distance(single_outputs[i]),
+                            path_tokens=shared_extract_path_tokens(single_outputs[i]),
+                        )
+                        total += 1
+                        if bool(validation.get("valid")):
+                            passed += 1
+                        else:
+                            invalid_iterations.append(i + 1)
+                            if validation.get("error"):
+                                errors.append(f"iteration {i + 1}: {validation.get('error')}")
+                    except Exception as exc:
+                        total += 1
+                        invalid_iterations.append(i + 1)
+                        errors.append(f"iteration {i + 1}: {exc}")
+                structural_validation_counts[row.variant_id] = {
+                    "valid": passed,
+                    "total": total,
+                    "invalid": max(0, total - passed),
+                    "invalid_iterations": invalid_iterations,
+                }
+                if errors:
+                    structural_validation_counts[row.variant_id]["errors"] = errors
 
+        if selected_family in {"vf3", "glasgow"}:
+            total_iterations = min(iterations, len(per_iteration_inputs))
+            for row in by_role:
                 first_outputs = list(per_solver_outputs.get((row.variant_id, "first"), []))
                 all_outputs = list(per_solver_outputs.get((row.variant_id, "all"), []))
-
                 required = 0
-                valid = 0
-                parsed = 0
-                missing_iterations: list[int] = []
+                witness_valid = 0
+                structural_valid = 0
+                invalid_iterations: list[int] = []
                 errors: list[str] = []
+                source_counts = {"solver_output": 0, "metadata_hint": 0, "none": 0}
 
                 for i in range(total_iterations):
                     first_text = first_outputs[i] if i < len(first_outputs) else ""
@@ -1941,36 +2007,50 @@ def main() -> int:
                     count = parse_solution_count(all_text)
                     if count is None:
                         count = parse_solution_count(first_text)
-                    if count is None or count <= 0:
+                    if count is None:
                         continue
-
-                    required += 1
+                    if count > 0:
+                        required += 1
                     try:
-                        pattern_adj, target_adj = get_iteration_lad_graphs(i)
-                        has_valid, parsed_now, _valid_now = evaluate_witness_mapping_output(
-                            first_text,
-                            pattern_adj=pattern_adj,
-                            target_adj=target_adj,
-                            limit=64,
+                        validation = shared_validate_subgraph_result(
+                            family=selected_family,
+                            inputs=per_iteration_inputs[i],
+                            output_text=first_text or all_text,
+                            reported_solution_count=count,
+                            allow_metadata_fallback=True,
                         )
-                        parsed += int(parsed_now)
-                        if has_valid:
-                            valid += 1
+                        source = str(validation.get("witness_source") or "none")
+                        source_counts[source] = source_counts.get(source, 0) + 1
+                        if bool(validation.get("valid")):
+                            structural_valid += 1
+                            if count > 0:
+                                witness_valid += 1
                         else:
-                            missing_iterations.append(i + 1)
+                            invalid_iterations.append(i + 1)
+                            if validation.get("error"):
+                                errors.append(f"iteration {i + 1}: {validation.get('error')}")
                     except Exception as exc:
-                        missing_iterations.append(i + 1)
+                        invalid_iterations.append(i + 1)
                         errors.append(f"iteration {i + 1}: {exc}")
 
-                witness_counts[key] = {
-                    "valid": valid,
+                witness_counts[row.variant_id] = {
+                    "valid": witness_valid,
                     "required": required,
-                    "missing": max(0, required - valid),
-                    "parsed_mappings": parsed,
-                    "missing_iterations": missing_iterations,
+                    "missing": max(0, required - witness_valid),
+                    "invalid_iterations": invalid_iterations,
+                    "witness_sources": source_counts,
                 }
                 if errors:
-                    witness_counts[key]["errors"] = errors
+                    witness_counts[row.variant_id]["errors"] = errors
+                structural_validation_counts[row.variant_id] = {
+                    "valid": structural_valid,
+                    "total": total_iterations,
+                    "invalid": max(0, total_iterations - structural_valid),
+                    "invalid_iterations": invalid_iterations,
+                    "witness_sources": source_counts,
+                }
+                if errors:
+                    structural_validation_counts[row.variant_id]["errors"] = errors
 
         statistical_tests = build_runtime_statistical_tests(
             by_role=by_role,
@@ -2000,6 +2080,8 @@ def main() -> int:
         output_lines.append(f"Iterations: {iterations}")
         output_lines.append(f"Warmup: {warmup}")
         output_lines.append(f"Seed used: {base_seed}")
+        if input_mode == "generate":
+            output_lines.append(f"Graph family: {graph_family}")
         if via_node_input:
             output_lines.append(f"Via node: {via_node_input}")
         if comparison_reference_label and comparison_reference_label != baseline_row.label:
@@ -2185,6 +2267,7 @@ def main() -> int:
         "GENERATOR_N_INPUT": str(n),
         "GENERATOR_K_INPUT": str(k),
         "GENERATOR_DENSITY_INPUT": str(density),
+        "GENERATOR_GRAPH_FAMILY_INPUT": graph_family,
         "SEED_USED": str(base_seed),
         "ITERATIONS": str(iterations),
         "WARMUP": str(warmup),
@@ -2196,8 +2279,18 @@ def main() -> int:
         "MEMORY_KB_STDEV_JSON": json.dumps(memory_kb_stdev, separators=(",", ":"), sort_keys=True),
         "MATCH_COUNTS_JSON": json.dumps(match_counts, separators=(",", ":"), sort_keys=True),
         "WITNESS_COUNTS_JSON": json.dumps(witness_counts, separators=(",", ":"), sort_keys=True),
+        "STRUCTURAL_VALIDATION_COUNTS_JSON": json.dumps(structural_validation_counts, separators=(",", ":"), sort_keys=True),
         "STATISTICAL_TESTS_JSON": json.dumps(statistical_tests, separators=(",", ":"), sort_keys=True),
         "VARIANT_METADATA_JSON": json.dumps(variant_metadata, separators=(",", ":"), sort_keys=True),
+        "BUILD_PROVENANCE_JSON": json.dumps(
+            collect_runtime_provenance(
+                repo_root=REPO_ROOT,
+                env=dict(os.environ),
+                binaries_manifest_path=OUTPUTS_DIR / "binaries_manifest.json",
+            ),
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
     }
 
     METRICS_PATH.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")

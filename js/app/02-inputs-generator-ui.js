@@ -58,10 +58,12 @@
         function onGeneratorInputChange() {
             const nEl = document.getElementById('gen-n');
             const kEl = document.getElementById('gen-k');
+            const familyEl = document.getElementById('gen-family');
             const dEl = document.getElementById('gen-density');
             const seedEl = document.getElementById('gen-seed');
             config.generator.n = nEl ? nEl.value : '';
             config.generator.k = kEl ? kEl.value : '';
+            config.generator.graphFamily = familyEl ? familyEl.value : (config.generator.graphFamily || 'random_density');
             config.generator.density = dEl ? dEl.value : config.generator.density;
             config.generator.seed = seedEl ? seedEl.value : '';
             updateGeneratorEstimate();
@@ -371,10 +373,12 @@
             const seedWarning = document.getElementById('generator-seed-warning');
             const nEl = document.getElementById('gen-n');
             const kEl = document.getElementById('gen-k');
+            const familyEl = document.getElementById('gen-family');
             const dEl = document.getElementById('gen-density');
             const seedEl = document.getElementById('gen-seed');
             if (nEl) config.generator.n = nEl.value;
             if (kEl) config.generator.k = kEl.value;
+            if (familyEl) config.generator.graphFamily = familyEl.value;
             if (dEl) config.generator.density = dEl.value;
             if (seedEl) config.generator.seed = seedEl.value;
             const nValue = parseInt(String(config.generator.n || '').trim(), 10);
@@ -437,6 +441,7 @@
             if (mode === 'generate') {
                 const n = String(config.generator.n || '').trim();
                 const k = String(config.generator.k || '').trim();
+                const graphFamily = String(config.generator.graphFamily || 'random_density').trim();
                 const density = String(config.generator.density || '').trim();
                 let formatHint = '';
                 if (config.selectedAlgorithm === 'dijkstra') formatHint = 'CSV (labeled)';
@@ -449,6 +454,9 @@
                 }
                 if (density) {
                     html += `, density=${escapeHtml(density)}`;
+                }
+                if (graphFamily) {
+                    html += `, family=${escapeHtml(graphFamily)}`;
                 }
                 if (formatHint) {
                     html += `, format=${formatHint}`;

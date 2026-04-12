@@ -34,6 +34,13 @@ import psutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+from utilities import generate_graphs as generator_mod
+from utilities.benchmark_provenance import collect_runtime_provenance
+from utilities.benchmark_validation import (
+    extract_path_tokens as validation_extract_path_tokens,
+    validate_shortest_path_result,
+    validate_subgraph_result,
+)
 
 try:
     import winreg  # type: ignore
@@ -1839,20 +1846,45 @@ def write_unlabelled_lad(path: Path, adj):
             fh.write(" ".join(row) + "\n")
 
 
-def generate_dijkstra_inputs(out_dir: Path, n: int, density: float, seed: int) -> Path:
+def generate_dijkstra_inputs(
+    out_dir: Path,
+    n: int,
+    density: float,
+    seed: int,
+    graph_family: str = "random_density",
+) -> Path:
     rng = random.Random(seed)
     labels = [f"v{i}" for i in range(n)]
-    edges = generate_directed_edges(n, rng, density)
+    edges = generator_mod.generate_directed_edges(n, rng, density, graph_family=graph_family)
     path = out_dir / "dijkstra_generated.csv"
     write_dijkstra_csv(path, edges, labels)
+    max_edges = n * (n - 1)
+    metadata = {
+        "algorithm": "dijkstra",
+        "graph_family": generator_mod.normalize_graph_family(graph_family),
+        "n": int(n),
+        "k": None,
+        "density": float(density),
+        "actual_density": 0.0 if max_edges <= 0 else float(len(edges)) / float(max_edges),
+        "seed": int(seed),
+        "files": [path.as_posix()],
+    }
+    (out_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return path
 
 
-def generate_subgraph_inputs(out_dir: Path, n: int, k: int, density: float, seed: int):
+def generate_subgraph_inputs(
+    out_dir: Path,
+    n: int,
+    k: int,
+    density: float,
+    seed: int,
+    graph_family: str = "random_density",
+):
     if k >= n:
         raise ValueError("k must be smaller than N")
     rng = random.Random(seed)
-    target_adj = generate_adjacency(n, rng, density)
+    target_adj = generator_mod.generate_adjacency(n, rng, density, graph_family=graph_family)
     undirected = sanitize_undirected_simple_adj(build_undirected_adj(target_adj))
     nodes = pick_connected_nodes(undirected, k, rng)
     labels = [i % 4 for i in range(n)]
@@ -1874,6 +1906,25 @@ def generate_subgraph_inputs(out_dir: Path, n: int, k: int, density: float, seed
     write_vf(vf_pattern, pattern_adj, pattern_labels)
     write_vertex_labelled_lad(lad_target, undirected, labels)
     write_vertex_labelled_lad(lad_pattern, pattern_adj, pattern_labels)
+    actual_edges = count_adj_edges(undirected) // 2
+    max_edges = (n * (n - 1)) // 2
+    metadata = {
+        "algorithm": "subgraph",
+        "graph_family": generator_mod.normalize_graph_family(graph_family),
+        "n": int(n),
+        "k": int(k),
+        "density": float(density),
+        "actual_density": 0.0 if max_edges <= 0 else float(actual_edges) / float(max_edges),
+        "seed": int(seed),
+        "pattern_nodes": [int(node) for node in nodes],
+        "files": [
+            lad_pattern.as_posix(),
+            lad_target.as_posix(),
+            vf_pattern.as_posix(),
+            vf_target.as_posix(),
+        ],
+    }
+    (out_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return {
         "vf_pattern": vf_pattern,
         "vf_target": vf_target,
@@ -3213,6 +3264,7 @@ class BenchmarkRunnerApp(tk.Tk):
         default_workers = max(1, self.detected_logical_cores - 1)
         self.max_workers_var = tk.StringVar(value=str(default_workers))
         self.delete_generated_inputs_var = tk.BooleanVar(value=True)
+        self.graph_family_var = tk.StringVar(value="random_density")
         self.plot3d_style_var = tk.StringVar(value="surface")
         self.plot3d_variant_var = tk.StringVar(value="")
         self.show_stddev_var = tk.BooleanVar(value=True)
@@ -3344,9 +3396,19 @@ class BenchmarkRunnerApp(tk.Tk):
         ttk.Label(left_col, text="Iterations per datapoint").grid(row=0, column=0, sticky="w")
         ttk.Entry(left_col, textvariable=self.iterations_var, width=10).grid(row=0, column=1, padx=(8, 0), sticky="w")
 
-        ttk.Label(left_col, text="Stop Mode").grid(row=1, column=0, pady=(8, 0), sticky="w")
+        ttk.Label(left_col, text="Graph Family").grid(row=1, column=0, pady=(8, 0), sticky="w")
+        self.graph_family_combo = ttk.Combobox(
+            left_col,
+            state="readonly",
+            textvariable=self.graph_family_var,
+            values=list(generator_mod.GRAPH_FAMILIES),
+            width=16,
+        )
+        self.graph_family_combo.grid(row=1, column=1, pady=(8, 0), padx=(8, 0), sticky="w")
+
+        ttk.Label(left_col, text="Stop Mode").grid(row=2, column=0, pady=(8, 0), sticky="w")
         mode_row = ttk.Frame(left_col)
-        mode_row.grid(row=1, column=1, pady=(8, 0), padx=(8, 0), sticky="w")
+        mode_row.grid(row=2, column=1, pady=(8, 0), padx=(8, 0), sticky="w")
         ttk.Radiobutton(mode_row, text="Threshold", variable=self.run_mode_var, value="threshold", command=self._on_run_mode_changed).pack(side=tk.LEFT)
         ttk.Radiobutton(mode_row, text="Timed", variable=self.run_mode_var, value="timed", command=self._on_run_mode_changed).pack(side=tk.LEFT, padx=(8, 0))
         self.parallel_check = ttk.Checkbutton(
@@ -3355,12 +3417,12 @@ class BenchmarkRunnerApp(tk.Tk):
             variable=self.parallel_enabled_var,
             command=self._on_parallel_settings_changed,
         )
-        self.parallel_check.grid(row=2, column=0, columnspan=2, pady=(8, 0), sticky="w")
+        self.parallel_check.grid(row=3, column=0, columnspan=2, pady=(8, 0), sticky="w")
         ttk.Checkbutton(
             left_col,
             text="Delete generated inputs after datapoint",
             variable=self.delete_generated_inputs_var,
-        ).grid(row=3, column=0, columnspan=2, pady=(8, 0), sticky="w")
+        ).grid(row=4, column=0, columnspan=2, pady=(8, 0), sticky="w")
 
         ttk.Label(right_col, text="Seed (blank = random)").grid(row=0, column=0, sticky="w")
         ttk.Entry(right_col, textvariable=self.seed_var, width=18).grid(row=0, column=1, padx=(8, 0), sticky="w")
@@ -4974,6 +5036,7 @@ class BenchmarkRunnerApp(tk.Tk):
             "preset": "standard",
             "tab_id": str(config.get("tab_id") or "").strip().lower(),
             "input_mode": input_mode,
+            "graph_family": str(config.get("graph_family") or "random_density").strip().lower() or "random_density",
             "selected_variants": [str(item).strip().lower() for item in list(config.get("selected_variants") or []) if str(item).strip()],
             "selected_datasets": [str(item).strip().lower() for item in list(config.get("selected_datasets") or []) if str(item).strip()],
             "k_mode": str(config.get("k_mode") or "absolute").strip().lower() or "absolute",
@@ -5085,6 +5148,9 @@ class BenchmarkRunnerApp(tk.Tk):
         self.timeout_as_missing_var.set(bool(manifest.get("timeout_as_missing", True)))
         self.outlier_filter_var.set(str(manifest.get("outlier_filter") or "none").strip().lower() or "none")
         self.delete_generated_inputs_var.set(bool(manifest.get("delete_generated_inputs", True)))
+        self.graph_family_var.set(
+            generator_mod.normalize_graph_family(str(manifest.get("graph_family") or "random_density"))
+        )
         self.k_mode_var.set(str(manifest.get("k_mode") or "absolute").strip().lower() or "absolute")
         self._on_run_mode_changed()
         self._on_outlier_filter_changed()
@@ -5382,6 +5448,7 @@ class BenchmarkRunnerApp(tk.Tk):
         return {
             "tab_id": tab_id,
             "input_mode": "datasets",
+            "graph_family": generator_mod.normalize_graph_family(self.graph_family_var.get()),
             "selected_datasets": [spec.dataset_id for spec in selected_specs],
             "selected_variants": [variant.variant_id for variant in selected_variants],
             "selected_variant_labels": {variant.variant_id: variant.label for variant in selected_variants},
@@ -5665,6 +5732,7 @@ class BenchmarkRunnerApp(tk.Tk):
         return {
             "tab_id": tab_id,
             "input_mode": "independent",
+            "graph_family": generator_mod.normalize_graph_family(self.graph_family_var.get()),
             "selected_datasets": [],
             "selected_variants": [variant.variant_id for variant in selected_variants],
             "selected_variant_labels": {variant.variant_id: variant.label for variant in selected_variants},
@@ -6126,9 +6194,24 @@ class BenchmarkRunnerApp(tk.Tk):
                         if str(config.get("input_mode") or "independent").strip().lower() == "datasets":
                             generated_warmup = self._resolve_dataset_inputs_for_run(warmup_point)
                         elif config["tab_id"] == "shortest_path":
-                            generated_warmup = {"dijkstra_file": generate_dijkstra_inputs(warmup_dir, n_value, density_value, warmup_seed)}
+                            generated_warmup = {
+                                "dijkstra_file": generate_dijkstra_inputs(
+                                    warmup_dir,
+                                    n_value,
+                                    density_value,
+                                    warmup_seed,
+                                    graph_family=str(config.get("graph_family") or "random_density"),
+                                )
+                            }
                         else:
-                            generated_warmup = generate_subgraph_inputs(warmup_dir, n_value, k_value, density_value, warmup_seed)
+                            generated_warmup = generate_subgraph_inputs(
+                                warmup_dir,
+                                n_value,
+                                k_value,
+                                density_value,
+                                warmup_seed,
+                                graph_family=str(config.get("graph_family") or "random_density"),
+                            )
                         for variant_id in selected_variants:
                             while self.pause_event.is_set():
                                 if self.stop_event.is_set():
@@ -6206,6 +6289,7 @@ class BenchmarkRunnerApp(tk.Tk):
                     memories_raw = [float(v) for v in state["samples_memory"][variant_id]]
                     runtimes = filter_outlier_samples(runtimes_raw, outlier_mode)
                     memories = filter_outlier_samples(memories_raw, outlier_mode)
+                    answer_rows = list(state["answer_rows"][variant_id])
                     if not runtimes_raw and not memories_raw:
                         if timed_out or aborted:
                             continue
@@ -6234,6 +6318,11 @@ class BenchmarkRunnerApp(tk.Tk):
                         "runtime_samples_raw_ms": [float(v) for v in runtimes_raw],
                         "memory_samples_kb": [float(v) for v in memories],
                         "memory_samples_raw_kb": [float(v) for v in memories_raw],
+                        "answer_kind": next((item.get("answer_kind") for item in answer_rows if item.get("answer_kind")), None),
+                        "path_length_median": median_or_none([float(item.get("path_length")) for item in answer_rows if isinstance(item.get("path_length"), (int, float))]),
+                        "mappings_reported_median": median_or_none([float(item.get("mapping_count")) for item in answer_rows if isinstance(item.get("mapping_count"), (int, float))]),
+                        "structural_validation_passes": int(sum(1 for item in answer_rows if item.get("structural_valid") is True)),
+                        "structural_validation_total": int(sum(1 for item in answer_rows if item.get("structural_valid") is not None)),
                     }
                     datapoints_stream_fh.write(json.dumps(row, default=serialize_for_json) + "\n")
                     streamed_datapoint_rows += 1
@@ -6343,8 +6432,10 @@ class BenchmarkRunnerApp(tk.Tk):
                             "iter_pending": {iter_idx: set(selected_variants) for iter_idx in range(config["iterations"])},
                             "iter_solution_counts": {iter_idx: {} for iter_idx in range(config["iterations"])},
                             "iter_answer_signatures": {iter_idx: {} for iter_idx in range(config["iterations"])},
+                            "iter_structural_valid": {iter_idx: {} for iter_idx in range(config["iterations"])},
                             "iter_runtime_ms": {iter_idx: {} for iter_idx in range(config["iterations"])},
                             "iter_success_count": {iter_idx: 0 for iter_idx in range(config["iterations"])},
+                            "answer_rows": {variant_id: [] for variant_id in selected_variants},
                             "inputs_deleted": False,
                             "logged": False,
                         }
@@ -6385,9 +6476,24 @@ class BenchmarkRunnerApp(tk.Tk):
                             density_value = float(point["density"])
                             k_value = int(round(point.get("k_nodes", 1)))
                             if config["tab_id"] == "shortest_path":
-                                generated = {"dijkstra_file": generate_dijkstra_inputs(iter_dir, n_value, density_value, iter_seed)}
+                                generated = {
+                                    "dijkstra_file": generate_dijkstra_inputs(
+                                        iter_dir,
+                                        n_value,
+                                        density_value,
+                                        iter_seed,
+                                        graph_family=str(config.get("graph_family") or "random_density"),
+                                    )
+                                }
                             else:
-                                generated = generate_subgraph_inputs(iter_dir, n_value, k_value, density_value, iter_seed)
+                                generated = generate_subgraph_inputs(
+                                    iter_dir,
+                                    n_value,
+                                    k_value,
+                                    density_value,
+                                    iter_seed,
+                                    graph_family=str(config.get("graph_family") or "random_density"),
+                                )
                         cursor["generated"] = generated
                         cursor["iter_seed"] = iter_seed
 
@@ -6496,12 +6602,13 @@ class BenchmarkRunnerApp(tk.Tk):
                     success = False
                     solution_count = None
                     answer_signature = None
+                    answer_details = None
                     runtime_ms = 0.0
                     peak_kb = 0.0
                     handled_failure = False
 
                     try:
-                        runtime_ms, peak_kb, solution_count, answer_signature = future.result()
+                        runtime_ms, peak_kb, solution_count, answer_signature, answer_details = future.result()
                         success = True
                     except SolverTimeoutError as exc:
                         if attempt < retry_failed_trials and not self.stop_event.is_set() and not timed_out and not aborted:
@@ -6589,6 +6696,24 @@ class BenchmarkRunnerApp(tk.Tk):
                             state["iter_solution_counts"][iter_idx][variant_id] = solution_count
                         if answer_signature is not None:
                             state["iter_answer_signatures"][iter_idx][variant_id] = answer_signature
+                        if isinstance(answer_details, dict):
+                            state["answer_rows"][variant_id].append(
+                                {
+                                    "answer_kind": answer_details.get("answer_kind"),
+                                    "path_length": answer_details.get("path_length"),
+                                    "mapping_count": answer_details.get("mapping_count"),
+                                    "structural_valid": answer_details.get("structural_valid"),
+                                }
+                            )
+                            state["iter_structural_valid"][iter_idx][variant_id] = bool(answer_details.get("structural_valid"))
+                            validation = answer_details.get("structural_validation")
+                            if isinstance(validation, dict) and not bool(validation.get("valid", True)):
+                                validation_error = str(validation.get("error") or "structural validation failed")
+                                self._append_log_threadsafe(
+                                    f"Structural validation failure for {config['selected_variant_labels'].get(variant_id, variant_id)} "
+                                    f"at datapoint {int(state['point_idx']) + 1}, seed={int(trial['iter_seed'])}: {validation_error}",
+                                    level="error",
+                                )
                     elif not handled_failure and fatal_error is None and not aborted:
                         # Defensive fallback: treat unexpected non-success as missing so the datapoint can complete.
                         handled_failure = True
@@ -6678,15 +6803,17 @@ class BenchmarkRunnerApp(tk.Tk):
                 baseline_trials = 0
                 for state in point_states.values():
                     iter_answers = state.get("iter_answer_signatures", {})
+                    iter_valid = state.get("iter_structural_valid", {})
                     for iter_idx in range(config["iterations"]):
                         answers = iter_answers.get(iter_idx, {})
+                        validations = iter_valid.get(iter_idx, {})
                         baseline_answer = answers.get(accuracy_baseline_variant)
-                        if baseline_answer is None:
+                        if baseline_answer is None or not bool(validations.get(accuracy_baseline_variant, False)):
                             continue
                         baseline_trials += 1
                         for variant_id in selected_variants:
                             total_counts[variant_id] += 1
-                            if answers.get(variant_id) == baseline_answer:
+                            if bool(validations.get(variant_id, False)) and answers.get(variant_id) == baseline_answer:
                                 correct_counts[variant_id] += 1
                 self._append_log_threadsafe(f"Accuracy vs {baseline_label}:", level="notice")
                 if baseline_trials == 0:
@@ -6701,6 +6828,25 @@ class BenchmarkRunnerApp(tk.Tk):
                     solver_label = config["selected_variant_labels"].get(variant_id, variant_id)
                     self._append_log_threadsafe(
                         f"[{solver_label}]: {correct}/{total} ({percent:.3f}%)",
+                        level="notice",
+                    )
+
+                self._append_log_threadsafe("Structural validation pass rates:", level="notice")
+                for variant_id in selected_variants:
+                    valid_passes = 0
+                    valid_total = 0
+                    for state in point_states.values():
+                        iter_valid = state.get("iter_structural_valid", {})
+                        for iter_idx in range(config["iterations"]):
+                            validations = iter_valid.get(iter_idx, {})
+                            if variant_id in validations:
+                                valid_total += 1
+                                if bool(validations.get(variant_id)):
+                                    valid_passes += 1
+                    percent = (100.0 * float(valid_passes) / float(valid_total)) if valid_total > 0 else 0.0
+                    solver_label = config["selected_variant_labels"].get(variant_id, variant_id)
+                    self._append_log_threadsafe(
+                        f"[{solver_label}]: {valid_passes}/{valid_total} ({percent:.3f}%)",
                         level="notice",
                     )
 
@@ -6804,6 +6950,20 @@ class BenchmarkRunnerApp(tk.Tk):
             self.visualizer_status_var.set("No run payload available yet.")
         self._update_visualizer_autoplay_controls()
 
+    def _build_witness_command(self, variant_id: str, generated: dict[str, Path | str]) -> list[str] | None:
+        binary = self.binary_paths[variant_id]
+        family = variant_family_from_id(variant_id)
+        if family == "vf3":
+            if variant_id == "vf3_baseline":
+                return [str(binary), "-u", "-r", "0", "-F", "-e", str(generated["vf_pattern"]), str(generated["vf_target"])]
+            return [str(binary), "--first-only", str(generated["vf_pattern"]), str(generated["vf_target"])]
+        if family == "glasgow":
+            lad_format = str(generated.get("lad_format") or "lad").strip() or "lad"
+            if variant_id == "glasgow_baseline":
+                return [str(binary), "--format", lad_format, str(generated["lad_pattern"]), str(generated["lad_target"])]
+            return [str(binary), str(generated["lad_pattern"]), str(generated["lad_target"]), "--print-mappings"]
+        return None
+
     def _run_solver_variant(
         self,
         variant_id: str,
@@ -6860,15 +7020,73 @@ class BenchmarkRunnerApp(tk.Tk):
         combined_output = stdout_text + "\n" + stderr_text
         solution_count = None
         answer_signature = None
+        answer_kind = None
+        answer_value = None
+        distance_signature = None
         if family in {"vf3", "glasgow"}:
             solution_count = parse_solution_count(combined_output)
             if solution_count is not None:
+                answer_kind = "solution_count"
+                answer_value = int(solution_count)
                 answer_signature = ("solution_count", int(solution_count))
         elif family in {"dijkstra", "sp_via"}:
             distance_signature = parse_dijkstra_distance(combined_output)
             if distance_signature is not None:
+                answer_kind = "distance"
+                answer_value = distance_signature
                 answer_signature = ("distance", distance_signature)
-        return runtime_ms, peak_kb, solution_count, answer_signature
+        path_tokens = validation_extract_path_tokens(combined_output)
+        mappings = extract_mappings_from_text(combined_output)
+        if family in {"dijkstra", "sp_via"}:
+            validation = validate_shortest_path_result(
+                input_path=Path(generated["dijkstra_file"]),
+                reported_distance=distance_signature,
+                path_tokens=path_tokens,
+            )
+        else:
+            validation = validate_subgraph_result(
+                family=family,
+                inputs=generated,
+                output_text=combined_output,
+                reported_solution_count=solution_count,
+                allow_metadata_fallback=False,
+            )
+            if bool(validation.get("required_witness")) and not bool(validation.get("valid")):
+                witness_command = self._build_witness_command(variant_id, generated)
+                if witness_command:
+                    try:
+                        _w_ms, _w_kb, witness_rc, witness_stdout, witness_stderr = self._run_process_with_peak_memory(
+                            witness_command,
+                            cwd=binary.parent,
+                            heartbeat_label=None,
+                            solver_timeout_seconds=solver_timeout_seconds,
+                        )
+                        if witness_rc == 0:
+                            witness_output = (witness_stdout or "") + ("\n" + witness_stderr if witness_stderr else "")
+                            validation = validate_subgraph_result(
+                                family=family,
+                                inputs=generated,
+                                output_text=witness_output,
+                                reported_solution_count=solution_count,
+                                allow_metadata_fallback=True,
+                            )
+                    except Exception:
+                        validation = validate_subgraph_result(
+                            family=family,
+                            inputs=generated,
+                            output_text=combined_output,
+                            reported_solution_count=solution_count,
+                            allow_metadata_fallback=True,
+                        )
+        answer_details = {
+            "answer_kind": answer_kind,
+            "answer_value": answer_value,
+            "path_length": max(0, len(path_tokens) - 1) if path_tokens else None,
+            "mapping_count": len(mappings),
+            "structural_validation": validation,
+            "structural_valid": bool(validation.get("valid", False)),
+        }
+        return runtime_ms, peak_kb, solution_count, answer_signature, answer_details
 
     def _run_process_with_peak_memory(
         self,
@@ -7015,6 +7233,7 @@ class BenchmarkRunnerApp(tk.Tk):
             "run_config": {
                 "tab_id": config["tab_id"],
                 "input_mode": config.get("input_mode", "independent"),
+                "graph_family": str(config.get("graph_family") or "random_density"),
                 "selected_datasets": list(config.get("selected_datasets") or []),
                 "selected_variants": config["selected_variants"],
                 "selected_variant_labels": config["selected_variant_labels"],
@@ -7049,6 +7268,7 @@ class BenchmarkRunnerApp(tk.Tk):
             "datapoints": [],
             "datapoints_path": str(datapoints_path),
             "streamed_datapoint_rows": int(streamed_datapoint_rows),
+            "provenance": collect_runtime_provenance(repo_root=Path(__file__).resolve().parents[1]),
         }
         if isinstance(statistical_tests, dict):
             payload["statistical_tests"] = statistical_tests
@@ -8821,6 +9041,7 @@ class BenchmarkRunnerApp(tk.Tk):
                     int(round(float(datapoint["n"]))),
                     float(datapoint["density"]),
                     int(seed),
+                    graph_family=str(run_config.get("graph_family") or "random_density"),
                 )
             }
         else:
@@ -8830,6 +9051,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 int(round(float(datapoint["k_nodes"]))),
                 float(datapoint["density"]),
                 int(seed),
+                graph_family=str(run_config.get("graph_family") or "random_density"),
             )
 
         outputs: dict[str, str] = {}
@@ -10062,6 +10284,7 @@ class BenchmarkRunnerApp(tk.Tk):
                         int(round(float(datapoint["n"]))),
                         float(datapoint["density"]),
                         int(seed),
+                        graph_family=str(run_config.get("graph_family") or "random_density"),
                     )
                 }
             else:
@@ -10071,6 +10294,7 @@ class BenchmarkRunnerApp(tk.Tk):
                     int(round(float(datapoint["k_nodes"]))),
                     float(datapoint["density"]),
                     int(seed),
+                    graph_family=str(run_config.get("graph_family") or "random_density"),
                 )
 
             outputs: dict[str, str] = {}

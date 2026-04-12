@@ -79,7 +79,8 @@
                 ? [
                     `Generated: N=${config.generator.n || '?'}` +
                     (isGraphPairAlgorithm(config.selectedAlgorithm) ? `, k=${config.generator.k || '?'}` : '') +
-                    `, density=${config.generator.density || '?'}`
+                    `, density=${config.generator.density || '?'}` +
+                    `, family=${config.generator.graphFamily || 'random_density'}`
                 ]
                 : config.selectedFiles.map((file, index) => {
                     const label = algo.fileLabels ? algo.fileLabels[index] : `File ${index + 1}`;
@@ -188,6 +189,7 @@
                         input_mode: inputMode,
                         n: String(config.generator.n || ''),
                         k: String(config.generator.k || ''),
+                        graph_family: String(config.generator.graphFamily || 'random_density'),
                         density: String(config.generator.density || ''),
                         seed: String(config.generator.seed || ''),
                         request_id: requestId

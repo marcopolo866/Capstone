@@ -631,6 +631,39 @@ def maybe_run_sp_via_correctness_check(python_exe: str, env: dict[str, str]) -> 
     )
 
 
+def maybe_run_shortest_path_correctness_check(python_exe: str, env: dict[str, str]) -> None:
+    baseline = resolve_binary_path("baselines/dijkstra")
+    if not baseline:
+        print()
+        print("==> Skipping shortest-path correctness check (missing baselines/dijkstra)")
+        return
+    run_step(
+        "Checking shortest-path correctness",
+        lambda: run_cmd([python_exe, "scripts/check-shortest-path-correctness.py"], env=env),
+    )
+
+
+def maybe_run_vf3_witness_check(python_exe: str, env: dict[str, str]) -> None:
+    baseline = resolve_binary_path("baselines/vf3lib/bin/vf3")
+    if not baseline:
+        print()
+        print("==> Skipping VF3 witness correctness check (missing baselines/vf3lib/bin/vf3)")
+        return
+    optional = [
+        resolve_binary_path("src/vf3_chatgpt"),
+        resolve_binary_path("src/vf3_gemini"),
+        resolve_binary_path("src/vf3_claude"),
+    ]
+    if not any(optional):
+        print()
+        print("==> Skipping VF3 witness correctness check (no VF3 LLM binaries found)")
+        return
+    run_step(
+        "Checking VF3 witness correctness",
+        lambda: run_cmd([python_exe, "scripts/check-vf3-witness-correctness.py"], env=env),
+    )
+
+
 def verify_expected_outputs(catalog: dict, solver_discovery, skipped_variant_ids: set[str] | None = None) -> None:
     skipped_ids = set(skipped_variant_ids or set())
     binary_rel_paths = set(solver_discovery.iter_binary_paths(catalog, include_baselines=True))
@@ -797,6 +830,12 @@ def main() -> int:
 
     if fast_mode:
         print()
+        print("==> Skipping shortest-path correctness check (BUILD_LOCAL_FAST=1)")
+    else:
+        maybe_run_shortest_path_correctness_check(python_exe, env)
+
+    if fast_mode:
+        print()
         print("==> Skipping SP-Via correctness check (BUILD_LOCAL_FAST=1)")
     else:
         maybe_run_sp_via_correctness_check(python_exe, env)
@@ -873,6 +912,12 @@ def main() -> int:
             env=env,
         ),
     )
+
+    if fast_mode:
+        print()
+        print("==> Skipping VF3 witness correctness check (BUILD_LOCAL_FAST=1)")
+    else:
+        maybe_run_vf3_witness_check(python_exe, env)
 
     if fast_mode:
         print()

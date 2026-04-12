@@ -11,7 +11,7 @@ GEN_SCRIPT = REPO_ROOT / "utilities" / "generate_graphs.py"
 
 
 class GenerateGraphsCliTests(unittest.TestCase):
-    def run_generator(self, *, algorithm: str, n: int, k: int | None, density: float, seed: int, out_dir: Path):
+    def run_generator(self, *, algorithm: str, n: int, k: int | None, density: float, seed: int, out_dir: Path, graph_family: str = "random_density"):
         cmd = [
             sys.executable,
             str(GEN_SCRIPT),
@@ -19,6 +19,8 @@ class GenerateGraphsCliTests(unittest.TestCase):
             algorithm,
             "--n",
             str(n),
+            "--graph-family",
+            graph_family,
             "--density",
             str(density),
             "--seed",
@@ -50,6 +52,7 @@ class GenerateGraphsCliTests(unittest.TestCase):
 
             metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata.get("algorithm"), "dijkstra")
+            self.assertEqual(metadata.get("graph_family"), "random_density")
             self.assertEqual(metadata.get("n"), 12)
             self.assertEqual(metadata.get("seed"), 1337)
             self.assertEqual(len(metadata.get("files", [])), 1)
@@ -115,6 +118,25 @@ class GenerateGraphsCliTests(unittest.TestCase):
 
             first_line = generated_csv.read_text(encoding="utf-8").splitlines()[0].strip()
             self.assertIn("via=", first_line)
+
+    def test_grid_generation_records_family_metadata(self):
+        with tempfile.TemporaryDirectory(prefix="capstone-test-grid-subgraph-") as tmp:
+            out_dir = Path(tmp) / "out"
+            files = self.run_generator(
+                algorithm="subgraph",
+                n=20,
+                k=6,
+                density=0.1,
+                seed=77,
+                out_dir=out_dir,
+                graph_family="grid",
+            )
+
+            self.assertEqual(len(files), 4)
+            metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata.get("graph_family"), "grid")
+            self.assertEqual(metadata.get("algorithm"), "subgraph")
+            self.assertIn("actual_density", metadata)
 
 
 if __name__ == "__main__":

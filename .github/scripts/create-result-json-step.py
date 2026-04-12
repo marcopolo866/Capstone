@@ -94,6 +94,7 @@ input_files = env.get("INPUT_FILES_INPUT", "")
 gen_n = env.get("GENERATOR_N_INPUT", "")
 gen_k = env.get("GENERATOR_K_INPUT", "")
 gen_density = env.get("GENERATOR_DENSITY_INPUT", "")
+graph_family = env.get("GENERATOR_GRAPH_FAMILY_INPUT", "")
 seed_used = env.get("SEED_USED", "")
 via_node = env.get("VIA_NODE_INPUT", "")
 
@@ -182,6 +183,8 @@ if gen_density:
         inputs["density"] = float(gen_density)
     except ValueError:
         inputs["density"] = gen_density
+if graph_family:
+    inputs["graph_family"] = graph_family
 if seed_used:
     try:
         inputs["seed"] = int(seed_used)
@@ -549,6 +552,14 @@ if isinstance(dynamic_match_counts, dict):
 dynamic_witness_counts = parse_json_env("WITNESS_COUNTS_JSON")
 if isinstance(dynamic_witness_counts, dict):
     data["witness_counts"] = dynamic_witness_counts
+
+dynamic_structural_validation = parse_json_env("STRUCTURAL_VALIDATION_COUNTS_JSON")
+if isinstance(dynamic_structural_validation, dict):
+    data["structural_validation"] = dynamic_structural_validation
+
+build_provenance = parse_json_env("BUILD_PROVENANCE_JSON")
+if isinstance(build_provenance, dict):
+    data["provenance"] = build_provenance
 
 statistical_tests = parse_json_env("STATISTICAL_TESTS_JSON")
 if isinstance(statistical_tests, dict):

@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 
 
+GRAPH_FAMILIES = ("random_density", "erdos_renyi", "barabasi_albert", "grid")
+
+
 def parse_int(value: str, name: str, minimum: int | None = None) -> int:
     try:
         parsed = int(value)
@@ -16,26 +19,196 @@ def parse_int(value: str, name: str, minimum: int | None = None) -> int:
     return parsed
 
 
-def generate_directed_edges(n: int, rng: random.Random, density: float) -> list[tuple[int, int, int]]:
+def normalize_graph_family(value: str | None) -> str:
+    token = str(value or "random_density").strip().lower().replace("-", "_")
+    aliases = {
+        "random": "random_density",
+        "density": "random_density",
+        "random_density": "random_density",
+        "erdos_renyi": "erdos_renyi",
+        "er": "erdos_renyi",
+        "ba": "barabasi_albert",
+        "barabasi_albert": "barabasi_albert",
+        "grid": "grid",
+    }
+    family = aliases.get(token, token)
+    if family not in GRAPH_FAMILIES:
+        raise ValueError(f"graph family must be one of: {', '.join(GRAPH_FAMILIES)}")
+    return family
+
+
+def _target_edge_budget(n: int, density: float, *, directed: bool) -> int:
+    max_edges = n * (n - 1) if directed else (n * (n - 1)) // 2
+    return max(0, min(max_edges, int(round(float(density) * float(max_edges)))))
+
+
+def _adj_sets_to_lists(adj_sets: list[set[int]]) -> list[list[int]]:
+    return [sorted(list(row)) for row in adj_sets]
+
+
+def _count_undirected_edges(adj: list[list[int]]) -> int:
+    total = 0
+    for u, neighbors in enumerate(adj):
+        for v in neighbors:
+            if v > u:
+                total += 1
+    return total
+
+
+def _add_random_directed_edges(
+    edges: dict[tuple[int, int], int],
+    *,
+    n: int,
+    rng: random.Random,
+    target_edges: int,
+    attempts_multiplier: int = 12,
+) -> None:
+    attempts = 0
+    max_attempts = max(1, target_edges * attempts_multiplier)
+    while len(edges) < target_edges and attempts < max_attempts:
+        u = rng.randrange(n)
+        v = rng.randrange(n)
+        attempts += 1
+        if u == v or (u, v) in edges:
+            continue
+        edges[(u, v)] = rng.randint(1, 20)
+
+
+def _add_random_undirected_edges(
+    adj_sets: list[set[int]],
+    *,
+    rng: random.Random,
+    target_edges: int,
+    attempts_multiplier: int = 12,
+) -> None:
+    n = len(adj_sets)
+    attempts = 0
+    max_attempts = max(1, target_edges * attempts_multiplier)
+    while _count_undirected_edges(_adj_sets_to_lists(adj_sets)) < target_edges and attempts < max_attempts:
+        u = rng.randrange(n)
+        v = rng.randrange(n)
+        attempts += 1
+        if u == v or v in adj_sets[u]:
+            continue
+        adj_sets[u].add(v)
+        adj_sets[v].add(u)
+
+
+def _generate_random_density_directed_edges(n: int, rng: random.Random, density: float) -> list[tuple[int, int, int]]:
     edges: dict[tuple[int, int], int] = {}
     for i in range(n - 1):
         edges[(i, i + 1)] = rng.randint(1, 20)
-    max_edges = n * (n - 1)
-    target_edges = max(n - 1, min(max_edges, int(round(density * max_edges))))
-    attempts = 0
-    while len(edges) < target_edges and attempts < target_edges * 10:
-        u = rng.randrange(n)
-        v = rng.randrange(n)
-        if u == v:
-            attempts += 1
-            continue
-        if u in (0, n - 1) or v in (0, n - 1):
-            attempts += 1
-            continue
-        if (u, v) not in edges:
-            edges[(u, v)] = rng.randint(1, 20)
-        attempts += 1
+    target_edges = max(n - 1, _target_edge_budget(n, density, directed=True))
+    _add_random_directed_edges(edges, n=n, rng=rng, target_edges=target_edges)
     return [(u, v, w) for (u, v), w in edges.items()]
+
+
+def _generate_erdos_renyi_directed_edges(n: int, rng: random.Random, density: float) -> list[tuple[int, int, int]]:
+    edges: dict[tuple[int, int], int] = {}
+    for i in range(n - 1):
+        edges[(i, i + 1)] = rng.randint(1, 20)
+    for u in range(n):
+        for v in range(n):
+            if u == v or (u, v) in edges:
+                continue
+            if rng.random() <= density:
+                edges[(u, v)] = rng.randint(1, 20)
+    return [(u, v, w) for (u, v), w in edges.items()]
+
+
+def _generate_barabasi_albert_undirected(n: int, rng: random.Random, density: float) -> list[list[int]]:
+    if n <= 1:
+        return [[] for _ in range(n)]
+    m = max(1, min(n - 1, int(round(float(density) * float(max(2, n - 1)) / 2.0))))
+    seed_size = min(n, max(2, m + 1))
+    adj_sets = [set() for _ in range(n)]
+    repeated_nodes: list[int] = []
+    for u in range(seed_size):
+        for v in range(u + 1, seed_size):
+            adj_sets[u].add(v)
+            adj_sets[v].add(u)
+    for node in range(seed_size):
+        repeated_nodes.extend([node] * len(adj_sets[node]))
+    if not repeated_nodes:
+        repeated_nodes = list(range(seed_size))
+    for new_node in range(seed_size, n):
+        targets: set[int] = set()
+        while len(targets) < min(m, new_node):
+            targets.add(rng.choice(repeated_nodes))
+        for target in targets:
+            adj_sets[new_node].add(target)
+            adj_sets[target].add(new_node)
+        repeated_nodes.extend(list(targets))
+        repeated_nodes.extend([new_node] * len(targets))
+    return _adj_sets_to_lists(adj_sets)
+
+
+def _grid_shape(n: int) -> tuple[int, int]:
+    rows = max(1, int(round(n ** 0.5)))
+    cols = max(1, (n + rows - 1) // rows)
+    while rows * cols < n:
+        rows += 1
+    return rows, cols
+
+
+def _generate_grid_undirected(n: int) -> list[list[int]]:
+    rows, cols = _grid_shape(n)
+    adj_sets = [set() for _ in range(n)]
+    for node in range(n):
+        r, c = divmod(node, cols)
+        for nr, nc in ((r + 1, c), (r, c + 1)):
+            neighbor = nr * cols + nc
+            if neighbor < n:
+                adj_sets[node].add(neighbor)
+                adj_sets[neighbor].add(node)
+    return _adj_sets_to_lists(adj_sets)
+
+
+def _directed_edges_from_undirected(
+    undirected_adj: list[list[int]],
+    *,
+    rng: random.Random,
+    density: float,
+) -> list[tuple[int, int, int]]:
+    n = len(undirected_adj)
+    edges: dict[tuple[int, int], int] = {}
+    for i in range(max(0, n - 1)):
+        edges[(i, i + 1)] = rng.randint(1, 20)
+    for u, neighbors in enumerate(undirected_adj):
+        for v in neighbors:
+            if v <= u:
+                continue
+            mode = rng.random()
+            if mode < 0.34:
+                edges.setdefault((u, v), rng.randint(1, 20))
+            elif mode < 0.68:
+                edges.setdefault((v, u), rng.randint(1, 20))
+            else:
+                edges.setdefault((u, v), rng.randint(1, 20))
+                edges.setdefault((v, u), rng.randint(1, 20))
+    target_edges = max(n - 1, _target_edge_budget(n, density, directed=True))
+    _add_random_directed_edges(edges, n=n, rng=rng, target_edges=target_edges)
+    return [(u, v, w) for (u, v), w in edges.items()]
+
+
+def generate_directed_edges(
+    n: int,
+    rng: random.Random,
+    density: float,
+    graph_family: str = "random_density",
+) -> list[tuple[int, int, int]]:
+    family = normalize_graph_family(graph_family)
+    if family == "random_density":
+        return _generate_random_density_directed_edges(n, rng, density)
+    if family == "erdos_renyi":
+        return _generate_erdos_renyi_directed_edges(n, rng, density)
+    if family == "barabasi_albert":
+        return _directed_edges_from_undirected(
+            _generate_barabasi_albert_undirected(n, rng, density),
+            rng=rng,
+            density=density,
+        )
+    return _directed_edges_from_undirected(_generate_grid_undirected(n), rng=rng, density=density)
 
 
 def write_dijkstra_csv(
@@ -57,22 +230,41 @@ def write_dijkstra_csv(
             writer.writerow([labels[u], labels[v], w])
 
 
-def generate_adjacency(n: int, rng: random.Random, density: float) -> list[list[int]]:
-    adj = [set() for _ in range(n)]
-    for i in range(n - 1):
-        adj[i].add(i + 1)
-    max_edges = n * (n - 1)
-    target_edges = max(n - 1, min(max_edges, int(round(density * max_edges))))
-    attempts = 0
-    while sum(len(s) for s in adj) < target_edges and attempts < target_edges * 10:
-        u = rng.randrange(n)
-        v = rng.randrange(n)
-        if u == v:
-            attempts += 1
-            continue
-        adj[u].add(v)
-        attempts += 1
-    return [sorted(list(s)) for s in adj]
+def generate_adjacency(
+    n: int,
+    rng: random.Random,
+    density: float,
+    graph_family: str = "random_density",
+) -> list[list[int]]:
+    family = normalize_graph_family(graph_family)
+    if family == "random_density":
+        adj_sets = [set() for _ in range(n)]
+        for i in range(n - 1):
+            adj_sets[i].add(i + 1)
+            adj_sets[i + 1].add(i)
+        target_edges = max(n - 1, _target_edge_budget(n, density, directed=False))
+        _add_random_undirected_edges(adj_sets, rng=rng, target_edges=target_edges)
+        return _adj_sets_to_lists(adj_sets)
+    if family == "erdos_renyi":
+        adj_sets = [set() for _ in range(n)]
+        for i in range(n - 1):
+            adj_sets[i].add(i + 1)
+            adj_sets[i + 1].add(i)
+        for u in range(n):
+            for v in range(u + 1, n):
+                if v in adj_sets[u]:
+                    continue
+                if rng.random() <= density:
+                    adj_sets[u].add(v)
+                    adj_sets[v].add(u)
+        return _adj_sets_to_lists(adj_sets)
+    if family == "barabasi_albert":
+        return _generate_barabasi_albert_undirected(n, rng, density)
+    adj = _generate_grid_undirected(n)
+    adj_sets = [set(row) for row in adj]
+    target_edges = max(_count_undirected_edges(adj), _target_edge_budget(n, density, directed=False))
+    _add_random_undirected_edges(adj_sets, rng=rng, target_edges=target_edges)
+    return _adj_sets_to_lists(adj_sets)
 
 
 def ensure_pattern_edges(target_adj: list[list[int]], nodes: list[int], rng: random.Random) -> None:
@@ -232,6 +424,7 @@ def main() -> None:
     parser.add_argument("--k", default="")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--density", default="0.05")
+    parser.add_argument("--graph-family", default="random_density")
     parser.add_argument("--seed", default="")
     args = parser.parse_args()
 
@@ -254,6 +447,7 @@ def main() -> None:
         raise ValueError("density must be a number between 0 and 1")
     if density <= 0 or density > 1:
         raise ValueError("density must be in the range (0, 1]")
+    graph_family = normalize_graph_family(args.graph_family)
 
     seed = int(args.seed) if str(args.seed).strip() else int(time.time() * 1000) & 0xFFFFFFFF
     rng = random.Random(seed)
@@ -265,7 +459,7 @@ def main() -> None:
     metadata_via_label: str | None = None
     if algorithm in {"dijkstra", "sp_via"}:
         labels = [f"v{i}" for i in range(n)]
-        edges = generate_directed_edges(n, rng, density)
+        edges = generate_directed_edges(n, rng, density, graph_family=graph_family)
         via_label = None
         if algorithm == "sp_via":
             via_index = max(0, min(n - 1, n // 2))
@@ -278,7 +472,7 @@ def main() -> None:
         metadata_via_label = via_label
     else:
         labels = None
-        target_adj = generate_adjacency(n, rng, density)
+        target_adj = generate_adjacency(n, rng, density, graph_family=graph_family)
         undirected_adj = sanitize_undirected_simple_adj(build_undirected_adj(target_adj))
         assert_undirected_simple_adj(undirected_adj, "target_adj")
         if algorithm in {"glasgow", "vf3", "subgraph"}:
@@ -322,12 +516,20 @@ def main() -> None:
 
     metadata = {
         "algorithm": algorithm,
+        "graph_family": graph_family,
         "n": n,
         "k": k,
         "density": density,
         "seed": seed,
         "files": [p.as_posix() for p in generated],
     }
+    if algorithm in {"dijkstra", "sp_via"}:
+        max_edges = n * (n - 1)
+        metadata["actual_density"] = 0.0 if max_edges <= 0 else float(len(edges)) / float(max_edges)
+    else:
+        max_edges = (n * (n - 1)) // 2
+        actual_edges = _count_undirected_edges(undirected_adj)
+        metadata["actual_density"] = 0.0 if max_edges <= 0 else float(actual_edges) / float(max_edges)
     if algorithm == "sp_via":
         if metadata_via_label:
             metadata["via"] = metadata_via_label

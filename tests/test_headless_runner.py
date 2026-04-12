@@ -22,6 +22,7 @@ class HeadlessRunnerTests(unittest.TestCase):
                     "preset": "smoke",
                     "tab_id": "subgraph",
                     "input_mode": "independent",
+                    "graph_family": "erdos_renyi",
                     "selected_variants": ["vf3_chatgpt"],
                     "k_mode": "absolute",
                     "values": {"n": [8], "density": [0.2], "k": [3, 4]},
@@ -31,6 +32,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertEqual(config["primary_var"], "k")
         self.assertEqual(len(config["datapoints"]), 2)
         self.assertEqual(config["datapoints"][0]["k_nodes"], 3)
+        self.assertEqual(config["graph_family"], "erdos_renyi")
         self.assertIn("vf3_baseline", config["selected_variants"])
 
 

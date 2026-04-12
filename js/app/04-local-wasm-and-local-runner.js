@@ -1641,6 +1641,7 @@ def capstone_run_local_generator(args, out_dir):
             const algorithm = String(options.algorithm || '').trim().toLowerCase();
             const n = Number.isFinite(Number(options.n)) ? Math.floor(Number(options.n)) : null;
             const k = Number.isFinite(Number(options.k)) ? Math.floor(Number(options.k)) : null;
+            const graphFamily = String(options.graphFamily || 'random_density').trim().toLowerCase() || 'random_density';
             const density = Number(options.density);
             const seedRaw = String(options.seed ?? '').trim();
             const hasUserSeed = /^-?\d+$/.test(seedRaw);
@@ -1676,6 +1677,7 @@ def capstone_run_local_generator(args, out_dir):
                     const args = [
                         '--algorithm', algorithm,
                         '--n', String(n),
+                        '--graph-family', String(graphFamily),
                         '--density', String(density),
                         '--seed', String(derivedSeed),
                         '--out-dir', outDir
@@ -6003,6 +6005,7 @@ def capstone_run_local_generator(args, out_dir):
                     algorithm: algoKey,
                     n: config.generator && config.generator.n,
                     k: config.generator && config.generator.k,
+                    graphFamily: config.generator && config.generator.graphFamily,
                     density: config.generator && config.generator.density,
                     seed: config.generator && config.generator.seed
                 });
@@ -6226,6 +6229,7 @@ def capstone_run_local_generator(args, out_dir):
                     result.inputs = Object.assign({}, result.inputs || {}, {
                         input_mode: 'generate',
                         n: Number.isFinite(Number(config.generator && config.generator.n)) ? Number(config.generator.n) : config.generator.n,
+                        graph_family: String((config.generator && config.generator.graphFamily) || 'random_density'),
                         density: Number.isFinite(Number(config.generator && config.generator.density)) ? Number(config.generator.density) : config.generator.density,
                         seed: session.generatedSeed
                     });

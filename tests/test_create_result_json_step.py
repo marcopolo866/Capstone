@@ -32,6 +32,7 @@ class CreateResultJsonStepTests(unittest.TestCase):
                 "REQUEST_ID_INPUT": "req-structured",
                 "INPUT_MODE_INPUT": "generate",
                 "GENERATOR_N_INPUT": "50",
+                "GENERATOR_GRAPH_FAMILY_INPUT": "barabasi_albert",
                 "GENERATOR_DENSITY_INPUT": "0.12",
                 "SEED_USED": "98765",
                 "ITERATIONS": "5",
@@ -46,6 +47,8 @@ class CreateResultJsonStepTests(unittest.TestCase):
                 "DIJKSTRA_GEMINI_MATCH": "5",
                 "DIJKSTRA_GEMINI_TOTAL": "5",
                 "DIJKSTRA_GEMINI_MISMATCH": "0",
+                "STRUCTURAL_VALIDATION_COUNTS_JSON": json.dumps({"dijkstra_baseline": {"valid": 5, "total": 5, "invalid": 0}}),
+                "BUILD_PROVENANCE_JSON": json.dumps({"toolchains": {"gcc": {"version": "gcc 13"}}}),
             }
             metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
 
@@ -65,10 +68,13 @@ class CreateResultJsonStepTests(unittest.TestCase):
             self.assertEqual(result.get("iterations"), 5)
             self.assertEqual(result.get("warmup"), 1)
             self.assertAlmostEqual(float(result.get("run_duration_ms")), 321.5, places=3)
+            self.assertEqual(result.get("inputs", {}).get("graph_family"), "barabasi_albert")
             self.assertEqual(result.get("inputs", {}).get("seed"), 98765)
             self.assertAlmostEqual(result.get("timings_ms", {}).get("baseline"), 10.25, places=6)
             self.assertAlmostEqual(result.get("timings_ms", {}).get("chatgpt"), 11.5, places=6)
             self.assertAlmostEqual(result.get("timings_ms", {}).get("gemini"), 12.75, places=6)
+            self.assertEqual(result.get("structural_validation", {}).get("dijkstra_baseline", {}).get("invalid"), 0)
+            self.assertEqual(result.get("provenance", {}).get("toolchains", {}).get("gcc", {}).get("version"), "gcc 13")
 
     def test_falls_back_to_env_when_metrics_json_missing(self):
         with tempfile.TemporaryDirectory(prefix="capstone-test-result-json-env-") as tmp:

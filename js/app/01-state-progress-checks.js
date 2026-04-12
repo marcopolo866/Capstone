@@ -9,6 +9,7 @@
             generator: {
                 n: '100',
                 k: '10',
+                graphFamily: 'random_density',
                 density: '0.01',
                 seed: ''
             }
