@@ -1,3 +1,10 @@
+"""Generate benchmark input graphs for the supported algorithm families."""
+
+# - This file is the single source of truth for synthetic input generation used
+#   by the desktop app, headless CLI, CI runner, and generator CLI tests.
+# - If graph-family semantics change here, keep docs and every caller's seed /
+#   parameter handling aligned so benchmark manifests stay interpretable.
+
 import argparse
 import csv
 import json

@@ -1,3 +1,8 @@
+        // Owns the shared browser-side run configuration and the helpers that
+        // keep the UI state internally consistent as selections change.
+        // New controls should usually update this module first so every run
+        // mode reads from one canonical in-memory config object.
+
         let config = {
             owner: '',
             repo: '',

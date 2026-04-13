@@ -1,4 +1,9 @@
 ﻿#!/usr/bin/env python3
+"""Thin CLI wrapper around desktop_runner.headless_runner.main()."""
+
+# - Keep this file intentionally small so external automation has one stable
+#   entrypoint even if the headless implementation moves internally.
+
 from pathlib import Path
 import sys
 

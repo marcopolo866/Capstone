@@ -18,7 +18,6 @@ This folder contains project documentation for setup, workflow behavior, and res
 ## Related Root Docs
 
 - [pipeline-description.md](pipeline-description.md)
-- [../local-compilation-command.md](../local-compilation-command.md)
 - [../README.md](../README.md)
 
 ## Remediation Ledger

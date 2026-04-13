@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Single-source implementation of local native solver builds."""
 
+# - This file is the canonical native-build implementation for local developer
+#   workflows; wrappers should call into it rather than reimplementing flags.
+# - When changing build directories or discovered targets, keep Makefile,
+#   packaging scripts, and clean-local-build.py consistent with the new layout.
+
 from __future__ import annotations
 
 import argparse

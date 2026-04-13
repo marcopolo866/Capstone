@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Cross-platform launcher for packaging the desktop benchmark runner."""
 
+# - This wrapper is intentionally thin; platform-specific behavior belongs in
+#   the underlying packaging scripts, not in duplicated branching here.
+# - Keep toolchain selection deterministic so packaged binaries and copied
+#   runtime DLLs come from the same compiler distribution.
+
 from __future__ import annotations
 
 import os
@@ -10,6 +15,8 @@ from pathlib import Path
 
 
 def prefer_msys2_mingw(env: dict[str, str]) -> None:
+    # Packaging on Windows is sensitive to mixed MinGW installations. Force the
+    # known-good MSYS2 toolchain to the front of PATH before launching helpers.
     if os.name != "nt":
         return
 
@@ -34,6 +41,8 @@ def prefer_msys2_mingw(env: dict[str, str]) -> None:
 
 
 def main() -> int:
+    # Resolve the repo root once and delegate the real work to the platform
+    # specific packaging entrypoints so local and CI packaging stay aligned.
     repo_root = Path(__file__).resolve().parent.parent
     env = dict(os.environ)
     prefer_msys2_mingw(env)

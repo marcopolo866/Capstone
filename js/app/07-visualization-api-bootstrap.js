@@ -1,3 +1,8 @@
+        // Boots the solution/graph visualization layer and keeps expensive
+        // graph re-renders isolated from the rest of the results UI.
+        // Solution parsing here is intentionally defensive because benchmark
+        // outputs are produced by multiple solver families and runner modes.
+
         let visSolutionCapReached = false;
         const VISUALIZER_SOLUTION_CAP = 2000;
         let visParsedCountSections = [];

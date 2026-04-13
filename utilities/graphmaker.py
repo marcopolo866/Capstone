@@ -1,3 +1,10 @@
+"""Interactive Tk graph editor used to create or inspect benchmark inputs."""
+
+# - This utility is developer-facing and stateful; keep the graph model and UI
+#   event handlers understandable because the tool is maintained manually.
+# - Favor small helper methods over embedding additional behavior directly into
+#   widget callbacks when evolving the editor.
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from tkinter import font as tkfont
@@ -2765,4 +2772,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

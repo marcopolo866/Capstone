@@ -19,10 +19,12 @@ The project provides:
 ## Quick Start
 
 1. Build native binaries:
-   - Windows: `python scripts/build-local.py --backend sh --validation full`
-   - Linux/macOS: `python scripts/build-local.py --backend sh --validation full`
-   - Fast smoke build: add `--validation fast`
-   - Sanitizer builds: add `--sanitizer address` or `--sanitizer undefined`
+   - Native solvers: `make build-local`
+   - Desktop runner package: `make build-runner`
+   - Both: `make build-all`
+   - Regression tests: `make test`
+   - Cleanup: `make clean`
+   - Optional direct script path: `python scripts/build-local.py --backend sh --validation full`
    - Optional CMake path: `cmake -S . -B build/cmake && cmake --build build/cmake`
    - Windows runtime note: the desktop runner and headless CLI automatically prepend `C:\msys64\mingw64\bin` and `C:\msys64\usr\bin` when those directories exist.
 2. Open `index.html` from a local static server.
@@ -58,7 +60,7 @@ For detailed setup/run instructions, see [docs/quickstart.md](docs/quickstart.md
 - `utilities/generate_graphs.py`: deterministic graph generation
 - `scripts/`: local build and parity tooling
 - `desktop_runner/`: downloadable desktop benchmark runner source + packager
-- `tests/`: automated regression tests + legacy benchmark scripts
+- `tests/`: automated regression tests
 - `wasm/`: prebuilt wasm modules + manifest for local mode
 
 ## Regression Tests

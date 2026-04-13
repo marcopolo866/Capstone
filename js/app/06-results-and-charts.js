@@ -1,3 +1,8 @@
+        // Normalizes completed run payloads into the charts, stats panels,
+        // export buttons, and visualization state shown in the browser.
+        // Keep presentation helpers here so runner modules only need to emit a
+        // stable result object instead of mutating the DOM directly.
+
         function clearOutput() {
             document.getElementById('output').textContent = 'Output cleared.';
             document.getElementById('status-badge').innerHTML = '';

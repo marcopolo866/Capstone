@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Validate SP-Via solvers against a trusted shortest-path-via oracle."""
 
+# - This checker carries its own oracle logic because it validates an aggregate
+#   path constraint, not just plain shortest-path output formatting.
+# - Keep generated graph assumptions close to the benchmark generator so a local
+#   correctness pass is representative of real benchmark inputs.
+
 from __future__ import annotations
 
 import argparse

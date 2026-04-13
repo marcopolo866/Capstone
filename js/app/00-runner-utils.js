@@ -1,5 +1,6 @@
-        // Shared utilities loaded before all other app modules.
-        // These are intentionally simple global functions to avoid requiring a module system.
+        // Shared UI utilities loaded before all other app modules.
+        // Keep this file dependency-light because the rest of the split
+        // browser runtime assumes these globals already exist.
 
         // ---------------------------------------------------------------------------
         // Error banner

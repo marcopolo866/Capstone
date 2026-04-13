@@ -1,3 +1,7 @@
+// Lightweight property tests for the C++ graph oracles used by local tooling.
+// Keep these tests dependency-free so they are easy to run in minimal build
+// environments and can act as a quick smoke check for core graph primitives.
+
 #include <algorithm>
 #include <cstdint>
 #include <iostream>

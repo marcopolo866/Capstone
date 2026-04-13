@@ -1,3 +1,8 @@
+        // Contains browser-side estimation helpers for ETA/progress displays.
+        // Keep these heuristics aligned with the runner output shape; the
+        // functions here intentionally estimate user-facing work, not exact
+        // backend execution details.
+
         // Returns the number of timing data points per benchmark iteration.
         // Used to scale ETA estimates: matches the number of values that
         // extractPerIterationTotalMs() sums from result.timings_ms (first + all per variant).

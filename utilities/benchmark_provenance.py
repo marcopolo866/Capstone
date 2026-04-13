@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# - Provenance collection should be best-effort and non-fatal; benchmarks still
+#   need to complete if one host-introspection command is unavailable.
+# - Keep field names stable because desktop, headless, and CI results all embed
+#   this payload for later comparison.
+
 import datetime as dt
 import json
 import os

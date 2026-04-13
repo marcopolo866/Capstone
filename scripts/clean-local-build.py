@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Remove local build artifacts produced by build-local/build-runner flows."""
 
+# - Deletion targets are derived from shared solver discovery so the cleaner
+#   follows the same layout assumptions as the build and packaging scripts.
+# - Be conservative when expanding removal rules; this script should only touch
+#   generated artifacts that the repository can recreate locally.
+
 from __future__ import annotations
 
 import argparse

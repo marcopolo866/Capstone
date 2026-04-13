@@ -1,3 +1,5 @@
+"""Regression tests for shared shortest-path validation helpers."""
+
 import tempfile
 import unittest
 from pathlib import Path

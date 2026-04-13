@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# - This shell wrapper only resolves a Python interpreter and forwards to the
+#   canonical build-local-core implementation through scripts/build-local.py.
+# - Keep logic here minimal so platform behavior does not drift from the other
+#   local build entrypoints.
+
 set -euo pipefail
 
 if command -v python3 >/dev/null 2>&1; then

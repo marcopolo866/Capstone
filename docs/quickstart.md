@@ -13,10 +13,27 @@ Optional:
 
 ## 1. Build Native Binaries
 
+Preferred entrypoint from the repository root:
+
+```bash
+make build-local
+```
+
+Other common targets:
+
+```bash
+make build-runner
+make build-all
+make test
+make clean
+```
+
+Direct script path, if you need explicit backend control:
+
 Windows (PowerShell):
 
 ```powershell
-python scripts/build-local.py --backend sh --validation full
+python scripts/build-local.py --backend ps1 --validation full
 ```
 
 Linux/macOS:

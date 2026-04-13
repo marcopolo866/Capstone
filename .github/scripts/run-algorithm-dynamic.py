@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Dynamic GitHub benchmark runner using discovered solver variants."""
 
+# - This workflow runner is the CI analogue of the desktop/headless flows and
+#   should stay behaviorally close to those paths for generation and reporting.
+# - Keep any changes to solver selection, warmup/iteration semantics, and
+#   emitted metrics synchronized with the website and result-json assembly code.
+
 from __future__ import annotations
 
 import json
@@ -22,6 +27,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUTS_DIR = REPO_ROOT / "outputs"
 RESULT_TEXT_PATH = OUTPUTS_DIR / "result.txt"
 METRICS_PATH = OUTPUTS_DIR / "run_metrics.json"
+# This cap protects downstream visualization payloads from unbounded solution
+# dumps in large-count subgraph benchmarks.
 VISUALIZATION_SOLUTION_CAP = 2000
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))

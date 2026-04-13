@@ -8,6 +8,10 @@ from unittest import mock
 from desktop_runner import app, headless_runner
 
 
+# - These tests cover shared manifest/building behavior that can regress when
+#   desktop and headless execution paths drift apart.
+# - Prefer asserting on serialized shapes and injected defaults here because
+#   those are the contracts external automation depends on.
 class HeadlessRunnerTests(unittest.TestCase):
     def test_enforce_baselines_injects_family_baseline(self):
         selected, injected = headless_runner.enforce_baselines("subgraph", ["vf3_chatgpt"])

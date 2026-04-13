@@ -1,3 +1,8 @@
+        // Bridges the form controls to the shared config object and keeps the
+        // generator-related portions of the page synchronized with selections.
+        // UI-only behavior belongs here instead of being mixed into runner
+        // execution code paths.
+
         function selectAlgorithm(evt, algoId) {
             config.selectedAlgorithm = algoId;
             config.selectedFiles = [];

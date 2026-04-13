@@ -1,3 +1,8 @@
+        // Orchestrates repository-backed benchmark runs through GitHub and
+        // translates browser form state into workflow dispatch inputs.
+        // Changes here usually need a matching review of the workflow YAML and
+        // result-json assembly script because those layers share field names.
+
         async function runAlgorithm() {
             const outputDiv = document.getElementById('output');
             const statusBadge = document.getElementById('status-badge');

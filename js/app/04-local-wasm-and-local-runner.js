@@ -1,3 +1,8 @@
+        // Owns the local/browser execution path, including WASM worker setup,
+        // browser-only metrics, and fallback behavior for local runs.
+        // Keep this path isolated from GitHub workflow concerns so local mode
+        // can evolve without inheriting remote-run assumptions.
+
         function getSelectedRunMode() {
             const selected = document.querySelector('input[name="run-mode"]:checked');
             const raw = selected ? String(selected.value || '').trim().toLowerCase() : 'standard';

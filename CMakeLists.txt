@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 
+# - This CMake file is the repo's native-build contract for discovered solver
+#   binaries and lightweight correctness tests outside the desktop packagers.
+# - When target names or output paths change here, keep local scripts and CI
+#   discovery helpers synchronized with the new artifact layout.
+
 project(capstone_graph_bench LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)

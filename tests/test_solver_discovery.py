@@ -1,3 +1,5 @@
+"""Regression tests for solver discovery catalog shape and baseline injection."""
+
 import importlib.util
 import sys
 import tempfile

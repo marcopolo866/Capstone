@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Validate Glasgow-style subgraph solvers by solution-count parity only."""
 
+# - This validation path compares count outputs only; it is meant to catch
+#   obvious regressions quickly without materializing every embedding.
+# - Keep binary resolution and temp-input generation aligned with the normal
+#   benchmark layout so parity failures are actionable.
+
 from __future__ import annotations
 
 import argparse

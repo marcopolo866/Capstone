@@ -1,3 +1,8 @@
+# - This script is the Windows packaging entrypoint for the desktop runner and
+#   should stay aligned with build_runner.py and the Unix bundling flow.
+# - Keep binary discovery conservative because packaging fails late when the
+#   staged solver set and copied runtime DLLs come from different toolchains.
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 

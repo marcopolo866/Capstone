@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Download and convert desktop-runner datasets into runnable local formats."""
 
+# - This is a CLI shim over desktop_runner.app dataset helpers so dataset
+#   preparation rules live in one place for GUI and scripted workflows.
+# - Keep output paths and progress messaging aligned with the desktop runner to
+#   avoid confusing users about where prepared datasets should appear.
+
 from __future__ import annotations
 
 import argparse

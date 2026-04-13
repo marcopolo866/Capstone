@@ -1,3 +1,10 @@
+/*
+    - This stylesheet defines the shared visual language for the single-page
+      runner UI, so selectors are intentionally tied to index.html ids/classes.
+    - Keep broad layout and component rules grouped by page section so the JS
+      modules can continue toggling visibility/states without style surprises.
+*/
+
 * {
     margin: 0;
     padding: 0;

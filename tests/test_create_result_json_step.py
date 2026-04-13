@@ -1,3 +1,5 @@
+"""Regression tests for CI result-json normalization."""
+
 import json
 import os
 import subprocess

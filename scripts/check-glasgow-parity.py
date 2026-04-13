@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# - This validator is intentionally narrow: it checks solution-count parity
+#   against the baseline binary and leaves richer diagnostics to benchmark logs.
+# - Keep temporary-file formats aligned with the accepted solver input format so
+#   correctness checks exercise the same parser path as normal runs.
+
 import argparse
 import hashlib
 import os

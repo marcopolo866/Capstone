@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# - These helpers are the shared oracle/parsing layer for correctness scripts,
+#   tests, and parts of the benchmark runner stack.
+# - Prefer extending validation here instead of cloning parser behavior into
+#   multiple scripts; downstream tools rely on consistent token normalization.
+
 import csv
 import heapq
 import re

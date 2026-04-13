@@ -1,6 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <!--
+        - This page is the host shell for the split js/app runtime; structure and
+          element ids here are coupled to those script files on purpose.
+        - Prefer adding new behavior in the JS modules first and only add markup
+          hooks here when the scripts need a stable DOM anchor.
+    -->
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Algorithm Runner Interface</title>

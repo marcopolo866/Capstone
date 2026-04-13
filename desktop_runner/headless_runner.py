@@ -2,6 +2,13 @@
 #!/usr/bin/env python3
 """Headless benchmark CLI and manifest runner."""
 
+# - This CLI intentionally reuses desktop_runner.app for execution and dataset
+#   plumbing so the desktop and headless paths emit the same benchmark shapes.
+# - Keep manifest/session serialization rules synchronized with the desktop UI
+#   and with docs that describe reproducibility and output schemas.
+# - This module should remain automation-friendly: predictable exit codes,
+#   structured JSON writes, and minimal side effects outside requested outputs.
+
 from __future__ import annotations
 
 import argparse

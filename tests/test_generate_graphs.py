@@ -1,3 +1,5 @@
+"""CLI-focused regression tests for the synthetic graph generator."""
+
 import json
 import subprocess
 import sys

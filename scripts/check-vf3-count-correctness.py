@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Validate VF3-style subgraph solvers by solution-count parity only."""
 
+# - Like the Glasgow parity checker, this script favors quick count-based
+#   regression detection over full solution-structure comparison.
+# - Keep its binary lookup and generated-instance assumptions synchronized with
+#   the benchmark runner so validation reflects real execution paths.
+
 from __future__ import annotations
 
 import argparse

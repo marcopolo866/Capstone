@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Package the desktop benchmark runner on Linux/macOS."""
 
+# - This script owns the Unix staging layout for the desktop bundle; keep the
+#   staged binaries, copied assets, and final archive contents in sync.
+# - Solver discovery and build invocation intentionally come from the shared
+#   scripts/ helpers so packaging does not drift from normal local builds.
+
 from __future__ import annotations
 
 import importlib.util
@@ -15,6 +20,8 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# Staging is rebuilt from scratch for each run so the archive only contains the
+# exact binaries and assets produced by the current packaging invocation.
 STAGING_ROOT = REPO_ROOT / "desktop_runner" / ".staging"
 STAGING_BIN = STAGING_ROOT / "binaries"
 DIST_DIR = REPO_ROOT / "dist"

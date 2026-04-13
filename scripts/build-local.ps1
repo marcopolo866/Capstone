@@ -1,3 +1,8 @@
+# - This PowerShell wrapper mirrors scripts/build-local.sh but preserves Windows
+#   ergonomics such as parameter binding and generator defaults.
+# - Keep argument forwarding transparent so troubleshooting can focus on the
+#   shared Python build logic instead of wrapper-specific behavior.
+
 param(
     [string]$CMakeGenerator = "MinGW Makefiles",
     [Parameter(ValueFromRemainingArguments = $true)]

@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Cross-platform launcher for local native solver builds."""
 
+# - This wrapper chooses an execution backend but defers real build logic to
+#   scripts/build-local-core.py plus the shell/PowerShell adapters.
+# - Keep backend selection deterministic so developers and CI hit the same
+#   build graph regardless of the platform convenience wrapper they call.
+
 from __future__ import annotations
 
 import argparse

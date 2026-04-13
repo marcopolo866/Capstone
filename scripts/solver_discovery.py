@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Discover solver variants from src/[PROBLEM][LLM][FILETYPE].cpp names."""
 
+# - Discovery is a contract for build scripts, CI, and the UI; changes to ids,
+#   family bucketing, or labels ripple across the whole repository.
+# - Baseline rows are injected here so downstream tools can treat discovered and
+#   baseline variants through the same catalog shape.
+
 from __future__ import annotations
 
 import argparse

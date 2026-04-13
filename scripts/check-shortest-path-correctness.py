@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Validate plain shortest-path solvers against a trusted oracle."""
 
+# - This script is a local correctness gate for Dijkstra-style solvers and
+#   should stay deterministic enough to reproduce failures with the same seed.
+# - Parsing and oracle checks live in utilities/benchmark_validation.py; keep
+#   that shared logic authoritative instead of duplicating validation here.
+
 from __future__ import annotations
 
 import argparse

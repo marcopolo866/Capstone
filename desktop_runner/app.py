@@ -1,6 +1,15 @@
 ﻿#!/usr/bin/env python3
 """Capstone desktop benchmark runner (cross-platform, one-file packaged app)."""
 
+# - This is the desktop application's integration point: Tk UI state, dataset
+#   preparation, local execution, packaging support, and session export all
+#   converge here.
+# - Shared behavior should stay aligned with desktop_runner.headless_runner and
+#   utilities/* helpers; schema or seed changes usually need updates in more
+#   than one entrypoint.
+# - Prefer extracting reusable logic into smaller helpers instead of deepening
+#   callback-to-callback coupling inside this file.
+
 from __future__ import annotations
 
 import csv

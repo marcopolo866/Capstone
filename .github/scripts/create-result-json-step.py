@@ -1,3 +1,10 @@
+"""Assemble the workflow-facing result.json payload from environment inputs."""
+
+# - This script is the final schema-normalization layer for CI runs; keep it
+#   tolerant of missing optional metrics while preserving stable field names.
+# - Environment variables arrive from multiple workflow steps, so any rename
+#   here usually also requires a workflow update and test coverage refresh.
+
 import datetime
 import json
 import os
