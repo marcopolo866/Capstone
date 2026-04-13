@@ -523,11 +523,103 @@ def run_vf3_smoke_test(python_exe: str, env: dict[str, str]) -> None:
             [str(vf3_binary), "-u", "-r", "0", str(vf_pattern), str(vf_target)],
             cwd=str(REPO_ROOT),
             env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if completed.returncode != 0:
+            output_lines = [line.rstrip() for line in (completed.stdout or "").splitlines() if line.strip()]
+            detail = "\n".join(output_lines[-40:])
+            if detail:
+                raise RuntimeError(
+                    f"VF3 baseline smoke test failed with code {completed.returncode}.\n{detail}"
+                )
             raise RuntimeError(f"VF3 baseline smoke test failed with code {completed.returncode}.")
+
+
+def patch_vf3_submodule() -> None:
+    patched_any = False
+
+    patches: list[tuple[Path, list[tuple[str, str]]]] = [
+        (
+            REPO_ROOT / "baselines/vf3lib/include/VF3State.hpp",
+            [
+                ("termin1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "termin1 = new uint32_t[n1]();"),
+                ("termout1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "termout1 = new uint32_t[n1]();"),
+                ("new1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "new1 = new uint32_t[n1]();"),
+                ("t1both_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1both_len_c = new uint32_t*[n1 + 1];"),
+                ("t1in_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1in_len_c = new uint32_t*[n1 + 1];"),
+                ("t1out_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1out_len_c = new uint32_t*[n1 + 1];"),
+                ("termin1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "termin1_c = new uint32_t*[n1];"),
+                ("termout1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "termout1_c = new uint32_t*[n1];"),
+                ("new1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "new1_c = new uint32_t*[n1];"),
+                ("core_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "core_len_c = new uint32_t[classes_count]();"),
+                ("t2both_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2both_len_c = new uint32_t[classes_count]();"),
+                ("t2in_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2in_len_c = new uint32_t[classes_count]();"),
+                ("t2out_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2out_len_c = new uint32_t[classes_count]();"),
+                ("termin1_c[i] = (int*)calloc(classes_count, sizeof(int));", "termin1_c[i] = new uint32_t[classes_count]();"),
+                ("termout1_c[i] = (int*)calloc(classes_count, sizeof(int));", "termout1_c[i] = new uint32_t[classes_count]();"),
+                ("new1_c[i] = (int*)calloc(classes_count, sizeof(int));", "new1_c[i] = new uint32_t[classes_count]();"),
+                ("t1both_len_c[i] = (int*)calloc(classes_count, sizeof(int));", "t1both_len_c[i] = new uint32_t[classes_count]();"),
+                ("t1in_len_c[i] = (int*)calloc(classes_count, sizeof(int));", "t1in_len_c[i] = new uint32_t[classes_count]();"),
+                ("t1out_len_c[i] = (int*)calloc(classes_count, sizeof(int));", "t1out_len_c[i] = new uint32_t[classes_count]();"),
+                ("termin1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "termin1_c[i] = new uint32_t[classes_count]();"),
+                ("termout1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "termout1_c[i] = new uint32_t[classes_count]();"),
+                ("new1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "new1_c[i] = new uint32_t[classes_count]();"),
+                ("t1both_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1both_len_c[i] = new uint32_t[classes_count]();"),
+                ("t1in_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1in_len_c[i] = new uint32_t[classes_count]();"),
+                ("t1out_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1out_len_c[i] = new uint32_t[classes_count]();"),
+            ],
+        ),
+        (
+            REPO_ROOT / "baselines/vf3lib/include/VF3SubState.hpp",
+            [
+                ("termin1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "termin1 = new uint32_t[n1]();"),
+                ("termout1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "termout1 = new uint32_t[n1]();"),
+                ("new1 = (uint32_t*)calloc(n1, sizeof(uint32_t));", "new1 = new uint32_t[n1]();"),
+                ("t1both_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1both_len_c = new uint32_t*[n1 + 1];"),
+                ("t1in_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1in_len_c = new uint32_t*[n1 + 1];"),
+                ("t1out_len_c = (uint32_t**)malloc((n1 + 1) * sizeof(uint32_t*));", "t1out_len_c = new uint32_t*[n1 + 1];"),
+                ("termin1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "termin1_c = new uint32_t*[n1];"),
+                ("termout1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "termout1_c = new uint32_t*[n1];"),
+                ("new1_c = (uint32_t**)malloc(n1 * sizeof(uint32_t*));", "new1_c = new uint32_t*[n1];"),
+                ("core_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "core_len_c = new uint32_t[classes_count]();"),
+                ("t2both_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2both_len_c = new uint32_t[classes_count]();"),
+                ("t2in_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2in_len_c = new uint32_t[classes_count]();"),
+                ("t2out_len_c = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t2out_len_c = new uint32_t[classes_count]();"),
+                ("termin1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "termin1_c[i] = new uint32_t[classes_count]();"),
+                ("termout1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "termout1_c[i] = new uint32_t[classes_count]();"),
+                ("new1_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "new1_c[i] = new uint32_t[classes_count]();"),
+                ("t1both_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1both_len_c[i] = new uint32_t[classes_count]();"),
+                ("t1in_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1in_len_c[i] = new uint32_t[classes_count]();"),
+                ("t1out_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1out_len_c[i] = new uint32_t[classes_count]();"),
+            ],
+        ),
+        (
+            REPO_ROOT / "baselines/vf3lib/include/VF3NodeSorter.hpp",
+            [
+                ("return nodes_order;", "for (VF3SortingNode* n : nodes) delete n;\n\t\t\treturn nodes_order;"),
+            ],
+        ),
+    ]
+
+    for path, replacements in patches:
+        text = path.read_text(encoding="utf-8")
+        updated = text
+        for old, new in replacements:
+            if old in updated:
+                updated = updated.replace(old, new)
+        if updated != text:
+            path.write_text(updated, encoding="utf-8")
+            print(f"Patched {path}")
+            patched_any = True
+        else:
+            print(f"No patch changes needed for {path}")
+
+    if not patched_any:
+        print("No VF3 submodule patch changes were required.")
 
 
 def patch_glasgow_submodule() -> None:
@@ -852,6 +944,7 @@ def main() -> int:
             if path.is_file():
                 path.unlink()
 
+    run_step("Patching VF3 baseline for allocator safety", patch_vf3_submodule)
     run_step("Cleaning VF3 baseline outputs (fresh rebuild)", clean_vf3_outputs)
     run_step(
         "Building VF3 baseline (vf3lib)",

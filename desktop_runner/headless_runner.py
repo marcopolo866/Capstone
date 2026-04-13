@@ -707,6 +707,12 @@ def execute_manifest(manifest: dict[str, Any], manifest_path: Path | None, outpu
                         state["samples_memory"][variant_id].append(float(trial["peak_kb"]))
                     if trial.get("status") != "ok":
                         all_ok = False
+                        logger(
+                            f"{variant_id} {trial.get('status')} for {point_label} iteration {iter_idx + 1} "
+                            f"| return_code={trial.get('return_code')} "
+                            f"| stdout={trial.get('stdout_path')} "
+                            f"| stderr={trial.get('stderr_path')}"
+                        )
                         if config.get("failure_policy") == "stop":
                             raise TrialFailure(f"{variant_id} returned status={trial.get('status')} for {point_label} iteration {iter_idx + 1}")
                 if all_ok:
