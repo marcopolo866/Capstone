@@ -350,9 +350,10 @@ body {
 
 .charts {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     gap: 16px;
     margin-top: 20px;
+    width: 100%;
 }
 
 .charts-blurb {
@@ -370,6 +371,8 @@ body {
     border: 1px solid #e1e4e8;
     border-radius: 8px;
     padding: 16px;
+    width: 100%;
+    max-width: none;
 }
 
 .chart-title {
@@ -447,6 +450,7 @@ body {
 .chart {
     position: relative;
     height: 360px;
+    width: 100%;
 }
 
 .stats-panel {
