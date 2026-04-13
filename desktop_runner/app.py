@@ -6926,7 +6926,7 @@ class BenchmarkRunnerApp(tk.Tk):
         elif family == "vf3":
             if variant_id == "vf3_baseline":
                 # Generated subgraph benchmarks are non-induced and undirected.
-                command = [str(binary), "-u", "-r", "0", str(generated["vf_pattern"]), str(generated["vf_target"])]
+                command = [str(binary), "-u", "-r", "0", "-e", str(generated["vf_pattern"]), str(generated["vf_target"])]
             else:
                 command = [str(binary), str(generated["vf_pattern"]), str(generated["vf_target"])]
         elif family == "glasgow":
@@ -8992,6 +8992,7 @@ class BenchmarkRunnerApp(tk.Tk):
                             "-s",
                             "-r",
                             "0",
+                            "-e",
                             str(inputs["vf_pattern"]),
                             str(inputs["vf_target"]),
                         ]
@@ -10241,6 +10242,7 @@ class BenchmarkRunnerApp(tk.Tk):
                                 "-s",
                                 "-r",
                                 "0",
+                                "-e",
                                 str(inputs["vf_pattern"]),
                                 str(inputs["vf_target"]),
                             ]
@@ -10389,7 +10391,7 @@ class BenchmarkRunnerApp(tk.Tk):
             return [str(binary), str(inputs["dijkstra_file"])]
         if family == "vf3":
             if variant_id == "vf3_baseline":
-                return [str(binary), "-u", "-s", "-r", "0", str(inputs["vf_pattern"]), str(inputs["vf_target"])]
+                return [str(binary), "-u", "-s", "-r", "0", "-e", str(inputs["vf_pattern"]), str(inputs["vf_target"])]
             return [str(binary), str(inputs["vf_pattern"]), str(inputs["vf_target"])]
         if family == "glasgow":
             if variant_id == "glasgow_baseline":

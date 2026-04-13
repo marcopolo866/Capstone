@@ -175,6 +175,4 @@ The downloaded artifact zip contains the packaged desktop runner plus bundled so
 Trusted packaging and validation workflows:
 
 - `.github/workflows/build-benchmark-runner.yml`: fully validated packaged artifacts
-- `.github/workflows/build-benchmark-runner-smoke.yml`: fast smoke-packaging artifacts
-- `.github/workflows/native-sanitizers.yml`: Windows/Linux/macOS sanitizer validation
 - `.github/workflows/benchmark-cli.yml`: manifest-driven headless benchmark workflow

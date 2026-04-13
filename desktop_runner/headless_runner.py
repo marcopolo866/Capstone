@@ -382,7 +382,7 @@ class Runner:
             return [str(binary), str(inputs["dijkstra_file"])]
         if family == "vf3":
             if variant_id == "vf3_baseline":
-                return [str(binary), "-u", "-r", "0", str(inputs["vf_pattern"]), str(inputs["vf_target"])]
+                return [str(binary), "-u", "-r", "0", "-e", str(inputs["vf_pattern"]), str(inputs["vf_target"])]
             return [str(binary), str(inputs["vf_pattern"]), str(inputs["vf_target"])]
         lad_format = str(inputs.get("lad_format") or "lad").strip() or "lad"
         if variant_id == "glasgow_baseline":

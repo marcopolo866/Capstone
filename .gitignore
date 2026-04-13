@@ -35,6 +35,7 @@ CLAUDE.md
 
 # Local packaging artifacts
 capstone-benchmark-runner.spec
+dist/
 
 # Local dataset cache for desktop runner
 .datasets/
