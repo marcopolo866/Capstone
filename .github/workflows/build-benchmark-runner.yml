@@ -8,14 +8,16 @@ on:
     paths:
       - '.github/workflows/build-benchmark-runner.yml'
       - 'desktop_runner/**'
-      - 'desktop_runner/build_runner.py'
       - 'scripts/build-local.ps1'
       - 'scripts/build-local.sh'
       - 'scripts/build-local.py'
+      - 'scripts/build-local-core.py'
+      - 'scripts/solver_discovery.py'
+      - 'scripts/check-*.py'
       - 'Makefile'
       - 'src/**'
       - 'baselines/**'
-      - 'utilities/generate_graphs.py'
+      - 'utilities/**'
 
 jobs:
   build-runner:

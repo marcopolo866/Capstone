@@ -11,8 +11,11 @@ on:
       - 'scripts/build-local*.py'
       - 'scripts/build-local*.sh'
       - 'scripts/build-local*.ps1'
+      - 'scripts/solver_discovery.py'
+      - 'scripts/check-*.py'
       - 'src/**'
       - 'baselines/**'
+      - 'utilities/**'
 
 jobs:
   build-runner-smoke:
@@ -86,6 +89,9 @@ jobs:
         run: |
           set -o pipefail
           export BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1
+          mingw_root_win="$(cygpath -w "$(dirname "$(dirname "$(which g++)")")")"
+          echo "Resolved MinGW root: ${mingw_root_win}"
+          echo "MINGW_ROOT=${mingw_root_win}" >> "$GITHUB_ENV"
           python scripts/build-local.py --backend sh --cmake-generator "MinGW Makefiles" --validation fast 2>&1 | tee build-local-smoke.log
 
       - name: Build native benchmark binaries (Linux/macOS)
@@ -95,9 +101,18 @@ jobs:
           export BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1
           python scripts/build-local.py --backend sh --validation fast 2>&1 | tee build-local-smoke.log
 
-      - name: Package desktop benchmark runner
+      - name: Package desktop benchmark runner (Windows)
+        if: matrix.os_tag == 'windows'
+        shell: pwsh
         run: |
-          python desktop_runner/build_runner.py
+          python desktop_runner/build_runner.py *>&1 | Tee-Object -FilePath build-runner-smoke.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package desktop benchmark runner (Linux/macOS)
+        if: matrix.os_tag != 'windows'
+        run: |
+          set -euo pipefail
+          python desktop_runner/build_runner.py 2>&1 | tee build-runner-smoke.log
 
       - name: Upload smoke runner artifact
         uses: actions/upload-artifact@v4
@@ -115,6 +130,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-runner-smoke-logs-${{ matrix.os_tag }}
-          path: build-local-smoke.log
+          path: |
+            build-local-smoke.log
+            build-runner-smoke.log
           if-no-files-found: warn
           retention-days: 14

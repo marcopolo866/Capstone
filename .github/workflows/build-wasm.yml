@@ -8,8 +8,8 @@ on:
     paths:
       - '.github/workflows/build-wasm.yml'
       - 'baselines/**'
-      - 'wasm/allocator_telemetry.cpp'
-      - 'wasm/vf3_baseline_main.cpp'
+      - 'wasm/**'
+      - 'scripts/solver_discovery.py'
       - 'src/*.cpp'
 
 jobs:
