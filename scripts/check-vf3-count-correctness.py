@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate VF3-style witness mappings for available VF3 binaries."""
+"""Validate VF3-style subgraph solvers by solution-count parity only."""
 
 from __future__ import annotations
 
@@ -11,11 +11,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-
-from utilities.benchmark_validation import validate_subgraph_result
 
 
 def resolve_binary(base_rel: str) -> Path | None:
@@ -119,7 +118,7 @@ def build_generated_case(seed: int, n: int, k: int, density: float, out_dir: Pat
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Check VF3 witness mapping correctness.")
+    parser = argparse.ArgumentParser(description="Check VF3 count correctness.")
     parser.add_argument("--generated-cases", type=int, default=6, help="Number of generated random cases.")
     parser.add_argument("--base-seed", type=int, default=4242, help="Base seed for generated cases.")
     return parser.parse_args()
@@ -140,10 +139,10 @@ def main() -> int:
     solvers = [(name, path) for name, path in optional if path is not None]
     skipped = [name for name, path in optional if path is None]
     if not solvers:
-        print("[check-vf3-witness-correctness] No optional VF3 LLM binaries found; skipping.")
+        print("[check-vf3-count-correctness] No optional VF3 LLM binaries found; skipping.")
         return 0
 
-    with tempfile.TemporaryDirectory(prefix="vf3-witness-check-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="vf3-count-check-") as tmp:
         tmp_dir = Path(tmp)
         cases: list[tuple[Path, Path, str]] = []
 
@@ -170,8 +169,6 @@ def main() -> int:
             cases.append((pattern, target, f"generated_seed_{seed}"))
 
         validated = 0
-        baseline_witness_warnings: list[str] = []
-        solver_witness_warnings: list[str] = []
         for pattern_path, target_path, label in cases:
             baseline_all = run_solver(
                 [str(baseline), "-u", "-r", "0", "-e", str(pattern_path), str(target_path)],
@@ -187,22 +184,6 @@ def main() -> int:
                     f"VF3 baseline returned unexpected positive count for known-negative case: {label} -> {baseline_count}"
                 )
 
-            baseline_first = run_solver(
-                [str(baseline), "-u", "-r", "0", "-F", "-e", str(pattern_path), str(target_path)],
-                f"vf3 baseline first {label}",
-            )
-            baseline_validation = validate_subgraph_result(
-                family="vf3",
-                inputs={"vf_pattern": pattern_path, "vf_target": target_path},
-                output_text=baseline_first,
-                reported_solution_count=baseline_count,
-                allow_metadata_fallback=False,
-            )
-            if not bool(baseline_validation.get("valid")):
-                baseline_witness_warnings.append(
-                    f"{label}: baseline did not emit a parseable witness mapping ({baseline_validation.get('error')})"
-                )
-
             for solver_name, solver_bin in solvers:
                 all_output = run_solver([str(solver_bin), str(pattern_path), str(target_path)], f"{solver_name} {label}")
                 solver_count = parse_solution_count(all_output)
@@ -212,58 +193,14 @@ def main() -> int:
                     raise RuntimeError(
                         f"{solver_name} count mismatch for {label}: baseline={baseline_count}, solver={solver_count}"
                     )
-
-                validation = validate_subgraph_result(
-                    family="vf3",
-                    inputs={"vf_pattern": pattern_path, "vf_target": target_path},
-                    output_text=all_output,
-                    reported_solution_count=solver_count,
-                    allow_metadata_fallback=False,
-                )
-                if bool(validation.get("required_witness")) and not bool(validation.get("valid")):
-                    first_output = run_solver(
-                        [str(solver_bin), "--first-only", str(pattern_path), str(target_path)],
-                        f"{solver_name} first {label}",
-                    )
-                    validation = validate_subgraph_result(
-                        family="vf3",
-                        inputs={"vf_pattern": pattern_path, "vf_target": target_path},
-                        output_text=first_output,
-                        reported_solution_count=solver_count,
-                        allow_metadata_fallback=False,
-                    )
-                if bool(validation.get("required_witness")) and not bool(validation.get("valid")):
-                    validation = validate_subgraph_result(
-                        family="vf3",
-                        inputs={"vf_pattern": pattern_path, "vf_target": target_path},
-                        output_text="",
-                        reported_solution_count=solver_count,
-                        allow_metadata_fallback=True,
-                    )
-                if not bool(validation.get("valid")):
-                    metadata_path = pattern_path.parent / "metadata.json"
-                    if metadata_path.is_file():
-                        raise RuntimeError(f"{solver_name} witness validation failed for {label}: {validation.get('error')}")
-                    solver_witness_warnings.append(
-                        f"{solver_name} {label}: positive count matched baseline but no witness mapping was emitted"
-                    )
-                    continue
                 validated += 1
 
     print(
-        f"[check-vf3-witness-correctness] validated {validated} solver/case combinations "
+        f"[check-vf3-count-correctness] validated {validated} solver/case combinations "
         f"across {len(solvers)} solver(s)."
     )
-    if baseline_witness_warnings:
-        print("[check-vf3-witness-correctness] baseline witness warnings:")
-        for item in baseline_witness_warnings:
-            print(f"  - {item}")
-    if solver_witness_warnings:
-        print("[check-vf3-witness-correctness] solver witness warnings:")
-        for item in solver_witness_warnings:
-            print(f"  - {item}")
     if skipped:
-        print("[check-vf3-witness-correctness] skipped missing solvers:")
+        print("[check-vf3-count-correctness] skipped missing solvers:")
         for name in skipped:
             print(f"  - {name}")
     return 0

@@ -47,7 +47,6 @@ class CreateResultJsonStepTests(unittest.TestCase):
                 "DIJKSTRA_GEMINI_MATCH": "5",
                 "DIJKSTRA_GEMINI_TOTAL": "5",
                 "DIJKSTRA_GEMINI_MISMATCH": "0",
-                "STRUCTURAL_VALIDATION_COUNTS_JSON": json.dumps({"dijkstra_baseline": {"valid": 5, "total": 5, "invalid": 0}}),
                 "BUILD_PROVENANCE_JSON": json.dumps({"toolchains": {"gcc": {"version": "gcc 13"}}}),
             }
             metrics_path.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
@@ -73,7 +72,6 @@ class CreateResultJsonStepTests(unittest.TestCase):
             self.assertAlmostEqual(result.get("timings_ms", {}).get("baseline"), 10.25, places=6)
             self.assertAlmostEqual(result.get("timings_ms", {}).get("chatgpt"), 11.5, places=6)
             self.assertAlmostEqual(result.get("timings_ms", {}).get("gemini"), 12.75, places=6)
-            self.assertEqual(result.get("structural_validation", {}).get("dijkstra_baseline", {}).get("invalid"), 0)
             self.assertEqual(result.get("provenance", {}).get("toolchains", {}).get("gcc", {}).get("version"), "gcc 13")
 
     def test_falls_back_to_env_when_metrics_json_missing(self):
@@ -130,7 +128,6 @@ class CreateResultJsonStepTests(unittest.TestCase):
                 "MEMORY_KB_JSON": json.dumps({"baseline": 100, "claude": 120}),
                 "MEMORY_KB_STDEV_JSON": json.dumps({"baseline": 1, "claude": 2}),
                 "MATCH_COUNTS_JSON": json.dumps({"claude": {"matches": 2, "total": 2, "mismatches": 0}}),
-                "WITNESS_COUNTS_JSON": json.dumps({"claude": {"valid": 2, "required": 2, "missing": 0}}),
                 "VARIANT_METADATA_JSON": json.dumps(
                     [
                         {"variant_id": "dijkstra_baseline", "label": "Dijkstra Baseline", "timing_key": "baseline"},
@@ -150,7 +147,6 @@ class CreateResultJsonStepTests(unittest.TestCase):
             self.assertAlmostEqual(result.get("timings_ms", {}).get("claude"), 2.0, places=6)
             self.assertEqual(result.get("memory_kb", {}).get("claude"), 120)
             self.assertEqual(result.get("match_counts", {}).get("claude", {}).get("mismatches"), 0)
-            self.assertEqual(result.get("witness_counts", {}).get("claude", {}).get("valid"), 2)
             self.assertEqual(len(result.get("variant_metadata", [])), 2)
 
 

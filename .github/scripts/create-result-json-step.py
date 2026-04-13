@@ -549,14 +549,6 @@ dynamic_match_counts = parse_json_env("MATCH_COUNTS_JSON")
 if isinstance(dynamic_match_counts, dict):
     data["match_counts"] = dynamic_match_counts
 
-dynamic_witness_counts = parse_json_env("WITNESS_COUNTS_JSON")
-if isinstance(dynamic_witness_counts, dict):
-    data["witness_counts"] = dynamic_witness_counts
-
-dynamic_structural_validation = parse_json_env("STRUCTURAL_VALIDATION_COUNTS_JSON")
-if isinstance(dynamic_structural_validation, dict):
-    data["structural_validation"] = dynamic_structural_validation
-
 build_provenance = parse_json_env("BUILD_PROVENANCE_JSON")
 if isinstance(build_provenance, dict):
     data["provenance"] = build_provenance
@@ -772,7 +764,7 @@ if algorithm == "subgraph" and env.get("SUBGRAPH_PHASE", "").strip().lower() == 
                 data["output"] = previous.get("output")
             if previous.get("visualization_error") and "visualization" not in data and "visualization_error" not in data:
                 data["visualization_error"] = previous.get("visualization_error")
-            for key in ("timings_ms", "timings_ms_stdev", "memory_kb", "memory_kb_stdev", "match_counts", "witness_counts"):
+            for key in ("timings_ms", "timings_ms_stdev", "memory_kb", "memory_kb_stdev", "match_counts"):
                 if key in previous:
                     merged = dict(previous.get(key, {}))
                     merged.update(data.get(key, {}))

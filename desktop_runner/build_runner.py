@@ -27,7 +27,10 @@ def prefer_msys2_mingw(env: dict[str, str]) -> None:
         if p.lower() not in {msys_mingw_bin_s.lower(), msys_usr_bin_s.lower()}
     ]
     env["PATH"] = os.pathsep.join([msys_mingw_bin_s, msys_usr_bin_s, *filtered])
-    env.setdefault("MINGW_ROOT", str(msys_mingw_bin.parent))
+    # Packaging needs the runtime DLLs that match the active MSYS2 MinGW toolchain.
+    # Overwrite any stale inherited root (for example C:\mingw64) so the staged
+    # binaries and copied DLLs come from the same distribution.
+    env["MINGW_ROOT"] = str(msys_mingw_bin.parent)
 
 
 def main() -> int:

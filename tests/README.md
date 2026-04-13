@@ -27,7 +27,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
   - Validates on-demand MIVIA and Practical Bigraphs conversion helpers.
 - `tests/cpp/graph_oracle_tests.cpp` (via CMake/CTest)
   - C++ edge-case checks for shortest-path and subgraph mapping oracles.
-  - Property-based randomized checks for path optimality and witness mapping validity.
+  - Property-based randomized checks for path optimality and count-parity correctness.
 
 ## Legacy Benchmark Scripts
 

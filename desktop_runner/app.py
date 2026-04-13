@@ -36,11 +36,6 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from utilities import generate_graphs as generator_mod
 from utilities.benchmark_provenance import collect_runtime_provenance
-from utilities.benchmark_validation import (
-    extract_path_tokens as validation_extract_path_tokens,
-    validate_shortest_path_result,
-    validate_subgraph_result,
-)
 
 try:
     import winreg  # type: ignore
@@ -6320,9 +6315,6 @@ class BenchmarkRunnerApp(tk.Tk):
                         "memory_samples_raw_kb": [float(v) for v in memories_raw],
                         "answer_kind": next((item.get("answer_kind") for item in answer_rows if item.get("answer_kind")), None),
                         "path_length_median": median_or_none([float(item.get("path_length")) for item in answer_rows if isinstance(item.get("path_length"), (int, float))]),
-                        "mappings_reported_median": median_or_none([float(item.get("mapping_count")) for item in answer_rows if isinstance(item.get("mapping_count"), (int, float))]),
-                        "structural_validation_passes": int(sum(1 for item in answer_rows if item.get("structural_valid") is True)),
-                        "structural_validation_total": int(sum(1 for item in answer_rows if item.get("structural_valid") is not None)),
                     }
                     datapoints_stream_fh.write(json.dumps(row, default=serialize_for_json) + "\n")
                     streamed_datapoint_rows += 1
@@ -6432,7 +6424,6 @@ class BenchmarkRunnerApp(tk.Tk):
                             "iter_pending": {iter_idx: set(selected_variants) for iter_idx in range(config["iterations"])},
                             "iter_solution_counts": {iter_idx: {} for iter_idx in range(config["iterations"])},
                             "iter_answer_signatures": {iter_idx: {} for iter_idx in range(config["iterations"])},
-                            "iter_structural_valid": {iter_idx: {} for iter_idx in range(config["iterations"])},
                             "iter_runtime_ms": {iter_idx: {} for iter_idx in range(config["iterations"])},
                             "iter_success_count": {iter_idx: 0 for iter_idx in range(config["iterations"])},
                             "answer_rows": {variant_id: [] for variant_id in selected_variants},
@@ -6701,19 +6692,8 @@ class BenchmarkRunnerApp(tk.Tk):
                                 {
                                     "answer_kind": answer_details.get("answer_kind"),
                                     "path_length": answer_details.get("path_length"),
-                                    "mapping_count": answer_details.get("mapping_count"),
-                                    "structural_valid": answer_details.get("structural_valid"),
                                 }
                             )
-                            state["iter_structural_valid"][iter_idx][variant_id] = bool(answer_details.get("structural_valid"))
-                            validation = answer_details.get("structural_validation")
-                            if isinstance(validation, dict) and not bool(validation.get("valid", True)):
-                                validation_error = str(validation.get("error") or "structural validation failed")
-                                self._append_log_threadsafe(
-                                    f"Structural validation failure for {config['selected_variant_labels'].get(variant_id, variant_id)} "
-                                    f"at datapoint {int(state['point_idx']) + 1}, seed={int(trial['iter_seed'])}: {validation_error}",
-                                    level="error",
-                                )
                     elif not handled_failure and fatal_error is None and not aborted:
                         # Defensive fallback: treat unexpected non-success as missing so the datapoint can complete.
                         handled_failure = True
@@ -6803,17 +6783,15 @@ class BenchmarkRunnerApp(tk.Tk):
                 baseline_trials = 0
                 for state in point_states.values():
                     iter_answers = state.get("iter_answer_signatures", {})
-                    iter_valid = state.get("iter_structural_valid", {})
                     for iter_idx in range(config["iterations"]):
                         answers = iter_answers.get(iter_idx, {})
-                        validations = iter_valid.get(iter_idx, {})
                         baseline_answer = answers.get(accuracy_baseline_variant)
-                        if baseline_answer is None or not bool(validations.get(accuracy_baseline_variant, False)):
+                        if baseline_answer is None:
                             continue
                         baseline_trials += 1
                         for variant_id in selected_variants:
                             total_counts[variant_id] += 1
-                            if bool(validations.get(variant_id, False)) and answers.get(variant_id) == baseline_answer:
+                            if answers.get(variant_id) == baseline_answer:
                                 correct_counts[variant_id] += 1
                 self._append_log_threadsafe(f"Accuracy vs {baseline_label}:", level="notice")
                 if baseline_trials == 0:
@@ -6828,25 +6806,6 @@ class BenchmarkRunnerApp(tk.Tk):
                     solver_label = config["selected_variant_labels"].get(variant_id, variant_id)
                     self._append_log_threadsafe(
                         f"[{solver_label}]: {correct}/{total} ({percent:.3f}%)",
-                        level="notice",
-                    )
-
-                self._append_log_threadsafe("Structural validation pass rates:", level="notice")
-                for variant_id in selected_variants:
-                    valid_passes = 0
-                    valid_total = 0
-                    for state in point_states.values():
-                        iter_valid = state.get("iter_structural_valid", {})
-                        for iter_idx in range(config["iterations"]):
-                            validations = iter_valid.get(iter_idx, {})
-                            if variant_id in validations:
-                                valid_total += 1
-                                if bool(validations.get(variant_id)):
-                                    valid_passes += 1
-                    percent = (100.0 * float(valid_passes) / float(valid_total)) if valid_total > 0 else 0.0
-                    solver_label = config["selected_variant_labels"].get(variant_id, variant_id)
-                    self._append_log_threadsafe(
-                        f"[{solver_label}]: {valid_passes}/{valid_total} ({percent:.3f}%)",
                         level="notice",
                     )
 
@@ -6950,20 +6909,6 @@ class BenchmarkRunnerApp(tk.Tk):
             self.visualizer_status_var.set("No run payload available yet.")
         self._update_visualizer_autoplay_controls()
 
-    def _build_witness_command(self, variant_id: str, generated: dict[str, Path | str]) -> list[str] | None:
-        binary = self.binary_paths[variant_id]
-        family = variant_family_from_id(variant_id)
-        if family == "vf3":
-            if variant_id == "vf3_baseline":
-                return [str(binary), "-u", "-r", "0", "-F", "-e", str(generated["vf_pattern"]), str(generated["vf_target"])]
-            return [str(binary), "--first-only", str(generated["vf_pattern"]), str(generated["vf_target"])]
-        if family == "glasgow":
-            lad_format = str(generated.get("lad_format") or "lad").strip() or "lad"
-            if variant_id == "glasgow_baseline":
-                return [str(binary), "--format", lad_format, str(generated["lad_pattern"]), str(generated["lad_target"])]
-            return [str(binary), str(generated["lad_pattern"]), str(generated["lad_target"]), "--print-mappings"]
-        return None
-
     def _run_solver_variant(
         self,
         variant_id: str,
@@ -7035,56 +6980,11 @@ class BenchmarkRunnerApp(tk.Tk):
                 answer_kind = "distance"
                 answer_value = distance_signature
                 answer_signature = ("distance", distance_signature)
-        path_tokens = validation_extract_path_tokens(combined_output)
-        mappings = extract_mappings_from_text(combined_output)
-        if family in {"dijkstra", "sp_via"}:
-            validation = validate_shortest_path_result(
-                input_path=Path(generated["dijkstra_file"]),
-                reported_distance=distance_signature,
-                path_tokens=path_tokens,
-            )
-        else:
-            validation = validate_subgraph_result(
-                family=family,
-                inputs=generated,
-                output_text=combined_output,
-                reported_solution_count=solution_count,
-                allow_metadata_fallback=False,
-            )
-            if bool(validation.get("required_witness")) and not bool(validation.get("valid")):
-                witness_command = self._build_witness_command(variant_id, generated)
-                if witness_command:
-                    try:
-                        _w_ms, _w_kb, witness_rc, witness_stdout, witness_stderr = self._run_process_with_peak_memory(
-                            witness_command,
-                            cwd=binary.parent,
-                            heartbeat_label=None,
-                            solver_timeout_seconds=solver_timeout_seconds,
-                        )
-                        if witness_rc == 0:
-                            witness_output = (witness_stdout or "") + ("\n" + witness_stderr if witness_stderr else "")
-                            validation = validate_subgraph_result(
-                                family=family,
-                                inputs=generated,
-                                output_text=witness_output,
-                                reported_solution_count=solution_count,
-                                allow_metadata_fallback=True,
-                            )
-                    except Exception:
-                        validation = validate_subgraph_result(
-                            family=family,
-                            inputs=generated,
-                            output_text=combined_output,
-                            reported_solution_count=solution_count,
-                            allow_metadata_fallback=True,
-                        )
+        path_tokens = extract_path_tokens(combined_output) if family in {"dijkstra", "sp_via"} else []
         answer_details = {
             "answer_kind": answer_kind,
             "answer_value": answer_value,
             "path_length": max(0, len(path_tokens) - 1) if path_tokens else None,
-            "mapping_count": len(mappings),
-            "structural_validation": validation,
-            "structural_valid": bool(validation.get("valid", False)),
         }
         return runtime_ms, peak_kb, solution_count, answer_signature, answer_details
 

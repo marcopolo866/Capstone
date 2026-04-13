@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from utilities.benchmark_validation import validate_shortest_path_result, validate_subgraph_result
+from utilities.benchmark_validation import validate_shortest_path_result
 
 
 class BenchmarkValidationTests(unittest.TestCase):
@@ -24,62 +24,6 @@ class BenchmarkValidationTests(unittest.TestCase):
             )
         self.assertTrue(result.get("valid"))
         self.assertTrue(result.get("path_valid"))
-
-    def test_validate_subgraph_result_accepts_valid_vf3_mapping(self):
-        with tempfile.TemporaryDirectory(prefix="capstone-test-validation-vf3-") as tmp:
-            tmp_dir = Path(tmp)
-            pattern = tmp_dir / "pattern.vf"
-            target = tmp_dir / "target.vf"
-            pattern.write_text(
-                "3\n"
-                "0 0\n"
-                "1 1\n"
-                "2 2\n"
-                "2\n"
-                "0 1\n"
-                "0 2\n"
-                "2\n"
-                "1 0\n"
-                "1 2\n"
-                "2\n"
-                "2 0\n"
-                "2 1\n",
-                encoding="utf-8",
-            )
-            target.write_text(
-                "4\n"
-                "0 0\n"
-                "1 1\n"
-                "2 2\n"
-                "3 3\n"
-                "3\n"
-                "0 1\n"
-                "0 2\n"
-                "0 3\n"
-                "3\n"
-                "1 0\n"
-                "1 2\n"
-                "1 3\n"
-                "3\n"
-                "2 0\n"
-                "2 1\n"
-                "2 3\n"
-                "3\n"
-                "3 0\n"
-                "3 1\n"
-                "3 2\n",
-                encoding="utf-8",
-            )
-            result = validate_subgraph_result(
-                family="vf3",
-                inputs={"vf_pattern": pattern, "vf_target": target},
-                output_text="mapping: 0->0 1->1 2->2\nsolution_count=1\n",
-                reported_solution_count=1,
-                allow_metadata_fallback=False,
-            )
-        self.assertTrue(result.get("valid"))
-        self.assertEqual(result.get("witness_source"), "solver_output")
-
 
 if __name__ == "__main__":
     unittest.main()

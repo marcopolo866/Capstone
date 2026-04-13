@@ -596,11 +596,11 @@ def maybe_run_glasgow_parity_check(python_exe: str, env: dict[str, str]) -> None
     run_step("Checking Glasgow parity", lambda: run_cmd([python_exe, "scripts/check-glasgow-parity.py"], env=env))
 
 
-def maybe_run_subgraph_witness_check(python_exe: str, env: dict[str, str]) -> None:
+def maybe_run_subgraph_count_check(python_exe: str, env: dict[str, str]) -> None:
     baseline = resolve_binary_path("baselines/glasgow-subgraph-solver/build/glasgow_subgraph_solver")
     if not baseline:
         print()
-        print("==> Skipping subgraph witness correctness check (missing Glasgow baseline binary)")
+        print("==> Skipping subgraph count correctness check (missing Glasgow baseline binary)")
         return
 
     optional = [
@@ -610,12 +610,12 @@ def maybe_run_subgraph_witness_check(python_exe: str, env: dict[str, str]) -> No
     ]
     if not any(optional):
         print()
-        print("==> Skipping subgraph witness correctness check (no Glasgow LLM binaries found)")
+        print("==> Skipping subgraph count correctness check (no Glasgow LLM binaries found)")
         return
 
     run_step(
-        "Checking subgraph witness correctness",
-        lambda: run_cmd([python_exe, "scripts/check-subgraph-witness-correctness.py"], env=env),
+        "Checking subgraph count correctness",
+        lambda: run_cmd([python_exe, "scripts/check-subgraph-count-correctness.py"], env=env),
     )
 
 
@@ -643,11 +643,11 @@ def maybe_run_shortest_path_correctness_check(python_exe: str, env: dict[str, st
     )
 
 
-def maybe_run_vf3_witness_check(python_exe: str, env: dict[str, str]) -> None:
+def maybe_run_vf3_count_check(python_exe: str, env: dict[str, str]) -> None:
     baseline = resolve_binary_path("baselines/vf3lib/bin/vf3")
     if not baseline:
         print()
-        print("==> Skipping VF3 witness correctness check (missing baselines/vf3lib/bin/vf3)")
+        print("==> Skipping VF3 count correctness check (missing baselines/vf3lib/bin/vf3)")
         return
     optional = [
         resolve_binary_path("src/vf3_chatgpt"),
@@ -656,11 +656,11 @@ def maybe_run_vf3_witness_check(python_exe: str, env: dict[str, str]) -> None:
     ]
     if not any(optional):
         print()
-        print("==> Skipping VF3 witness correctness check (no VF3 LLM binaries found)")
+        print("==> Skipping VF3 count correctness check (no VF3 LLM binaries found)")
         return
     run_step(
-        "Checking VF3 witness correctness",
-        lambda: run_cmd([python_exe, "scripts/check-vf3-witness-correctness.py"], env=env),
+        "Checking VF3 count correctness",
+        lambda: run_cmd([python_exe, "scripts/check-vf3-count-correctness.py"], env=env),
     )
 
 
@@ -915,9 +915,9 @@ def main() -> int:
 
     if fast_mode:
         print()
-        print("==> Skipping VF3 witness correctness check (BUILD_LOCAL_FAST=1)")
+        print("==> Skipping VF3 count correctness check (BUILD_LOCAL_FAST=1)")
     else:
-        maybe_run_vf3_witness_check(python_exe, env)
+        maybe_run_vf3_count_check(python_exe, env)
 
     if fast_mode:
         print()
@@ -927,9 +927,9 @@ def main() -> int:
 
     if fast_mode:
         print()
-        print("==> Skipping subgraph witness correctness check (BUILD_LOCAL_FAST=1)")
+        print("==> Skipping subgraph count correctness check (BUILD_LOCAL_FAST=1)")
     else:
-        maybe_run_subgraph_witness_check(python_exe, env)
+        maybe_run_subgraph_count_check(python_exe, env)
 
     verify_expected_outputs(
         catalog,

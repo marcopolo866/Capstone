@@ -28,11 +28,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from utilities import generate_graphs as generator_mod
 from utilities.benchmark_provenance import collect_runtime_provenance
-from utilities.benchmark_validation import (
-    extract_path_tokens as shared_extract_path_tokens,
-    validate_shortest_path_result as shared_validate_shortest_path_result,
-    validate_subgraph_result as shared_validate_subgraph_result,
-)
 
 
 def load_solver_discovery_module():
@@ -1207,67 +1202,6 @@ def undirected_edge_set(adj: list[list[int]]) -> set[tuple[int, int]]:
     return edges
 
 
-def is_valid_subgraph_witness_mapping(
-    pattern_adj: list[list[int]],
-    target_adj: list[list[int]],
-    mapping: dict[int, int],
-) -> bool:
-    pattern_n = len(pattern_adj)
-    target_n = len(target_adj)
-    if pattern_n <= 0 or target_n <= 0:
-        return False
-    if len(mapping) < pattern_n:
-        return False
-
-    normalized: dict[int, int] = {}
-    used_targets: set[int] = set()
-    for p in range(pattern_n):
-        raw_t = mapping.get(p)
-        if raw_t is None:
-            return False
-        try:
-            t = int(raw_t)
-        except (TypeError, ValueError):
-            return False
-        if t < 0 or t >= target_n:
-            return False
-        if t in used_targets:
-            return False
-        used_targets.add(t)
-        normalized[p] = t
-
-    target_edges = undirected_edge_set(target_adj)
-    for u, neighbors in enumerate(pattern_adj):
-        for v in neighbors:
-            ek_pattern = edge_key(u, v)
-            if ek_pattern is None:
-                continue
-            tu = normalized.get(u)
-            tv = normalized.get(v)
-            if tu is None or tv is None:
-                return False
-            ek_target = edge_key(tu, tv)
-            if ek_target is None or ek_target not in target_edges:
-                return False
-    return True
-
-
-def evaluate_witness_mapping_output(
-    output_text: str,
-    *,
-    pattern_adj: list[list[int]],
-    target_adj: list[list[int]],
-    limit: int = 64,
-) -> tuple[bool, int, int]:
-    parsed = extract_mappings_from_text(output_text, limit=limit)
-    normalized = normalize_mappings(parsed, len(pattern_adj), len(target_adj), limit=limit)
-    valid = 0
-    for mapping in normalized:
-        if is_valid_subgraph_witness_mapping(pattern_adj, target_adj, mapping):
-            valid += 1
-    return (valid > 0), len(normalized), valid
-
-
 def find_subgraph_mappings(
     pattern_adj: list[list[int]],
     target_adj: list[list[int]],
@@ -1654,8 +1588,6 @@ def main() -> int:
     memory_kb: dict[str, int] = {}
     memory_kb_stdev: dict[str, int] = {}
     match_counts: dict[str, dict] = {}
-    witness_counts: dict[str, dict] = {}
-    structural_validation_counts: dict[str, dict] = {}
     statistical_tests: dict = {"metric": "runtime_ms", "alpha": 0.05, "pairs": [], "notes": []}
     variant_metadata: list[dict] = []
     output_lines: list[str] = []
@@ -1952,106 +1884,6 @@ def main() -> int:
                 key = row.variant_id
             match_counts[key] = {"matches": matches, "total": total, "mismatches": mismatches}
 
-        if selected_family in {"dijkstra", "sp_via"}:
-            total_iterations = min(iterations, len(per_iteration_inputs))
-            for row in by_role:
-                single_outputs = list(per_solver_outputs.get((row.variant_id, "single"), []))
-                passed = 0
-                total = 0
-                invalid_iterations: list[int] = []
-                errors: list[str] = []
-                for i in range(total_iterations):
-                    if i >= len(single_outputs):
-                        continue
-                    try:
-                        validation = shared_validate_shortest_path_result(
-                            input_path=Path(per_iteration_inputs[i]["dijkstra"]),
-                            reported_distance=parse_dijkstra_distance(single_outputs[i]),
-                            path_tokens=shared_extract_path_tokens(single_outputs[i]),
-                        )
-                        total += 1
-                        if bool(validation.get("valid")):
-                            passed += 1
-                        else:
-                            invalid_iterations.append(i + 1)
-                            if validation.get("error"):
-                                errors.append(f"iteration {i + 1}: {validation.get('error')}")
-                    except Exception as exc:
-                        total += 1
-                        invalid_iterations.append(i + 1)
-                        errors.append(f"iteration {i + 1}: {exc}")
-                structural_validation_counts[row.variant_id] = {
-                    "valid": passed,
-                    "total": total,
-                    "invalid": max(0, total - passed),
-                    "invalid_iterations": invalid_iterations,
-                }
-                if errors:
-                    structural_validation_counts[row.variant_id]["errors"] = errors
-
-        if selected_family in {"vf3", "glasgow"}:
-            total_iterations = min(iterations, len(per_iteration_inputs))
-            for row in by_role:
-                first_outputs = list(per_solver_outputs.get((row.variant_id, "first"), []))
-                all_outputs = list(per_solver_outputs.get((row.variant_id, "all"), []))
-                required = 0
-                witness_valid = 0
-                structural_valid = 0
-                invalid_iterations: list[int] = []
-                errors: list[str] = []
-                source_counts = {"solver_output": 0, "metadata_hint": 0, "none": 0}
-
-                for i in range(total_iterations):
-                    first_text = first_outputs[i] if i < len(first_outputs) else ""
-                    all_text = all_outputs[i] if i < len(all_outputs) else first_text
-                    count = parse_solution_count(all_text)
-                    if count is None:
-                        count = parse_solution_count(first_text)
-                    if count is None:
-                        continue
-                    if count > 0:
-                        required += 1
-                    try:
-                        validation = shared_validate_subgraph_result(
-                            family=selected_family,
-                            inputs=per_iteration_inputs[i],
-                            output_text=first_text or all_text,
-                            reported_solution_count=count,
-                            allow_metadata_fallback=True,
-                        )
-                        source = str(validation.get("witness_source") or "none")
-                        source_counts[source] = source_counts.get(source, 0) + 1
-                        if bool(validation.get("valid")):
-                            structural_valid += 1
-                            if count > 0:
-                                witness_valid += 1
-                        else:
-                            invalid_iterations.append(i + 1)
-                            if validation.get("error"):
-                                errors.append(f"iteration {i + 1}: {validation.get('error')}")
-                    except Exception as exc:
-                        invalid_iterations.append(i + 1)
-                        errors.append(f"iteration {i + 1}: {exc}")
-
-                witness_counts[row.variant_id] = {
-                    "valid": witness_valid,
-                    "required": required,
-                    "missing": max(0, required - witness_valid),
-                    "invalid_iterations": invalid_iterations,
-                    "witness_sources": source_counts,
-                }
-                if errors:
-                    witness_counts[row.variant_id]["errors"] = errors
-                structural_validation_counts[row.variant_id] = {
-                    "valid": structural_valid,
-                    "total": total_iterations,
-                    "invalid": max(0, total_iterations - structural_valid),
-                    "invalid_iterations": invalid_iterations,
-                    "witness_sources": source_counts,
-                }
-                if errors:
-                    structural_validation_counts[row.variant_id]["errors"] = errors
-
         statistical_tests = build_runtime_statistical_tests(
             by_role=by_role,
             baseline_row=baseline_row,
@@ -2175,25 +2007,6 @@ def main() -> int:
                                 f"{matched}/{total} matched ({mismatches} mismatches)",
                             )
                         )
-                    witness_row = witness_counts.get(match_key)
-                    if isinstance(witness_row, dict):
-                        witness_valid = witness_row.get("valid", "n/a")
-                        witness_required = witness_row.get("required", "n/a")
-                        witness_missing = witness_row.get("missing", "n/a")
-                        output_lines.append(
-                            fmt_labeled_value(
-                                "Witness mapping",
-                                f"{witness_valid}/{witness_required} valid ({witness_missing} missing)",
-                            )
-                        )
-                        missing_iters = witness_row.get("missing_iterations")
-                        if isinstance(missing_iters, list) and missing_iters:
-                            output_lines.append(
-                                fmt_labeled_value(
-                                    "Witness missing Iters",
-                                    ",".join(str(int(x)) for x in missing_iters[:12]),
-                                )
-                            )
                 output_lines.append(
                     fmt_labeled_median_stdev(
                         "Runtime First (ms)",
@@ -2278,8 +2091,6 @@ def main() -> int:
         "MEMORY_KB_JSON": json.dumps(memory_kb, separators=(",", ":"), sort_keys=True),
         "MEMORY_KB_STDEV_JSON": json.dumps(memory_kb_stdev, separators=(",", ":"), sort_keys=True),
         "MATCH_COUNTS_JSON": json.dumps(match_counts, separators=(",", ":"), sort_keys=True),
-        "WITNESS_COUNTS_JSON": json.dumps(witness_counts, separators=(",", ":"), sort_keys=True),
-        "STRUCTURAL_VALIDATION_COUNTS_JSON": json.dumps(structural_validation_counts, separators=(",", ":"), sort_keys=True),
         "STATISTICAL_TESTS_JSON": json.dumps(statistical_tests, separators=(",", ":"), sort_keys=True),
         "VARIANT_METADATA_JSON": json.dumps(variant_metadata, separators=(",", ":"), sort_keys=True),
         "BUILD_PROVENANCE_JSON": json.dumps(

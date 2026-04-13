@@ -39,6 +39,21 @@ function Test-IsPortableExecutable {
 
 function Resolve-MingwRoot {
     $candidates = New-Object System.Collections.Generic.List[string]
+    $msysRoot = "C:\\msys64\\mingw64"
+    $msysBin = Join-Path $msysRoot "bin"
+    $pathParts = @($env:PATH -split ';' | Where-Object { $_ })
+
+    $preferMsys = $false
+    foreach ($part in $pathParts) {
+        if ($part.TrimEnd('\').ToLowerInvariant() -eq $msysBin.ToLowerInvariant()) {
+            $preferMsys = $true
+            break
+        }
+    }
+
+    if ((Test-Path -LiteralPath (Join-Path $msysBin "g++.exe") -PathType Leaf) -and ($preferMsys -or $env:GITHUB_ACTIONS -eq "true")) {
+        $candidates.Add($msysRoot)
+    }
 
     if ($env:MINGW_ROOT) {
         $candidates.Add($env:MINGW_ROOT)
@@ -53,7 +68,7 @@ function Resolve-MingwRoot {
         }
     }
 
-    $candidates.Add("C:\\msys64\\mingw64")
+    $candidates.Add($msysRoot)
     $candidates.Add("C:\\mingw64")
 
     $seen = @{}
@@ -170,6 +185,49 @@ sys.exit(0)
             Remove-Item -LiteralPath $tmpDir -Recurse -Force
         }
     }
+}
+
+function Publish-BuiltExecutable {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$TargetPath
+    )
+
+    $targetDir = Split-Path -Parent $TargetPath
+    if (-not (Test-Path -LiteralPath $targetDir)) {
+        New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+    }
+
+    $targetAvailable = $true
+    if (Test-Path -LiteralPath $TargetPath -PathType Leaf) {
+        try {
+            Remove-Item -LiteralPath $TargetPath -Force
+        } catch {
+            $targetAvailable = $false
+        }
+    }
+
+    if ($targetAvailable) {
+        Copy-Item -LiteralPath $SourcePath -Destination $TargetPath -Force
+        return $TargetPath
+    }
+
+    $targetBaseName = [System.IO.Path]::GetFileNameWithoutExtension($TargetPath)
+    $targetExtension = [System.IO.Path]::GetExtension($TargetPath)
+    $fallbackLeaf = $targetBaseName + ".new" + $targetExtension
+    $fallbackPath = Join-Path $targetDir $fallbackLeaf
+    if (Test-Path -LiteralPath $fallbackPath -PathType Leaf) {
+        try {
+            Remove-Item -LiteralPath $fallbackPath -Force
+        } catch {
+        }
+    }
+    Copy-Item -LiteralPath $SourcePath -Destination $fallbackPath -Force
+    $warningMessage =
+        "Could not replace '$TargetPath' because it is locked or not writable. " +
+        "A fresh build was written to '$fallbackPath'. Close the running app and replace the original file when convenient."
+    Write-Warning $warningMessage
+    return $fallbackPath
 }
 
 $discoveryRaw = & python "scripts/solver_discovery.py"
@@ -294,6 +352,18 @@ $pyArgs = @(
     "desktop_runner/app.py"
 )
 
+$pyiTempRoot = Join-Path $repoRoot "desktop_runner/.pyinstaller-tmp"
+$pyiDistDir = Join-Path $pyiTempRoot "dist"
+$pyiWorkDir = Join-Path $pyiTempRoot "build"
+$pyiSpecDir = Join-Path $pyiTempRoot "spec"
+if (Test-Path -LiteralPath $pyiTempRoot) {
+    Remove-Item -LiteralPath $pyiTempRoot -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $pyiDistDir | Out-Null
+New-Item -ItemType Directory -Force -Path $pyiWorkDir | Out-Null
+New-Item -ItemType Directory -Force -Path $pyiSpecDir | Out-Null
+$pyArgs += @("--distpath", $pyiDistDir, "--workpath", $pyiWorkDir, "--specpath", $pyiSpecDir)
+
 $stagedFiles = Get-ChildItem -LiteralPath $stagingBin -File
 foreach ($file in $stagedFiles) {
     $pyArgs += @("--add-binary", "$($file.FullName);binaries")
@@ -306,16 +376,15 @@ if (-not (Test-Path -LiteralPath $visualizerJs -PathType Leaf)) {
 $pyArgs += @("--add-data", "$visualizerJs;js/app")
 
 $exePath = Join-Path $repoRoot "dist/capstone-benchmark-runner.exe"
-if (Test-Path -LiteralPath $exePath -PathType Leaf) {
-    Remove-Item -LiteralPath $exePath -Force
-}
+$builtExePath = Join-Path $pyiDistDir "capstone-benchmark-runner.exe"
 
 python @pyArgs
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE"
 }
 
-if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
-    throw "Expected executable missing: $exePath"
+if (-not (Test-Path -LiteralPath $builtExePath -PathType Leaf)) {
+    throw "Expected executable missing from PyInstaller dist path: $builtExePath"
 }
-Write-Host "Built: $exePath"
+$publishedExePath = Publish-BuiltExecutable -SourcePath $builtExePath -TargetPath $exePath
+Write-Host "Built: $publishedExePath"

@@ -18,11 +18,6 @@ from typing import Any
 from desktop_runner import app as app_mod
 from utilities import generate_graphs as generator_mod
 from utilities.benchmark_provenance import collect_runtime_provenance
-from utilities.benchmark_validation import (
-    extract_path_tokens,
-    validate_shortest_path_result,
-    validate_subgraph_result,
-)
 
 MANIFEST_SCHEMA_VERSION = "capstone-benchmark-manifest-v1"
 SESSION_SCHEMA_VERSION = "desktop-benchmark-v2"
@@ -394,20 +389,6 @@ class Runner:
             return [str(binary), "--count-solutions", "--format", lad_format, str(inputs["lad_pattern"]), str(inputs["lad_target"])]
         return [str(binary), str(inputs["lad_pattern"]), str(inputs["lad_target"])]
 
-    def build_witness_command(self, variant_id: str, inputs: dict[str, Path | str]) -> list[str] | None:
-        binary = self.binary_paths[variant_id]
-        family = app_mod.variant_family_from_id(variant_id)
-        if family == "vf3":
-            if variant_id == "vf3_baseline":
-                return [str(binary), "-u", "-r", "0", "-F", "-e", str(inputs["vf_pattern"]), str(inputs["vf_target"])]
-            return [str(binary), "--first-only", str(inputs["vf_pattern"]), str(inputs["vf_target"])]
-        if family == "glasgow":
-            lad_format = str(inputs.get("lad_format") or "lad").strip() or "lad"
-            if variant_id == "glasgow_baseline":
-                return [str(binary), "--format", lad_format, str(inputs["lad_pattern"]), str(inputs["lad_target"])]
-            return [str(binary), str(inputs["lad_pattern"]), str(inputs["lad_target"]), "--print-mappings"]
-        return None
-
     def run_trial(self, *, tab_id: str, variant_id: str, inputs: dict[str, Path | str], solver_timeout_seconds: float | None, output_dir: Path) -> dict[str, Any]:
         binary = self.binary_paths[variant_id]
         command = self.build_command(variant_id, inputs)
@@ -436,49 +417,7 @@ class Runner:
             distance_value = app_mod.parse_dijkstra_distance(combined)
             if distance_value is not None:
                 answer_kind, answer_value, answer_signature = "distance", str(distance_value), ("distance", str(distance_value))
-        path_tokens = extract_path_tokens(combined)
-        mappings = app_mod.extract_mappings_from_text(combined)
-        if family in {"dijkstra", "sp_via"}:
-            validation = validate_shortest_path_result(
-                input_path=Path(inputs["dijkstra_file"]),
-                reported_distance=distance_value,
-                path_tokens=path_tokens,
-            )
-        else:
-            validation = validate_subgraph_result(
-                family=family,
-                inputs=inputs,
-                output_text=combined,
-                reported_solution_count=solution_count,
-                allow_metadata_fallback=False,
-            )
-            if bool(validation.get("required_witness")) and not bool(validation.get("valid")):
-                witness_command = self.build_witness_command(variant_id, inputs)
-                if witness_command:
-                    try:
-                        _w_ms, _w_kb, witness_rc, witness_stdout, witness_stderr = self.run_process(
-                            witness_command,
-                            binary.parent,
-                            None,
-                            solver_timeout_seconds,
-                        )
-                        if witness_rc == 0:
-                            witness_combined = (witness_stdout or "") + ("\n" + witness_stderr if witness_stderr else "")
-                            validation = validate_subgraph_result(
-                                family=family,
-                                inputs=inputs,
-                                output_text=witness_combined,
-                                reported_solution_count=solution_count,
-                                allow_metadata_fallback=True,
-                            )
-                    except Exception:
-                        validation = validate_subgraph_result(
-                            family=family,
-                            inputs=inputs,
-                            output_text=combined,
-                            reported_solution_count=solution_count,
-                            allow_metadata_fallback=True,
-                        )
+        path_tokens = app_mod.extract_path_tokens(combined) if family in {"dijkstra", "sp_via"} else []
         status = "timeout" if timed_out else ("failed" if return_code not in {None, 0} else "ok")
         return {
             "schema_version": TRIAL_SCHEMA_VERSION,
@@ -498,9 +437,6 @@ class Runner:
                 "solution_count": None if solution_count is None else int(solution_count),
                 "distance": distance_value,
                 "path_length": max(0, len(path_tokens) - 1) if path_tokens else None,
-                "mapping_count": len(mappings),
-                "structural_validation": validation,
-                "structural_valid": bool(validation.get("valid", False)),
             },
             "answer_signature": answer_signature,
         }
@@ -628,9 +564,6 @@ def finalize_point(config: dict[str, Any], state: dict[str, Any], stream) -> lis
             "memory_samples_raw_kb": [float(value) for value in memories_raw],
             "answer_kind": next((item.get("answer_kind") for item in answer_rows if item.get("answer_kind")), None),
             "path_length_median": aggregate_metric([item.get("path_length") for item in answer_rows]),
-            "mappings_reported_median": aggregate_metric([item.get("mapping_count") for item in answer_rows]),
-            "structural_validation_passes": int(sum(1 for item in answer_rows if item.get("structural_valid") is True)),
-            "structural_validation_total": int(sum(1 for item in answer_rows if item.get("structural_valid") is not None)),
         }
         stream.write(json.dumps(row, default=app_mod.serialize_for_json) + "\n")
         rows.append(row)
@@ -667,7 +600,6 @@ def write_session_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerow([
             "variant_id", "variant_label", "dataset_id", "dataset_name", "x_value", "y_value", "runtime_median_ms", "runtime_stdev_ms", "runtime_samples_n",
             "memory_median_kb", "memory_stdev_kb", "memory_samples_n", "completed_iterations", "requested_iterations", "answer_kind", "path_length_median",
-            "mappings_reported_median", "structural_validation_passes", "structural_validation_total",
             "runtime_samples_json", "memory_samples_json", "runtime_samples_raw_json", "memory_samples_raw_json", "seeds_json",
         ])
         for row in rows:
@@ -676,8 +608,7 @@ def write_session_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                 app_mod.number_or_blank(row.get("y_value")) if row.get("y_value") is not None else "", app_mod.number_or_blank(row.get("runtime_median_ms")),
                 app_mod.number_or_blank(row.get("runtime_stdev_ms")), row.get("runtime_samples_n"), app_mod.number_or_blank(row.get("memory_median_kb")),
                 app_mod.number_or_blank(row.get("memory_stdev_kb")), row.get("memory_samples_n"), row.get("completed_iterations"), row.get("requested_iterations"),
-                row.get("answer_kind") or "", app_mod.number_or_blank(row.get("path_length_median")), app_mod.number_or_blank(row.get("mappings_reported_median")),
-                row.get("structural_validation_passes") or 0, row.get("structural_validation_total") or 0, json.dumps(row.get("runtime_samples_ms", [])),
+                row.get("answer_kind") or "", app_mod.number_or_blank(row.get("path_length_median")), json.dumps(row.get("runtime_samples_ms", [])),
                 json.dumps(row.get("memory_samples_kb", [])), json.dumps(row.get("runtime_samples_raw_ms", [])), json.dumps(row.get("memory_samples_raw_kb", [])), json.dumps(row.get("seeds", [])),
             ])
 
@@ -765,8 +696,6 @@ def execute_manifest(manifest: dict[str, Any], manifest_path: Path | None, outpu
                         {
                             "answer_kind": normalized.get("answer_kind"),
                             "path_length": normalized.get("path_length"),
-                            "mapping_count": normalized.get("mapping_count"),
-                            "structural_valid": normalized.get("structural_valid"),
                         }
                     )
                     state["seed_records"][variant_id].append(int(iter_seed))

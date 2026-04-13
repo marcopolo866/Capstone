@@ -82,7 +82,6 @@ Primary JSON fields:
   - `seeds` (iteration seeds used for that datapoint/variant)
   - `answer_kind`
   - `path_length_median`
-  - `mappings_reported_median`
 
 Trial NDJSON rows are standardized across solver families and include:
 

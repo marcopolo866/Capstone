@@ -30,7 +30,7 @@ Both scripts:
 - initialize submodules
 - build baseline + LLM binaries
 - run Glasgow parity checks
-- run subgraph witness-mapping correctness checks
+- run subgraph count-correctness checks
 
 Variants:
 
