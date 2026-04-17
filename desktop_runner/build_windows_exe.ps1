@@ -69,27 +69,54 @@ function Test-IsRequiredSolver {
     return ($role.ToLowerInvariant() -eq "baseline" -or $llmKey.ToLowerInvariant() -eq "dial")
 }
 
+function Test-MingwRuntimeRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+
+    if (-not $Root) {
+        return $false
+    }
+    $required = @(
+        "bin/libstdc++-6.dll",
+        "bin/libgcc_s_seh-1.dll",
+        "bin/libwinpthread-1.dll"
+    )
+    foreach ($rel in $required) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Root $rel) -PathType Leaf)) {
+            return $false
+        }
+    }
+    return $true
+}
+
 function Resolve-MingwRoot {
-    $candidates = New-Object System.Collections.Generic.List[string]
     $msysRoot = "C:\\msys64\\mingw64"
     $msysBin = Join-Path $msysRoot "bin"
     $pathParts = @($env:PATH -split ';' | Where-Object { $_ })
 
-    $preferMsys = $false
+    if ($env:MINGW_ROOT) {
+        $explicitRoot = [string]$env:MINGW_ROOT
+        if (Test-MingwRuntimeRoot -Root $explicitRoot) {
+            return $explicitRoot
+        }
+        throw "Explicit MINGW_ROOT is invalid or incomplete: $explicitRoot"
+    }
+
+    if ($env:GITHUB_ACTIONS -eq "true" -and (Test-MingwRuntimeRoot -Root $msysRoot)) {
+        return $msysRoot
+    }
+
     foreach ($part in $pathParts) {
         if ($part.TrimEnd('\').ToLowerInvariant() -eq $msysBin.ToLowerInvariant()) {
-            $preferMsys = $true
-            break
+            if (Test-MingwRuntimeRoot -Root $msysRoot) {
+                return $msysRoot
+            }
+            throw "MSYS2 MinGW PATH was selected but runtime DLLs are incomplete under: $msysRoot"
         }
     }
 
-    if ((Test-Path -LiteralPath (Join-Path $msysBin "g++.exe") -PathType Leaf) -and ($preferMsys -or $env:GITHUB_ACTIONS -eq "true")) {
-        $candidates.Add($msysRoot)
-    }
-
-    if ($env:MINGW_ROOT) {
-        $candidates.Add($env:MINGW_ROOT)
-    }
+    $candidates = New-Object System.Collections.Generic.List[string]
 
     $gpp = Get-Command g++ -ErrorAction SilentlyContinue
     if ($gpp -and $gpp.Source) {
@@ -112,19 +139,19 @@ function Resolve-MingwRoot {
             continue
         }
         $seen[$root] = $true
-        $stdcpp = Join-Path $root "bin/libstdc++-6.dll"
-        if (Test-Path -LiteralPath $stdcpp -PathType Leaf) {
+        if (Test-MingwRuntimeRoot -Root $root) {
             return $root
         }
     }
 
-    throw "Unable to locate MinGW runtime root (missing libstdc++-6.dll). Checked: $($candidates -join ', ')"
+    throw "Unable to locate MinGW runtime root (missing required MinGW runtime DLLs). Checked: $($candidates -join ', ')"
 }
 
 function Invoke-StagedVf3SmokeTest {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [Parameter(Mandatory = $true)][string]$StagingBin
+        [Parameter(Mandatory = $true)][string]$StagingBin,
+        [string]$RuntimeBin = ""
     )
     $vf3Path = Join-Path $StagingBin "vf3_baseline.exe"
     if (-not (Test-Path -LiteralPath $vf3Path -PathType Leaf)) {
@@ -168,11 +195,21 @@ function Invoke-StagedVf3SmokeTest {
         $runnerProbe = @'
 import subprocess
 import sys
+import os
 
-binary, pattern, target = sys.argv[1:4]
+binary, pattern, target, runtime_bin = sys.argv[1:5]
+probe_env = os.environ.copy()
+path_parts = [os.path.dirname(binary)]
+if runtime_bin:
+    path_parts.append(runtime_bin)
+if probe_env.get("PATH"):
+    path_parts.append(probe_env["PATH"])
+probe_env["PATH"] = os.pathsep.join(path_parts)
 try:
     proc = subprocess.run(
         [binary, "-u", "-r", "0", "-e", pattern, target],
+        cwd=os.path.dirname(binary),
+        env=probe_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -200,7 +237,7 @@ if proc.returncode != 0:
 
 sys.exit(0)
 '@
-        $probeOutput = $runnerProbe | & $pythonExe - $vf3Path $vfPattern $vfTarget 2>&1
+        $probeOutput = $runnerProbe | & $pythonExe - $vf3Path $vfPattern $vfTarget $RuntimeBin 2>&1
         if ($LASTEXITCODE -ne 0) {
             $detail = ($probeOutput | Where-Object { $_ }) -join " | "
             throw "Staged VF3 smoke test failed for ${vf3Path}: $detail"
@@ -362,6 +399,7 @@ if ($skippedOptional.Count -gt 0) {
 
 $mingwRoot = Resolve-MingwRoot
 Write-Host "Using MinGW runtime root: $mingwRoot"
+$runtimeBin = Join-Path $mingwRoot "bin"
 $dllCandidates = @(
     "libstdc++-6.dll",
     "libgcc_s_seh-1.dll",
@@ -373,10 +411,11 @@ $dllCandidates = @(
 foreach ($dll in $dllCandidates) {
     $dllPath = Join-Path $mingwRoot "bin/$dll"
     if (Test-Path -LiteralPath $dllPath -PathType Leaf) {
+        Write-Host ("Staging runtime DLL {0}: {1}" -f $dll, $dllPath)
         Copy-Item -LiteralPath $dllPath -Destination (Join-Path $stagingBin $dll) -Force
     }
 }
-Invoke-StagedVf3SmokeTest -RepoRoot $repoRoot -StagingBin $stagingBin
+Invoke-StagedVf3SmokeTest -RepoRoot $repoRoot -StagingBin $stagingBin -RuntimeBin $runtimeBin
 
 $pyArgs = @(
     "-m", "PyInstaller",
