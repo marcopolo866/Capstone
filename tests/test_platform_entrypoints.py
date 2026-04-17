@@ -94,7 +94,7 @@ class PlatformEntrypointTests(unittest.TestCase):
             captured["cmd"] = cmd
             captured["kwargs"] = dict(kwargs)
             captured["path"] = module.os.environ.get("PATH", "")
-            output_path = Path(cmd[-1])
+            output_path = native_path(cmd[-1])
             output_path.write_text("ok", encoding="utf-8")
             return DummyCompleted()
 
