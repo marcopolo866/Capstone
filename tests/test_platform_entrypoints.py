@@ -80,6 +80,12 @@ class PlatformEntrypointTests(unittest.TestCase):
     def test_build_local_core_msys_probe_adds_runtime_paths_on_windows(self):
         module = load_module("build_local_core_probe_module", "scripts/build-local-core.py")
         captured = {}
+        native_path = type(REPO_ROOT)
+        fake_msys_root = native_path("/opt/msys64")
+        fake_mingw_bin = fake_msys_root / "mingw64" / "bin"
+        fake_usr_bin = fake_msys_root / "usr" / "bin"
+        expected_mingw_bin = fake_mingw_bin.resolve()
+        expected_usr_bin = expected_mingw_bin.parent.parent / "usr" / "bin"
 
         class DummyCompleted:
             returncode = 0
@@ -92,17 +98,18 @@ class PlatformEntrypointTests(unittest.TestCase):
             output_path.write_text("ok", encoding="utf-8")
             return DummyCompleted()
 
-        fake_gpp = Path(r"C:\msys64\mingw64\bin\g++.exe")
-        with mock.patch.object(module.os, "name", "nt"):
-            with mock.patch.object(Path, "is_dir", autospec=True, side_effect=lambda path: str(path).lower() == r"c:\msys64\usr\bin"):
-                with mock.patch.object(module.subprocess, "run", side_effect=fake_run):
-                    ok = module._compiler_can_compile_cpp(fake_gpp, env={"PATH": r"C:\mingw64\bin"})
+        fake_gpp = fake_mingw_bin / "g++.exe"
+        with mock.patch.object(module, "Path", native_path):
+            with mock.patch.object(module.os, "name", "nt"):
+                with mock.patch.object(module.Path, "is_dir", autospec=True, side_effect=lambda path: path == expected_usr_bin):
+                    with mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+                        ok = module._compiler_can_compile_cpp(fake_gpp, env={"PATH": str(native_path("/opt/mingw64/bin"))})
 
         self.assertTrue(ok)
         self.assertNotIn("env", captured["kwargs"])
         probe_path = captured["path"]
-        self.assertIn(r"C:\msys64\mingw64\bin", probe_path)
-        self.assertIn(r"C:\msys64\usr\bin", probe_path)
+        self.assertIn(str(expected_mingw_bin), probe_path)
+        self.assertIn(str(expected_usr_bin), probe_path)
 
     def test_build_local_core_run_subprocess_avoids_env_kwarg_on_windows(self):
         module = load_module("build_local_core_run_module", "scripts/build-local-core.py")
