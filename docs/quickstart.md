@@ -129,6 +129,16 @@ python scripts/benchmark-runner.py --write-manifest benchmarks/smoke.json --pres
 python scripts/benchmark-runner.py --manifest benchmarks/smoke.json --run
 ```
 
+Curated Data Collection workflow:
+
+```bash
+python scripts/benchmark-runner.py --manifest-dir data_collection --run
+python scripts/benchmark-runner.py --manifest-dir data_collection --run --continue-on-error
+python desktop_runner/app.py --headless --manifest-dir data_collection --run
+```
+
+The runner scans only the top-level JSON manifests in `data_collection/` and writes one invocation folder under `data_collection/runs/`.
+
 GUI workflow:
 
 - Configure the benchmark in the desktop runner.

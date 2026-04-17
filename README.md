@@ -50,6 +50,12 @@ python scripts/benchmark-runner.py \
   --k-values 10
 ```
 
+Headless Data Collection batch example:
+
+```bash
+python scripts/benchmark-runner.py --manifest-dir data_collection --run
+```
+
 For detailed setup/run instructions, see [docs/quickstart.md](docs/quickstart.md).
 
 ## Repository Map

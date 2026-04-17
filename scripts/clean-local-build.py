@@ -26,14 +26,30 @@ def load_solver_discovery(repo_root: Path):
     return module
 
 
-def remove_path(path: Path) -> bool:
-    if path.is_symlink() or path.is_file():
-        path.unlink(missing_ok=True)
-        return True
-    if path.is_dir():
-        shutil.rmtree(path, ignore_errors=True)
-        return True
-    return False
+def remove_path(path: Path) -> tuple[bool, str | None]:
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+            return True, None
+        if path.is_dir():
+            errors: list[str] = []
+
+            def onerror(_fn, failed_path, exc_info):
+                exc = exc_info[1]
+                errors.append(f"{failed_path}: {exc}")
+
+            shutil.rmtree(path, ignore_errors=False, onerror=onerror)
+            if path.exists():
+                detail = errors[0] if errors else "directory still exists after cleanup attempt"
+                return False, detail
+            return True, None
+    except FileNotFoundError:
+        return False, None
+    except PermissionError as exc:
+        return False, str(exc)
+    except OSError as exc:
+        return False, str(exc)
+    return False, None
 
 
 def unpatch_glasgow_build_tweaks(repo_root: Path, apply: bool) -> list[Path]:
@@ -131,6 +147,8 @@ def main() -> int:
             repo_root / "baselines/glasgow-subgraph-solver/build",
             # Desktop runner packaging outputs
             repo_root / "desktop_runner/.staging",
+            # Headless Data Collection batch outputs
+            repo_root / "data_collection" / "runs",
             # Remove full dist/ to also clean benchmark_output_* folders written
             # next to packaged runner binaries.
             repo_root / "dist",
@@ -146,14 +164,18 @@ def main() -> int:
     )
 
     removed = []
+    failed: list[tuple[Path, str]] = []
     for path in paths:
         if args.dry_run:
             exists = path.is_file() or path.is_symlink() or path.is_dir()
             if exists:
                 removed.append(path)
             continue
-        if remove_path(path):
+        ok, error_text = remove_path(path)
+        if ok:
             removed.append(path)
+        elif error_text:
+            failed.append((path, error_text))
 
     touched = unpatch_glasgow_build_tweaks(repo_root, apply=not args.dry_run)
     removed.extend(touched)
@@ -175,6 +197,16 @@ def main() -> int:
         except ValueError:
             rel = path
         print(f" - {rel}")
+
+    if failed:
+        print(f"Skipped {len(failed)} locked/unremovable path(s).")
+        for path, error_text in failed:
+            try:
+                rel = path.relative_to(repo_root)
+            except ValueError:
+                rel = path
+            print(f" ! {rel}: {error_text}")
+        print("Close any running benchmark processes or terminals holding those files open, then run `make clean` again.")
 
     return 0
 

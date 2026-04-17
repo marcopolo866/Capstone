@@ -1,0 +1,27 @@
+{
+  "schema_version": "capstone-benchmark-manifest-v1",
+  "preset": "standard",
+  "tab_id": "subgraph",
+  "input_mode": "datasets",
+  "graph_family": "random_density",
+  "selected_variants": [
+    "vf3_chatgpt",
+    "vf3_claude",
+    "vf3_gemini",
+    "vf3_copilot"
+  ],
+  "selected_datasets": [
+    "subgraph_sip_full",
+    "subgraph_mivia_arg",
+    "subgraph_practical_bigraphs"
+  ],
+  "k_mode": "percent",
+  "prepare_datasets": true,
+  "iterations": 3,
+  "base_seed": 11,
+  "failure_policy": "continue",
+  "retry_failed_trials": 0,
+  "timeout_as_missing": true,
+  "outlier_filter": "mad",
+  "delete_generated_inputs": true
+}

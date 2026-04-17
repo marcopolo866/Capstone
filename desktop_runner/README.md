@@ -72,6 +72,13 @@ The desktop app can invoke the same headless path:
 python desktop_runner/app.py --headless --manifest path/to/benchmark-manifest.json
 ```
 
+Run the curated Data Collection manifests in one invocation:
+
+```bash
+python desktop_runner/app.py --headless --manifest-dir data_collection --run
+python scripts/benchmark-runner.py --manifest-dir data_collection --run
+```
+
 The GUI can export the same reproducible manifest directly via `Export Manifest`, and load one back in via `Import Manifest`.
 Use `Threshold` stop mode when exporting; timed runs are intentionally rejected because they are not reproducible in the headless manifest model.
 

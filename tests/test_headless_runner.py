@@ -5,6 +5,10 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
+import json
+import sys
+import io as stdio
+
 from desktop_runner import app, headless_runner
 
 
@@ -38,6 +42,513 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertEqual(config["datapoints"][0]["k_nodes"], 3)
         self.assertEqual(config["graph_family"], "erdos_renyi")
         self.assertIn("vf3_baseline", config["selected_variants"])
+
+    def test_list_collection_manifest_paths_reads_top_level_json_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "01_first.json").write_text("{}\n", encoding="utf-8")
+            (root / "02_second.JSON").write_text("{}\n", encoding="utf-8")
+            (root / "README.md").write_text("ignore\n", encoding="utf-8")
+            nested = root / "nested"
+            nested.mkdir()
+            (nested / "03_nested.json").write_text("{}\n", encoding="utf-8")
+
+            paths = headless_runner.list_collection_manifest_paths(root)
+
+        self.assertEqual([path.name for path in paths], ["01_first.json", "02_second.JSON"])
+
+    def test_execute_manifest_collection_writes_invocation_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "01_alpha.json").write_text('{"tab_id":"shortest_path"}\n', encoding="utf-8")
+            (root / "02_beta.json").write_text('{"tab_id":"subgraph"}\n', encoding="utf-8")
+            calls = []
+
+            def fake_execute(manifest, manifest_path, output_dir, logger):
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / "benchmark-session.json").write_text(
+                    json.dumps({"manifest_path": str(manifest_path)}) + "\n",
+                    encoding="utf-8",
+                )
+                calls.append((dict(manifest), manifest_path.name, output_dir.name))
+                return output_dir
+
+            with mock.patch.object(headless_runner, "execute_manifest", side_effect=fake_execute):
+                out_dir, summary = headless_runner.execute_manifest_collection(root, None, lambda _msg: None)
+
+            self.assertEqual(out_dir.parent, root / "runs")
+            self.assertEqual([item[1] for item in calls], ["01_alpha.json", "02_beta.json"])
+            self.assertTrue((out_dir / "01_alpha" / "input-manifest.json").is_file())
+            self.assertTrue((out_dir / "02_beta" / "input-manifest.json").is_file())
+            self.assertTrue((out_dir / "collection-run.json").is_file())
+            self.assertEqual(summary["collection_label"], "Data Collection")
+            self.assertEqual(summary["discovered_manifest_count"], 2)
+            self.assertEqual(summary["failed_manifest_count"], 0)
+            self.assertEqual([row["status"] for row in summary["runs"]], ["ok", "ok"])
+
+    def test_build_runtime_config_has_no_solver_timeout_by_default(self):
+        with mock.patch.object(headless_runner, "validate_binaries", lambda _selected: None):
+            config = headless_runner.build_runtime_config(
+                {
+                    "preset": "full",
+                    "tab_id": "shortest_path",
+                    "input_mode": "independent",
+                    "graph_family": "erdos_renyi",
+                    "selected_variants": ["dijkstra_chatgpt"],
+                    "values": {"n": [128], "density": [0.01]},
+                },
+                lambda _msg: None,
+            )
+        self.assertIsNone(config["solver_timeout_seconds"])
+
+    def test_run_trial_extracts_shortest_path_length_from_output(self):
+        runner = headless_runner.Runner(output_dir=None, logger=lambda _msg: None)
+        runner.binary_paths = {"dijkstra_baseline": Path.cwd() / "baselines" / "dijkstra.exe"}
+
+        with mock.patch.object(
+            runner,
+            "run_process",
+            return_value=(12.0, 256.0, 0, "6\nv0->v1->v2->v3\n", ""),
+        ):
+            trial = runner.run_trial(
+                tab_id="shortest_path",
+                variant_id="dijkstra_baseline",
+                inputs={"dijkstra_file": Path.cwd() / "data" / "dijkstra_sample.csv"},
+                solver_timeout_seconds=None,
+                output_dir=Path(tempfile.mkdtemp()),
+            )
+
+        self.assertEqual(trial["status"], "ok")
+        self.assertEqual(trial["normalized_result"]["distance"], "6")
+        self.assertEqual(trial["normalized_result"]["path_length"], 3)
+
+    def test_runner_live_log_overwrites_console_line(self):
+        captured = []
+        runner = headless_runner.Runner(output_dir=None, logger=lambda text: captured.append(text))
+        runner._console_stream = stdio.StringIO()
+        runner._supports_inplace_live_line = True
+
+        runner._set_live_log_line_threadsafe("hb", "Update: still running", level="notice")
+        runner._append_log_threadsafe("Datapoint complete", level="info")
+
+        console_output = runner._console_stream.getvalue()
+        self.assertIn("\rUpdate: still running", console_output)
+        self.assertIn("\r", console_output)
+        self.assertEqual(captured, ["Datapoint complete"])
+
+    def test_save_session_plot_exports_writes_runtime_and_memory_pngs(self):
+        payload = {
+            "completed_trials": 3,
+            "planned_trials": 3,
+            "run_duration_ms": 1234.0,
+            "run_config": {
+                "tab_id": "shortest_path",
+                "input_mode": "independent",
+                "graph_family": "erdos_renyi",
+                "selected_variants": ["dijkstra_baseline", "dijkstra_chatgpt"],
+                "selected_variant_labels": {
+                    "dijkstra_baseline": "Dijkstra Baseline",
+                    "dijkstra_chatgpt": "Dijkstra Chatgpt",
+                },
+                "selected_datasets": [],
+                "iterations_per_datapoint": 3,
+                "seed": 11,
+                "solver_timeout_seconds": 120.0,
+                "failure_policy": "continue",
+                "outlier_filter": "mad",
+                "injected_baselines": ["dijkstra_baseline"],
+                "k_mode": "absolute",
+                "primary_variable": "n",
+                "secondary_variable": None,
+                "var_ranges": {"n": [128.0, 256.0], "density": [0.01]},
+                "fixed_values": {"density": 0.01},
+            },
+            "dataset_selection": [],
+            "datapoints": [
+                {
+                    "variant_id": "dijkstra_baseline",
+                    "variant_label": "Dijkstra Baseline",
+                    "x_value": 128.0,
+                    "y_value": None,
+                    "runtime_median_ms": 10.0,
+                    "runtime_stdev_ms": 1.0,
+                    "memory_median_kb": 100.0,
+                    "memory_stdev_kb": 5.0,
+                },
+                {
+                    "variant_id": "dijkstra_baseline",
+                    "variant_label": "Dijkstra Baseline",
+                    "x_value": 256.0,
+                    "y_value": None,
+                    "runtime_median_ms": 20.0,
+                    "runtime_stdev_ms": 1.5,
+                    "memory_median_kb": 150.0,
+                    "memory_stdev_kb": 7.0,
+                },
+                {
+                    "variant_id": "dijkstra_chatgpt",
+                    "variant_label": "Dijkstra Chatgpt",
+                    "x_value": 128.0,
+                    "y_value": None,
+                    "runtime_median_ms": 12.0,
+                    "runtime_stdev_ms": 1.2,
+                    "memory_median_kb": 110.0,
+                    "memory_stdev_kb": 4.0,
+                },
+                {
+                    "variant_id": "dijkstra_chatgpt",
+                    "variant_label": "Dijkstra Chatgpt",
+                    "x_value": 256.0,
+                    "y_value": None,
+                    "runtime_median_ms": 24.0,
+                    "runtime_stdev_ms": 1.8,
+                    "memory_median_kb": 170.0,
+                    "memory_stdev_kb": 6.0,
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td)
+            app.save_session_plot_exports(payload, out_dir)
+            runtime_png = out_dir / "runtime-2d.png"
+            memory_png = out_dir / "memory-2d.png"
+            runtime_svg = out_dir / "runtime-2d.svg"
+            memory_svg = out_dir / "memory-2d.svg"
+            self.assertTrue(runtime_png.is_file())
+            self.assertTrue(memory_png.is_file())
+            self.assertTrue(runtime_svg.is_file())
+            self.assertTrue(memory_svg.is_file())
+            self.assertEqual(runtime_png.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(memory_png.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertIn("<svg", runtime_svg.read_text(encoding="utf-8"))
+            self.assertIn("<svg", memory_svg.read_text(encoding="utf-8"))
+
+    def test_save_session_plot_exports_writes_subgraph_family_pngs(self):
+        payload = {
+            "completed_trials": 4,
+            "planned_trials": 4,
+            "run_duration_ms": 2500.0,
+            "run_config": {
+                "tab_id": "subgraph",
+                "input_mode": "independent",
+                "graph_family": "erdos_renyi",
+                "selected_variants": ["vf3_baseline", "vf3_chatgpt", "glasgow_baseline", "glasgow_chatgpt"],
+                "selected_variant_labels": {
+                    "vf3_baseline": "VF3 Baseline",
+                    "vf3_chatgpt": "VF3 Chatgpt",
+                    "glasgow_baseline": "Glasgow Baseline",
+                    "glasgow_chatgpt": "Glasgow Chatgpt",
+                },
+                "selected_datasets": [],
+                "iterations_per_datapoint": 2,
+                "seed": 29,
+                "solver_timeout_seconds": 180.0,
+                "failure_policy": "continue",
+                "outlier_filter": "mad",
+                "injected_baselines": ["vf3_baseline", "glasgow_baseline"],
+                "k_mode": "percent",
+                "primary_variable": "n",
+                "secondary_variable": None,
+                "var_ranges": {"n": [32.0, 64.0], "density": [0.05], "k": [20.0]},
+                "fixed_values": {"density": 0.05, "k": 20.0},
+            },
+            "dataset_selection": [],
+            "datapoints": [
+                {
+                    "variant_id": "vf3_baseline",
+                    "variant_label": "VF3 Baseline",
+                    "x_value": 32.0,
+                    "y_value": None,
+                    "runtime_median_ms": 5.0,
+                    "runtime_stdev_ms": 0.4,
+                    "memory_median_kb": 90.0,
+                    "memory_stdev_kb": 4.0,
+                },
+                {
+                    "variant_id": "vf3_chatgpt",
+                    "variant_label": "VF3 Chatgpt",
+                    "x_value": 32.0,
+                    "y_value": None,
+                    "runtime_median_ms": 6.0,
+                    "runtime_stdev_ms": 0.5,
+                    "memory_median_kb": 96.0,
+                    "memory_stdev_kb": 4.5,
+                },
+                {
+                    "variant_id": "glasgow_baseline",
+                    "variant_label": "Glasgow Baseline",
+                    "x_value": 32.0,
+                    "y_value": None,
+                    "runtime_median_ms": 7.0,
+                    "runtime_stdev_ms": 0.6,
+                    "memory_median_kb": 110.0,
+                    "memory_stdev_kb": 5.0,
+                },
+                {
+                    "variant_id": "glasgow_chatgpt",
+                    "variant_label": "Glasgow Chatgpt",
+                    "x_value": 32.0,
+                    "y_value": None,
+                    "runtime_median_ms": 8.0,
+                    "runtime_stdev_ms": 0.7,
+                    "memory_median_kb": 118.0,
+                    "memory_stdev_kb": 5.5,
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td)
+            app.save_session_plot_exports(payload, out_dir)
+            expected = [
+                "runtime-2d.png",
+                "runtime-2d.svg",
+                "memory-2d.png",
+                "memory-2d.svg",
+                "runtime-2d-both.png",
+                "runtime-2d-both.svg",
+                "memory-2d-both.png",
+                "memory-2d-both.svg",
+                "runtime-2d-vf3.png",
+                "runtime-2d-vf3.svg",
+                "memory-2d-vf3.png",
+                "memory-2d-vf3.svg",
+                "runtime-2d-glasgow.png",
+                "runtime-2d-glasgow.svg",
+                "memory-2d-glasgow.png",
+                "memory-2d-glasgow.svg",
+            ]
+            for name in expected:
+                path = out_dir / name
+                self.assertTrue(path.is_file(), name)
+                if path.suffix.lower() == ".png":
+                    self.assertEqual(path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+                else:
+                    self.assertIn("<svg", path.read_text(encoding="utf-8"))
+
+    def test_save_session_plot_exports_reads_streamed_datapoints_path(self):
+        payload = {
+            "completed_trials": 4,
+            "planned_trials": 4,
+            "run_duration_ms": 2500.0,
+            "run_config": {
+                "tab_id": "subgraph",
+                "input_mode": "independent",
+                "graph_family": "erdos_renyi",
+                "selected_variants": ["vf3_baseline", "glasgow_baseline"],
+                "selected_variant_labels": {
+                    "vf3_baseline": "VF3 Baseline",
+                    "glasgow_baseline": "Glasgow Baseline",
+                },
+                "selected_datasets": [],
+                "iterations_per_datapoint": 2,
+                "seed": 29,
+                "solver_timeout_seconds": 180.0,
+                "failure_policy": "continue",
+                "outlier_filter": "mad",
+                "injected_baselines": ["vf3_baseline", "glasgow_baseline"],
+                "k_mode": "percent",
+                "primary_variable": "n",
+                "secondary_variable": None,
+                "var_ranges": {"n": [32.0, 64.0], "density": [0.05], "k": [20.0]},
+                "fixed_values": {"density": 0.05, "k": 20.0},
+            },
+            "dataset_selection": [],
+            "datapoints": [],
+        }
+        streamed_rows = [
+            {
+                "variant_id": "vf3_baseline",
+                "variant_label": "VF3 Baseline",
+                "x_value": 32.0,
+                "y_value": None,
+                "runtime_median_ms": 5.0,
+                "runtime_stdev_ms": 0.4,
+                "memory_median_kb": 90.0,
+                "memory_stdev_kb": 4.0,
+            },
+            {
+                "variant_id": "vf3_baseline",
+                "variant_label": "VF3 Baseline",
+                "x_value": 64.0,
+                "y_value": None,
+                "runtime_median_ms": 7.0,
+                "runtime_stdev_ms": 0.5,
+                "memory_median_kb": 110.0,
+                "memory_stdev_kb": 5.0,
+            },
+            {
+                "variant_id": "glasgow_baseline",
+                "variant_label": "Glasgow Baseline",
+                "x_value": 32.0,
+                "y_value": None,
+                "runtime_median_ms": 6.0,
+                "runtime_stdev_ms": 0.4,
+                "memory_median_kb": 95.0,
+                "memory_stdev_kb": 4.5,
+            },
+            {
+                "variant_id": "glasgow_baseline",
+                "variant_label": "Glasgow Baseline",
+                "x_value": 64.0,
+                "y_value": None,
+                "runtime_median_ms": 8.0,
+                "runtime_stdev_ms": 0.6,
+                "memory_median_kb": 120.0,
+                "memory_stdev_kb": 5.5,
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td)
+            datapoints_path = out_dir / "benchmark-datapoints.ndjson"
+            datapoints_path.write_text(
+                "\n".join(json.dumps(row) for row in streamed_rows) + "\n",
+                encoding="utf-8",
+            )
+            payload["datapoints_path"] = str(datapoints_path)
+            app.save_session_plot_exports(payload, out_dir)
+            for name in [
+                "runtime-2d.png",
+                "memory-2d.png",
+                "runtime-2d.svg",
+                "memory-2d.svg",
+                "runtime-2d-both.png",
+                "memory-2d-both.png",
+                "runtime-2d-vf3.png",
+                "memory-2d-vf3.png",
+                "runtime-2d-glasgow.png",
+                "memory-2d-glasgow.png",
+            ]:
+                path = out_dir / name
+                self.assertTrue(path.is_file(), name)
+
+    def test_try_save_figure_writes_png(self):
+        fig = app.build_metric_summary_figure(
+            {
+                "completed_trials": 1,
+                "planned_trials": 1,
+                "run_duration_ms": 1000.0,
+                "run_config": {
+                    "tab_id": "shortest_path",
+                    "input_mode": "independent",
+                    "graph_family": "erdos_renyi",
+                    "selected_variants": ["dijkstra_baseline"],
+                    "selected_variant_labels": {
+                        "dijkstra_baseline": "Dijkstra Baseline",
+                    },
+                    "selected_datasets": [],
+                    "iterations_per_datapoint": 1,
+                    "seed": 7,
+                    "solver_timeout_seconds": None,
+                    "failure_policy": "continue",
+                    "outlier_filter": "none",
+                    "injected_baselines": [],
+                    "primary_variable": "n",
+                    "secondary_variable": None,
+                    "var_ranges": {"n": [16.0, 32.0], "density": [0.1]},
+                    "fixed_values": {"density": 0.1},
+                },
+                "dataset_selection": [],
+                "datapoints": [
+                    {
+                        "variant_id": "dijkstra_baseline",
+                        "variant_label": "Dijkstra Baseline",
+                        "x_value": 16.0,
+                        "y_value": None,
+                        "runtime_median_ms": 5.0,
+                        "runtime_stdev_ms": 0.2,
+                        "memory_median_kb": 100.0,
+                        "memory_stdev_kb": 3.0,
+                    },
+                    {
+                        "variant_id": "dijkstra_baseline",
+                        "variant_label": "Dijkstra Baseline",
+                        "x_value": 32.0,
+                        "y_value": None,
+                        "runtime_median_ms": 7.0,
+                        "runtime_stdev_ms": 0.3,
+                        "memory_median_kb": 110.0,
+                        "memory_stdev_kb": 4.0,
+                    },
+                ],
+            },
+            "runtime",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "runtime.png"
+            saved, error_text = app.try_save_figure(fig, path, dpi=150)
+            self.assertTrue(saved)
+            self.assertIsNone(error_text)
+            self.assertEqual(path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_try_save_figure_skips_empty_figure(self):
+        fig = app.Figure(figsize=(4.0, 3.0), dpi=100)
+        fig.add_subplot(111)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "empty.png"
+            saved, error_text = app.try_save_figure(fig, path, dpi=150)
+        self.assertFalse(saved)
+        self.assertEqual(error_text, "no plotted data")
+
+    def test_try_save_figure_returns_error_text(self):
+        fig = app.build_metric_summary_figure(
+            {
+                "completed_trials": 1,
+                "planned_trials": 1,
+                "run_duration_ms": 1000.0,
+                "run_config": {
+                    "tab_id": "shortest_path",
+                    "input_mode": "independent",
+                    "graph_family": "erdos_renyi",
+                    "selected_variants": ["dijkstra_baseline"],
+                    "selected_variant_labels": {
+                        "dijkstra_baseline": "Dijkstra Baseline",
+                    },
+                    "selected_datasets": [],
+                    "iterations_per_datapoint": 1,
+                    "seed": 7,
+                    "solver_timeout_seconds": None,
+                    "failure_policy": "continue",
+                    "outlier_filter": "none",
+                    "injected_baselines": [],
+                    "primary_variable": "n",
+                    "secondary_variable": None,
+                    "var_ranges": {"n": [16.0, 32.0], "density": [0.1]},
+                    "fixed_values": {"density": 0.1},
+                },
+                "dataset_selection": [],
+                "datapoints": [
+                    {
+                        "variant_id": "dijkstra_baseline",
+                        "variant_label": "Dijkstra Baseline",
+                        "x_value": 16.0,
+                        "y_value": None,
+                        "runtime_median_ms": 5.0,
+                        "runtime_stdev_ms": 0.2,
+                        "memory_median_kb": 100.0,
+                        "memory_stdev_kb": 3.0,
+                    },
+                    {
+                        "variant_id": "dijkstra_baseline",
+                        "variant_label": "Dijkstra Baseline",
+                        "x_value": 32.0,
+                        "y_value": None,
+                        "runtime_median_ms": 7.0,
+                        "runtime_stdev_ms": 0.3,
+                        "memory_median_kb": 110.0,
+                        "memory_stdev_kb": 4.0,
+                    },
+                ],
+            },
+            "runtime",
+        )
+        fig.savefig = mock.Mock(side_effect=ModuleNotFoundError("No module named 'matplotlib.backends.backend_svg'"))
+        with tempfile.TemporaryDirectory() as td:
+            saved, error_text = app.try_save_figure(fig, Path(td) / "runtime.svg")
+        self.assertFalse(saved)
+        self.assertIn("backend_svg", error_text or "")
 
 
 class DatasetConversionTests(unittest.TestCase):
@@ -87,6 +598,25 @@ class DatasetConversionTests(unittest.TestCase):
         self.assertEqual(labels[0], "__root__")
         self.assertIn("Child", labels)
         self.assertIn("__handle__", labels)
+
+
+class DesktopHeadlessForwardingTests(unittest.TestCase):
+    def test_app_main_forwards_manifest_dir_runs_to_headless_cli(self):
+        with tempfile.TemporaryDirectory() as td:
+            argv = ["app.py", "--manifest-dir", td, "--run"]
+            with mock.patch("desktop_runner.headless_runner.main", return_value=0) as mocked_headless:
+                with mock.patch.object(sys, "argv", argv):
+                    rc = app.main()
+        self.assertEqual(rc, 0)
+        mocked_headless.assert_called_once_with(["--manifest-dir", td, "--run"])
+
+    def test_app_main_forwards_help_to_headless_cli_when_requested(self):
+        argv = ["app.py", "--headless", "--help"]
+        with mock.patch("desktop_runner.headless_runner.main", return_value=0) as mocked_headless:
+            with mock.patch.object(sys, "argv", argv):
+                rc = app.main()
+        self.assertEqual(rc, 0)
+        mocked_headless.assert_called_once_with(["--help"])
 
 
 if __name__ == "__main__":

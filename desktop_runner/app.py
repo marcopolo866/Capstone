@@ -32,6 +32,7 @@ import sys
 import tarfile
 import threading
 import time
+import textwrap
 import urllib.error
 import urllib.request
 import webbrowser
@@ -44,6 +45,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from utilities import generate_graphs as generator_mod
+from utilities.benchmark_validation import extract_path_tokens
 from utilities.benchmark_provenance import collect_runtime_provenance
 
 try:
@@ -52,6 +54,7 @@ except Exception:
     winreg = None  # type: ignore
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
@@ -664,6 +667,511 @@ def format_step_value(var_id: str, value: float | None) -> str:
     if var_id == "k":
         return f"{value:.2f}%"
     return f"{value:.4f}"
+
+
+def k_mode_from_config(config: dict | None) -> str:
+    mode = str((config or {}).get("k_mode", "percent")).strip().lower()
+    return mode if mode in {"percent", "absolute"} else "percent"
+
+
+def axis_label_for_config(var_id: str, config: dict | None = None) -> str:
+    if var_id != "k":
+        return axis_label(var_id)
+    return "K (nodes)" if k_mode_from_config(config) == "absolute" else "k % of N"
+
+
+def format_point_value_for_config(var_id: str, value: float, config: dict | None = None) -> str:
+    if var_id != "k":
+        return format_point_value(var_id, value)
+    if k_mode_from_config(config) == "absolute":
+        return str(int(round(value)))
+    return format_point_value(var_id, value)
+
+
+def _wrap_detail_text(text: str, width: int = 40) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return [""]
+    return textwrap.wrap(raw, width=width, break_long_words=False, break_on_hyphens=False) or [raw]
+
+
+def _summarize_series_values(var_id: str, values: list[float], config: dict | None = None) -> str:
+    numeric = [float(v) for v in values if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    if not numeric:
+        return "n/a"
+    if len(numeric) == 1:
+        return format_point_value_for_config(var_id, numeric[0], config)
+
+    ordered = [float(v) for v in numeric]
+    if len(ordered) <= 5:
+        return ", ".join(format_point_value_for_config(var_id, value, config) for value in ordered)
+
+    deltas = [ordered[idx + 1] - ordered[idx] for idx in range(len(ordered) - 1)]
+    step = deltas[0] if deltas else None
+    arithmetic = step is not None and all(abs(delta - step) <= 1e-9 for delta in deltas[1:])
+    if arithmetic and step is not None:
+        step_text = format_point_value_for_config(var_id, step, config)
+        return (
+            f"{format_point_value_for_config(var_id, ordered[0], config)} -> "
+            f"{format_point_value_for_config(var_id, ordered[-1], config)} "
+            f"(step {step_text}, {len(ordered)} values)"
+        )
+
+    head = ", ".join(format_point_value_for_config(var_id, value, config) for value in ordered[:4])
+    return f"{head}, ... ({len(ordered)} values)"
+
+
+def _summarize_name_list(items: list[str], *, max_items: int = 4) -> str:
+    cleaned = [str(item).strip() for item in items if str(item).strip()]
+    if not cleaned:
+        return "none"
+    if len(cleaned) <= max_items:
+        return ", ".join(cleaned)
+    shown = ", ".join(cleaned[:max_items])
+    return f"{shown}, ... (+{len(cleaned) - max_items} more)"
+
+
+def _metric_metadata(metric: str) -> tuple[str, str, str, str]:
+    if str(metric).strip().lower() == "memory":
+        return (
+            "memory_median_kb",
+            "memory_stdev_kb",
+            "Peak Child Process Memory (KiB)",
+            "Peak Child Process Memory by Independent Variable",
+        )
+    return (
+        "runtime_median_ms",
+        "runtime_stdev_ms",
+        "Runtime (ms)",
+        "Runtime by Independent Variable",
+    )
+
+
+def _apply_numeric_x_bounds(ax, xs: list[float]) -> None:
+    values = [float(x) for x in xs if isinstance(x, (int, float)) and math.isfinite(float(x))]
+    if not values:
+        return
+    lo = min(values)
+    hi = max(values)
+    if abs(hi - lo) <= 1e-12:
+        pad = max(1.0, abs(lo) * 0.05) if lo != 0.0 else 1.0
+        ax.set_xlim(lo - pad, hi + pad)
+        return
+    ax.set_xlim(lo, hi)
+
+
+def _selected_dataset_labels_from_payload(payload: dict) -> tuple[list[str], list[str]]:
+    config = dict(payload.get("run_config") or {})
+    dataset_selection = list(payload.get("dataset_selection") or [])
+    by_id = {}
+    for row in dataset_selection:
+        if not isinstance(row, dict):
+            continue
+        dataset_id = str(row.get("dataset_id") or "").strip().lower()
+        if not dataset_id:
+            continue
+        by_id[dataset_id] = str(row.get("dataset_name") or dataset_id)
+    dataset_ids = [str(item).strip().lower() for item in list(config.get("selected_datasets") or []) if str(item).strip()]
+    if dataset_ids:
+        labels = [by_id.get(dataset_id, dataset_id) for dataset_id in dataset_ids]
+        return dataset_ids, labels
+
+    seen: set[str] = set()
+    derived_ids: list[str] = []
+    derived_labels: list[str] = []
+    for row in list(payload.get("datapoints") or []):
+        if not isinstance(row, dict):
+            continue
+        dataset_id = str(row.get("dataset_id") or row.get("dataset_name") or row.get("point_label") or "").strip()
+        if not dataset_id or dataset_id in seen:
+            continue
+        seen.add(dataset_id)
+        derived_ids.append(dataset_id)
+        derived_labels.append(str(row.get("dataset_name") or dataset_id))
+    return derived_ids, derived_labels
+
+
+def _plot_dataset_metric_bars(ax, payload: dict, metric: str, datapoints: list[dict]) -> None:
+    config = dict(payload.get("run_config") or {})
+    selected_variants = list(config.get("selected_variants") or [])
+    label_map = dict(config.get("selected_variant_labels") or {})
+    y_key, e_key, y_label, title = _metric_metadata(metric)
+    dataset_ids, dataset_labels = _selected_dataset_labels_from_payload(payload)
+    if not dataset_ids:
+        ax.text(0.08, 0.50, "No dataset datapoints to plot.", transform=ax.transAxes)
+        ax.set_axis_off()
+        return
+
+    lookup_by_id: dict[tuple[str, str], dict] = {}
+    lookup_by_name: dict[tuple[str, str], dict] = {}
+    for row in datapoints:
+        if not isinstance(row, dict):
+            continue
+        variant_id = str(row.get("variant_id") or "").strip().lower()
+        if not variant_id:
+            continue
+        dataset_id = str(row.get("dataset_id") or "").strip().lower()
+        dataset_name = str(row.get("dataset_name") or "").strip()
+        if dataset_id and (variant_id, dataset_id) not in lookup_by_id:
+            lookup_by_id[(variant_id, dataset_id)] = row
+        if dataset_name and (variant_id, dataset_name) not in lookup_by_name:
+            lookup_by_name[(variant_id, dataset_name)] = row
+
+    centers = [float(idx) for idx in range(len(dataset_ids))]
+    variant_count = max(1, len(selected_variants))
+    total_width = 0.82
+    bar_width = total_width / float(variant_count)
+    for variant_idx, variant_id in enumerate(selected_variants):
+        label = str(label_map.get(variant_id, variant_id))
+        offset = (float(variant_idx) - (float(variant_count - 1) / 2.0)) * bar_width
+        xs: list[float] = []
+        ys: list[float] = []
+        errs: list[float] = []
+        for dataset_idx, dataset_id in enumerate(dataset_ids):
+            dataset_name = dataset_labels[dataset_idx] if dataset_idx < len(dataset_labels) else dataset_id
+            row = lookup_by_id.get((variant_id, dataset_id)) or lookup_by_name.get((variant_id, dataset_name))
+            if row is None:
+                continue
+            y_val = row.get(y_key)
+            if y_val is None:
+                continue
+            xs.append(centers[dataset_idx] + offset)
+            ys.append(float(y_val))
+            errs.append(float(row.get(e_key) or 0.0))
+        if xs:
+            ax.bar(xs, ys, width=bar_width * 0.9, yerr=errs, capsize=3, label=label, align="center")
+
+    ax.set_xticks(centers)
+    ax.set_xticklabels(dataset_labels, rotation=25, ha="right")
+    ax.set_xlabel("Dataset")
+    ax.set_ylabel(y_label)
+    ax.set_title(title.replace("Independent Variable", "Dataset"))
+    if centers:
+        ax.set_xlim(min(centers) - 0.6, max(centers) + 0.6)
+    ax.grid(True, axis="y", linestyle="--", linewidth=0.5, alpha=0.5)
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ncols = 1 if len(handles) <= 3 else 2
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=ncols, fontsize=8, title="Error bars: +/-1 SD")
+
+
+def _plot_independent_metric_lines(ax, payload: dict, metric: str, datapoints: list[dict]) -> None:
+    config = dict(payload.get("run_config") or {})
+    primary_var = str(config.get("primary_variable") or "n")
+    secondary_var = config.get("secondary_variable")
+    x_values_full = [float(v) for v in list((config.get("var_ranges") or {}).get(primary_var) or [])]
+    selected_variants = list(config.get("selected_variants") or [])
+    label_map = dict(config.get("selected_variant_labels") or {})
+    y_key, e_key, y_label, title = _metric_metadata(metric)
+
+    if not x_values_full:
+        x_values_full = sorted({float(row["x_value"]) for row in datapoints if row.get("x_value") is not None})
+
+    point_lookup: dict[tuple[str, float, float | None], dict] = {}
+    for row in datapoints:
+        if not isinstance(row, dict):
+            continue
+        variant_id = row.get("variant_id")
+        x_val = row.get("x_value")
+        y_val = row.get("y_value")
+        if variant_id is None or x_val is None:
+            continue
+        point_lookup[(str(variant_id), float(x_val), None if y_val is None else float(y_val))] = row
+
+    def plot_series(xs: list[float], ys: list[float], errs: list[float], label: str) -> None:
+        if not xs:
+            return
+        ax.errorbar(xs, ys, yerr=errs, capsize=3, fmt="-o", linewidth=1.4, markersize=4.5, label=label)
+
+    if secondary_var is None:
+        for variant_id in selected_variants:
+            xs: list[float] = []
+            ys: list[float] = []
+            errs: list[float] = []
+            for x in x_values_full:
+                row = point_lookup.get((variant_id, float(x), None))
+                if row is None or row.get(y_key) is None:
+                    continue
+                xs.append(float(x))
+                ys.append(float(row[y_key]))
+                errs.append(float(row.get(e_key) or 0.0))
+            plot_series(xs, ys, errs, str(label_map.get(variant_id, variant_id)))
+    else:
+        y_values_full = [float(v) for v in list((config.get("var_ranges") or {}).get(secondary_var) or [])]
+        if not y_values_full:
+            y_values_full = sorted({float(row["y_value"]) for row in datapoints if row.get("y_value") is not None})
+        for variant_id in selected_variants:
+            for y_const in y_values_full:
+                xs: list[float] = []
+                ys: list[float] = []
+                errs: list[float] = []
+                for x in x_values_full:
+                    row = point_lookup.get((variant_id, float(x), float(y_const)))
+                    if row is None or row.get(y_key) is None:
+                        continue
+                    xs.append(float(x))
+                    ys.append(float(row[y_key]))
+                    errs.append(float(row.get(e_key) or 0.0))
+                if xs:
+                    label = (
+                        f"{label_map.get(variant_id, variant_id)} | "
+                        f"{axis_label_for_config(str(secondary_var), config)}="
+                        f"{format_point_value_for_config(str(secondary_var), float(y_const), config)}"
+                    )
+                    plot_series(xs, ys, errs, label)
+
+    ax.set_xlabel(axis_label_for_config(primary_var, config))
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+    _apply_numeric_x_bounds(ax, x_values_full)
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ncols = 1 if len(handles) <= 3 else 2
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=ncols, fontsize=8, title="Error bars: +/-1 SD")
+
+
+def _build_run_detail_lines(payload: dict, metric: str) -> list[str]:
+    config = dict(payload.get("run_config") or {})
+    metric_label = "Runtime (ms)" if str(metric).strip().lower() != "memory" else "Peak Memory (KiB)"
+    lines: list[str] = ["Run Details", f"Metric: {metric_label}"]
+    plot_scope = str(config.get("plot_scope_label") or "").strip()
+    if plot_scope:
+        lines.append(f"Scope: {plot_scope}")
+
+    tab_id = str(config.get("tab_id") or "").strip().lower()
+    input_mode = str(config.get("input_mode") or "").strip().lower()
+    lines.extend([
+        f"Tab: {tab_id or 'n/a'}",
+        f"Input mode: {input_mode or 'n/a'}",
+    ])
+    if input_mode == "independent":
+        lines.append(f"Graph family: {str(config.get('graph_family') or 'n/a')}")
+
+    selected_variants = list(config.get("selected_variants") or [])
+    label_map = dict(config.get("selected_variant_labels") or {})
+    variant_labels = [str(label_map.get(variant_id, variant_id)) for variant_id in selected_variants]
+    lines.extend(_wrap_detail_text(f"Variants ({len(variant_labels)}): {_summarize_name_list(variant_labels)}"))
+
+    injected = [str(item).strip() for item in list(config.get("injected_baselines") or []) if str(item).strip()]
+    if injected:
+        injected_labels = [str(label_map.get(variant_id, variant_id)) for variant_id in injected]
+        lines.extend(_wrap_detail_text(f"Injected baselines: {_summarize_name_list(injected_labels)}"))
+
+    if input_mode == "datasets":
+        dataset_rows = list(payload.get("dataset_selection") or [])
+        dataset_labels = [
+            str(row.get("dataset_name") or row.get("dataset_id") or "").strip()
+            for row in dataset_rows
+            if isinstance(row, dict)
+        ]
+        if not dataset_labels:
+            dataset_labels = [str(item).strip() for item in list(config.get("selected_datasets") or []) if str(item).strip()]
+        lines.extend(_wrap_detail_text(f"Datasets ({len(dataset_labels)}): {_summarize_name_list(dataset_labels, max_items=3)}"))
+    else:
+        value_order = ["n", "density"] if tab_id == "shortest_path" else ["n", "density", "k"]
+        lines.append("Variables:")
+        var_ranges = dict(config.get("var_ranges") or {})
+        fixed_values = dict(config.get("fixed_values") or {})
+        primary_var = str(config.get("primary_variable") or "").strip()
+        secondary_var = str(config.get("secondary_variable") or "").strip()
+        for var_id in value_order:
+            raw_values = list(var_ranges.get(var_id) or [])
+            if not raw_values and var_id in fixed_values:
+                raw_values = [fixed_values[var_id]]
+            if not raw_values:
+                continue
+            prefix = "swept" if len(raw_values) > 1 else "fixed"
+            if var_id == primary_var:
+                prefix += ", x-axis"
+            elif secondary_var and var_id == secondary_var:
+                prefix += ", series"
+            summary = _summarize_series_values(var_id, [float(v) for v in raw_values], config)
+            lines.extend(_wrap_detail_text(f"{axis_label_for_config(var_id, config)} ({prefix}): {summary}"))
+
+    lines.extend([
+        f"Iterations/datapoint: {int(config.get('iterations_per_datapoint') or 0)}",
+        f"Seed: {int(config.get('seed') or 0)}",
+    ])
+    timeout_value = config.get("solver_timeout_seconds")
+    timeout_text = "off" if timeout_value in {None, "", 0, 0.0} else f"{float(timeout_value):.1f}s"
+    lines.extend([
+        f"Solver timeout: {timeout_text}",
+        f"Failure policy: {str(config.get('failure_policy') or 'n/a')}",
+        f"Outlier filter: {str(config.get('outlier_filter') or 'none')}",
+    ])
+    completed = payload.get("completed_trials")
+    planned = payload.get("planned_trials")
+    if completed is not None and planned is not None:
+        lines.append(f"Trials: {completed}/{planned}")
+    duration_ms = payload.get("run_duration_ms")
+    if isinstance(duration_ms, (int, float)) and math.isfinite(float(duration_ms)):
+        lines.append(f"Run duration: {float(duration_ms) / 1000.0:.2f}s")
+    return lines
+
+
+def iter_plot_export_datapoints(payload: dict):
+    datapoints = payload.get("datapoints")
+    if isinstance(datapoints, list) and datapoints:
+        for row in datapoints:
+            if isinstance(row, dict):
+                yield row
+        return
+
+    datapoints_path = payload.get("datapoints_path")
+    if not datapoints_path:
+        return
+    path = Path(datapoints_path)
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
+def collect_plot_export_datapoints(payload: dict) -> list[dict]:
+    return [row for row in iter_plot_export_datapoints(payload)]
+
+
+def build_metric_summary_figure(payload: dict, metric: str) -> Figure:
+    fig = Figure(figsize=(12.4, 5.6), dpi=100)
+    FigureCanvasAgg(fig)
+    grid = fig.add_gridspec(1, 2, width_ratios=[3.3, 1.25], wspace=0.08)
+    ax = fig.add_subplot(grid[0, 0])
+    details_ax = fig.add_subplot(grid[0, 1])
+
+    datapoints = collect_plot_export_datapoints(payload)
+    config = dict(payload.get("run_config") or {})
+    if str(config.get("input_mode") or "independent").strip().lower() == "datasets":
+        _plot_dataset_metric_bars(ax, payload, metric, datapoints)
+    else:
+        _plot_independent_metric_lines(ax, payload, metric, datapoints)
+
+    details_ax.set_axis_off()
+    details_ax.set_xlim(0.0, 1.0)
+    details_ax.set_ylim(0.0, 1.0)
+    details_ax.axvline(0.0, color="#C7CDD4", linewidth=1.0)
+    details_ax.text(
+        0.04,
+        0.98,
+        "\n".join(_build_run_detail_lines(payload, metric)),
+        ha="left",
+        va="top",
+        fontsize=8.8,
+        family="monospace",
+    )
+    fig.subplots_adjust(left=0.07, right=0.98, top=0.90, bottom=0.24, wspace=0.08)
+    return fig
+
+
+def _filtered_payload_for_variants(payload: dict, variant_ids: list[str], scope_label: str) -> dict:
+    selected = [str(item).strip().lower() for item in variant_ids if str(item).strip()]
+    selected_set = set(selected)
+    config = dict(payload.get("run_config") or {})
+    label_map = dict(config.get("selected_variant_labels") or {})
+    filtered_config = dict(config)
+    filtered_config["selected_variants"] = [variant_id for variant_id in list(config.get("selected_variants") or []) if variant_id in selected_set]
+    filtered_config["selected_variant_labels"] = {
+        variant_id: label
+        for variant_id, label in label_map.items()
+        if variant_id in selected_set
+    }
+    filtered_config["injected_baselines"] = [
+        variant_id
+        for variant_id in list(config.get("injected_baselines") or [])
+        if variant_id in selected_set
+    ]
+    filtered_config["plot_scope_label"] = scope_label
+
+    filtered_payload = dict(payload)
+    filtered_payload["run_config"] = filtered_config
+    filtered_payload["datapoints"] = [
+        row
+        for row in collect_plot_export_datapoints(payload)
+        if isinstance(row, dict) and str(row.get("variant_id") or "").strip().lower() in selected_set
+    ]
+    return filtered_payload
+
+
+def save_session_plot_exports(payload: dict, out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    config = dict(payload.get("run_config") or {})
+    selected_variants = [str(item).strip().lower() for item in list(config.get("selected_variants") or []) if str(item).strip()]
+    exports: list[tuple[str, dict]] = []
+
+    tab_id = str(config.get("tab_id") or "").strip().lower()
+    if tab_id == "subgraph":
+        vf3_variants = [variant_id for variant_id in selected_variants if variant_family_from_id(variant_id) == "vf3"]
+        glasgow_variants = [variant_id for variant_id in selected_variants if variant_family_from_id(variant_id) == "glasgow"]
+        exports.append(("", _filtered_payload_for_variants(payload, selected_variants, "Both families")))
+        exports.append(("-both", _filtered_payload_for_variants(payload, selected_variants, "Both families")))
+        if vf3_variants:
+            exports.append(("-vf3", _filtered_payload_for_variants(payload, vf3_variants, "VF3 family only")))
+        if glasgow_variants:
+            exports.append(("-glasgow", _filtered_payload_for_variants(payload, glasgow_variants, "Glasgow family only")))
+    else:
+        exports.append(("", _filtered_payload_for_variants(payload, selected_variants, "All selected variants")))
+
+    for suffix, export_payload in exports:
+        runtime_fig = build_metric_summary_figure(export_payload, "runtime")
+        memory_fig = build_metric_summary_figure(export_payload, "memory")
+        try:
+            runtime_fig.savefig(out_dir / f"runtime-2d{suffix}.png", dpi=150)
+            memory_fig.savefig(out_dir / f"memory-2d{suffix}.png", dpi=150)
+            runtime_fig.savefig(out_dir / f"runtime-2d{suffix}.svg")
+            memory_fig.savefig(out_dir / f"memory-2d{suffix}.svg")
+        finally:
+            try:
+                runtime_fig.clear()
+            except Exception:
+                pass
+            try:
+                memory_fig.clear()
+            except Exception:
+                pass
+
+
+def figure_has_plottable_data(fig: Figure | None) -> bool:
+    if fig is None:
+        return False
+    try:
+        for ax in list(getattr(fig, "axes", []) or []):
+            if len(list(getattr(ax, "lines", []) or [])) > 0:
+                return True
+            if len(list(getattr(ax, "collections", []) or [])) > 0:
+                return True
+            if len(list(getattr(ax, "patches", []) or [])) > 0:
+                return True
+            if len(list(getattr(ax, "images", []) or [])) > 0:
+                return True
+            if len(list(getattr(ax, "containers", []) or [])) > 0:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def try_save_figure(fig: Figure | None, target_path: Path, *, dpi: int | None = None) -> tuple[bool, str | None]:
+    if fig is None:
+        return False, "figure unavailable"
+    if not figure_has_plottable_data(fig):
+        return False, "no plotted data"
+    try:
+        if dpi is not None:
+            fig.savefig(target_path, dpi=dpi)
+        else:
+            fig.savefig(target_path)
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
 
 
 def parse_solution_count(output_text: str) -> int | None:
@@ -7224,6 +7732,22 @@ class BenchmarkRunnerApp(tk.Tk):
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         return canvas
 
+    def _clear_plot_slot(self, canvas_attr: str, fig_attr: str):
+        canvas = getattr(self, canvas_attr, None)
+        if canvas is not None:
+            try:
+                canvas.get_tk_widget().destroy()
+            except Exception:
+                pass
+            setattr(self, canvas_attr, None)
+        fig = getattr(self, fig_attr, None)
+        if fig is not None:
+            try:
+                fig.clear()
+            except Exception:
+                pass
+            setattr(self, fig_attr, None)
+
     def _iter_payload_datapoints(self, payload: dict):
         datapoints = payload.get("datapoints")
         if isinstance(datapoints, list) and datapoints:
@@ -8088,8 +8612,7 @@ class BenchmarkRunnerApp(tk.Tk):
         datapoints = self._collect_payload_datapoints(payload)
         runtime_fig = self._make_metric_2d_figure(payload, metric="runtime", datapoints=datapoints)
         memory_fig = self._make_metric_2d_figure(payload, metric="memory", datapoints=datapoints)
-        runtime_3d_fig = self._make_metric_3d_figure(payload, metric="runtime", datapoints=datapoints)
-        memory_3d_fig = self._make_metric_3d_figure(payload, metric="memory", datapoints=datapoints)
+        has_secondary_variable = payload.get("run_config", {}).get("secondary_variable") is not None
 
         self.runtime_canvas = self._render_figure_in_frame(
             self.runtime_frame,
@@ -8107,13 +8630,18 @@ class BenchmarkRunnerApp(tk.Tk):
             click_handler=lambda event: self._on_2d_click(event, metric="memory"),
             leave_handler=lambda event: self._on_2d_leave(event, metric="memory"),
         )
-        self.runtime_3d_canvas = self._render_figure_in_frame(self.runtime_3d_frame, runtime_3d_fig, self.runtime_3d_canvas)
-        self.memory_3d_canvas = self._render_figure_in_frame(self.memory_3d_frame, memory_3d_fig, self.memory_3d_canvas)
-
         self.last_runtime_fig = runtime_fig
         self.last_memory_fig = memory_fig
-        self.last_runtime_3d_fig = runtime_3d_fig
-        self.last_memory_3d_fig = memory_3d_fig
+        if has_secondary_variable:
+            runtime_3d_fig = self._make_metric_3d_figure(payload, metric="runtime", datapoints=datapoints)
+            memory_3d_fig = self._make_metric_3d_figure(payload, metric="memory", datapoints=datapoints)
+            self.runtime_3d_canvas = self._render_figure_in_frame(self.runtime_3d_frame, runtime_3d_fig, self.runtime_3d_canvas)
+            self.memory_3d_canvas = self._render_figure_in_frame(self.memory_3d_frame, memory_3d_fig, self.memory_3d_canvas)
+            self.last_runtime_3d_fig = runtime_3d_fig
+            self.last_memory_3d_fig = memory_3d_fig
+        else:
+            self._clear_plot_slot("runtime_3d_canvas", "last_runtime_3d_fig")
+            self._clear_plot_slot("memory_3d_canvas", "last_memory_3d_fig")
         self._render_statistical_tests_panel(payload)
 
     def _repaint_existing_plots(self):
@@ -11155,8 +11683,12 @@ class BenchmarkRunnerApp(tk.Tk):
         if tab_key == "memory_2d":
             return self._make_metric_2d_figure(payload, metric="memory", datapoints=datapoints)
         if tab_key == "runtime_3d":
+            if payload.get("run_config", {}).get("secondary_variable") is None:
+                return None
             return self._make_metric_3d_figure(payload, metric="runtime", datapoints=datapoints)
         if tab_key == "memory_3d":
+            if payload.get("run_config", {}).get("secondary_variable") is None:
+                return None
             return self._make_metric_3d_figure(payload, metric="memory", datapoints=datapoints)
         return None
 
@@ -11361,18 +11893,23 @@ class BenchmarkRunnerApp(tk.Tk):
                     json.dumps(row["seeds"]),
                 ])
 
-        if self.last_runtime_fig is not None:
-            self.last_runtime_fig.savefig(out_dir / "runtime-2d.png", dpi=150)
-            self.last_runtime_fig.savefig(out_dir / "runtime-2d.svg")
-        if self.last_memory_fig is not None:
-            self.last_memory_fig.savefig(out_dir / "memory-2d.png", dpi=150)
-            self.last_memory_fig.savefig(out_dir / "memory-2d.svg")
-        if self.last_runtime_3d_fig is not None:
-            self.last_runtime_3d_fig.savefig(out_dir / "runtime-3d.png", dpi=150)
-            self.last_runtime_3d_fig.savefig(out_dir / "runtime-3d.svg")
-        if self.last_memory_3d_fig is not None:
-            self.last_memory_3d_fig.savefig(out_dir / "memory-3d.png", dpi=150)
-            self.last_memory_3d_fig.savefig(out_dir / "memory-3d.svg")
+        save_session_plot_exports(payload, out_dir)
+
+        optional_exports = []
+        if payload.get("run_config", {}).get("secondary_variable") is not None:
+            optional_exports.extend([
+                (self.last_runtime_3d_fig, out_dir / "runtime-3d.png", 150, "runtime 3D PNG"),
+                (self.last_runtime_3d_fig, out_dir / "runtime-3d.svg", None, "runtime 3D SVG"),
+                (self.last_memory_3d_fig, out_dir / "memory-3d.png", 150, "memory 3D PNG"),
+                (self.last_memory_3d_fig, out_dir / "memory-3d.svg", None, "memory 3D SVG"),
+            ])
+        for fig, target_path, dpi, export_label in optional_exports:
+            saved, error_text = try_save_figure(fig, target_path, dpi=dpi)
+            if not saved and error_text not in {"figure unavailable", "no plotted data"}:
+                self._append_log(
+                    f"Skipped {export_label} export: {error_text}",
+                    level="warn",
+                )
 
         self._maybe_save_surface_stl(payload, out_dir, metric="runtime")
         self._maybe_save_surface_stl(payload, out_dir, metric="memory")
@@ -11402,7 +11939,36 @@ def main():
             fullscreen=fullscreen_flag,
         )
 
-    headless_switches = {"--manifest", "--write-manifest", "--run", "--list-variants", "--list-datasets"}
+    headless_switches = {
+        "-h",
+        "--help",
+        "--manifest",
+        "--manifest-dir",
+        "--write-manifest",
+        "--run",
+        "--list-variants",
+        "--list-datasets",
+        "--preset",
+        "--tab-id",
+        "--input-mode",
+        "--graph-family",
+        "--variants",
+        "--datasets",
+        "--n-values",
+        "--density-values",
+        "--k-values",
+        "--k-mode",
+        "--iterations",
+        "--seed",
+        "--solver-timeout-seconds",
+        "--failure-policy",
+        "--outlier-filter",
+        "--retry-failed-trials",
+        "--out-dir",
+        "--no-delete-generated-inputs",
+        "--no-prepare-datasets",
+        "--continue-on-error",
+    }
     if args.headless or any(flag in sys.argv[1:] for flag in headless_switches):
         repo_root = Path(__file__).resolve().parent.parent
         if str(repo_root) not in sys.path:

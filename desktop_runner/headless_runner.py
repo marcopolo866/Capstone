@@ -18,6 +18,7 @@ import json
 import random
 import re
 import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -30,11 +31,13 @@ MANIFEST_SCHEMA_VERSION = "capstone-benchmark-manifest-v1"
 SESSION_SCHEMA_VERSION = "desktop-benchmark-v2"
 TRIAL_SCHEMA_VERSION = "desktop-benchmark-trial-v1"
 DATASET_INFO_SCHEMA_VERSION = "desktop-dataset-selection-v1"
+COLLECTION_RUN_SCHEMA_VERSION = "desktop-benchmark-collection-v1"
+DEFAULT_COLLECTION_DIR_NAME = "data_collection"
 
 PRESET_DEFAULTS: dict[str, dict[str, Any]] = {
     "smoke": {
         "iterations": 1,
-        "solver_timeout_seconds": 30.0,
+        "solver_timeout_seconds": None,
         "failure_policy": "stop",
         "retry_failed_trials": 0,
         "timeout_as_missing": True,
@@ -43,7 +46,7 @@ PRESET_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "standard": {
         "iterations": 3,
-        "solver_timeout_seconds": 120.0,
+        "solver_timeout_seconds": None,
         "failure_policy": "continue",
         "retry_failed_trials": 0,
         "timeout_as_missing": True,
@@ -52,7 +55,7 @@ PRESET_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "full": {
         "iterations": 7,
-        "solver_timeout_seconds": 300.0,
+        "solver_timeout_seconds": None,
         "failure_policy": "continue",
         "retry_failed_trials": 1,
         "timeout_as_missing": True,
@@ -70,6 +73,14 @@ FAMILY_BASELINES = {
 
 class TrialFailure(RuntimeError):
     pass
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def default_data_collection_dir() -> Path:
+    return repo_root() / DEFAULT_COLLECTION_DIR_NAME
 
 
 def parse_csv_items(raw: str) -> list[str]:
@@ -94,6 +105,30 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"Manifest must be a JSON object: {path}")
     return payload
+
+
+def list_collection_manifest_paths(manifest_dir: Path) -> list[Path]:
+    root = manifest_dir.resolve()
+    if not root.exists():
+        raise FileNotFoundError(f"Manifest directory does not exist: {root}")
+    if not root.is_dir():
+        raise NotADirectoryError(f"Manifest directory is not a directory: {root}")
+    manifest_paths = sorted(path.resolve() for path in root.iterdir() if path.is_file() and path.suffix.lower() == ".json")
+    if not manifest_paths:
+        raise FileNotFoundError(f"No top-level manifest JSON files found in: {root}")
+    return manifest_paths
+
+
+def make_collection_output_dir(manifest_dir: Path) -> Path:
+    stamp = dt.datetime.now().strftime("run_%Y%m%d_%H%M%S")
+    base = manifest_dir.resolve() / "runs"
+    target = base / stamp
+    suffix = 2
+    while target.exists():
+        target = base / f"{stamp}_{suffix:02d}"
+        suffix += 1
+    target.mkdir(parents=True, exist_ok=False)
+    return target
 
 
 def merge_preset_defaults(payload: dict[str, Any]) -> dict[str, Any]:
@@ -358,6 +393,15 @@ class Runner:
         self.active_procs: set[Any] = set()
         self.session_output_dir = output_dir
         self._logger = logger if logger is not None else print
+        self._console_lock = threading.Lock()
+        self._console_stream = sys.stdout
+        self._live_line_token: str | None = None
+        self._live_line_text = ""
+        self._live_line_width = 0
+        try:
+            self._supports_inplace_live_line = bool(self._console_stream.isatty())
+        except Exception:
+            self._supports_inplace_live_line = False
 
     def after(self, _delay_ms: int, callback=None):
         if callback is not None:
@@ -365,13 +409,50 @@ class Runner:
         return None
 
     def _append_log_threadsafe(self, text: str, level: str = "info"):
-        self._logger(text)
+        rendered = str(text or "")
+        with self._console_lock:
+            self._clear_live_log_line_locked()
+            self._logger(rendered)
 
     def _set_live_log_line_threadsafe(self, token: str, text: str, level: str = "notice"):
+        rendered = str(text or "").strip()
+        if not rendered:
+            self._clear_live_log_line_threadsafe(token=token)
+            return None
+        with self._console_lock:
+            if not self._supports_inplace_live_line:
+                if rendered != self._live_line_text:
+                    self._logger(rendered)
+                self._live_line_token = token
+                self._live_line_text = rendered
+                self._live_line_width = len(rendered)
+                return None
+            width = max(self._live_line_width, len(rendered))
+            padded = rendered.ljust(width)
+            self._console_stream.write("\r" + padded)
+            self._console_stream.flush()
+            self._live_line_token = token
+            self._live_line_text = rendered
+            self._live_line_width = width
         return None
 
     def _clear_live_log_line_threadsafe(self, token: str | None = None):
+        with self._console_lock:
+            if token is not None and token != self._live_line_token:
+                return None
+            self._clear_live_log_line_locked()
         return None
+
+    def _clear_live_log_line_locked(self):
+        if not self._live_line_text and self._live_line_width <= 0:
+            return
+        if self._supports_inplace_live_line:
+            width = max(self._live_line_width, len(self._live_line_text))
+            self._console_stream.write("\r" + (" " * width) + "\r")
+            self._console_stream.flush()
+        self._live_line_token = None
+        self._live_line_text = ""
+        self._live_line_width = 0
 
     def _set_process_pause_state(self, paused: bool):
         return None
@@ -756,12 +837,80 @@ def execute_manifest(manifest: dict[str, Any], manifest_path: Path | None, outpu
     }
     write_session_json(out_dir / "benchmark-session.json", payload)
     write_session_csv(out_dir / "benchmark-session.csv", datapoint_rows)
+    app_mod.save_session_plot_exports(payload, out_dir)
     return out_dir
+
+
+def execute_manifest_collection(
+    manifest_dir: Path,
+    output_dir: Path | None,
+    logger,
+    *,
+    continue_on_error: bool = False,
+) -> tuple[Path, dict[str, Any]]:
+    manifest_root = manifest_dir.resolve()
+    manifest_paths = list_collection_manifest_paths(manifest_root)
+    collection_out_dir = output_dir.resolve() if output_dir is not None else make_collection_output_dir(manifest_root)
+    collection_out_dir.mkdir(parents=True, exist_ok=True)
+    started_at = dt.datetime.now(dt.timezone.utc)
+    runs: list[dict[str, Any]] = []
+
+    logger(f"Data Collection: discovered {len(manifest_paths)} top-level manifest(s) in {manifest_root}")
+    logger(f"Collection output directory: {collection_out_dir}")
+
+    for idx, manifest_path in enumerate(manifest_paths):
+        logger(f"Manifest {idx + 1}/{len(manifest_paths)}: {manifest_path.name}")
+        manifest_output_dir = collection_out_dir / manifest_path.stem
+        manifest_output_dir.mkdir(parents=True, exist_ok=True)
+        copied_manifest_path = manifest_output_dir / "input-manifest.json"
+        shutil.copy2(manifest_path, copied_manifest_path)
+        manifest = merge_preset_defaults(load_manifest(manifest_path))
+        record = {
+            "manifest_name": manifest_path.name,
+            "manifest_path": str(manifest_path),
+            "input_manifest_path": str(copied_manifest_path),
+            "output_dir": str(manifest_output_dir),
+            "status": "ok",
+            "error": None,
+        }
+        try:
+            execute_manifest(manifest, manifest_path, manifest_output_dir, logger)
+        except Exception as exc:
+            record["status"] = "error"
+            record["error"] = str(exc)
+            logger(f"[error] {manifest_path.name}: {exc}")
+            runs.append(record)
+            if not continue_on_error:
+                break
+            continue
+        runs.append(record)
+
+    ended_at = dt.datetime.now(dt.timezone.utc)
+    attempted_runs = len(runs)
+    failed_runs = sum(1 for row in runs if row.get("status") != "ok")
+    payload = {
+        "schema_version": COLLECTION_RUN_SCHEMA_VERSION,
+        "collection_label": "Data Collection",
+        "manifest_dir": str(manifest_root),
+        "output_dir": str(collection_out_dir),
+        "run_started_utc": started_at.isoformat(),
+        "run_ended_utc": ended_at.isoformat(),
+        "run_duration_ms": max(0.0, (ended_at - started_at).total_seconds() * 1000.0),
+        "continue_on_error": bool(continue_on_error),
+        "discovered_manifest_count": int(len(manifest_paths)),
+        "attempted_manifest_count": int(attempted_runs),
+        "completed_manifest_count": int(attempted_runs - failed_runs),
+        "failed_manifest_count": int(failed_runs),
+        "runs": runs,
+    }
+    write_json(collection_out_dir / "collection-run.json", payload)
+    return collection_out_dir, payload
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Headless benchmark runner for the desktop benchmark stack.")
     parser.add_argument("--manifest", default="", help="Load a benchmark manifest JSON file.")
+    parser.add_argument("--manifest-dir", default="", help="Run every top-level manifest JSON file in this directory.")
     parser.add_argument("--write-manifest", default="", help="Write the resolved manifest/config to this path.")
     parser.add_argument("--run", action="store_true", help="Run the benchmark after resolving the manifest.")
     parser.add_argument("--list-variants", action="store_true", help="List available solver variants.")
@@ -785,6 +934,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", default="", help="Optional benchmark output directory.")
     parser.add_argument("--no-delete-generated-inputs", action="store_true", help="Keep generated input files after the run.")
     parser.add_argument("--no-prepare-datasets", action="store_true", help="Assume selected datasets are already prepared.")
+    parser.add_argument("--continue-on-error", action="store_true", help="For --manifest-dir runs, continue to the next manifest after a failure.")
     return parser
 
 
@@ -799,6 +949,32 @@ def main(argv: list[str] | None = None) -> int:
         for spec in app_mod.load_dataset_catalog():
             print(f"{spec.dataset_id}\t{spec.tab_id}\t{spec.name}")
         return 0
+    manifest_dir = Path(args.manifest_dir).resolve() if args.manifest_dir else None
+    if manifest_dir is not None and args.manifest:
+        parser.error("Use either --manifest or --manifest-dir, not both.")
+    if manifest_dir is not None and args.write_manifest:
+        parser.error("--write-manifest is only supported for single-manifest or argument-built runs.")
+    output_dir = Path(args.out_dir).resolve() if args.out_dir else None
+    if manifest_dir is not None:
+        manifest_paths = list_collection_manifest_paths(manifest_dir)
+        if not args.run:
+            print(f"Resolved Data Collection directory: {manifest_dir}")
+            for path in manifest_paths:
+                print(f"- {path.name}")
+            print("Use --run to execute every top-level manifest in this directory.")
+            return 0
+        out_dir, summary = execute_manifest_collection(
+            manifest_dir,
+            output_dir,
+            print,
+            continue_on_error=bool(args.continue_on_error),
+        )
+        failures = [row for row in list(summary.get("runs") or []) if str(row.get("status") or "") != "ok"]
+        if failures:
+            print(f"Data Collection run completed with failures: {out_dir}")
+            return 1
+        print(f"Data Collection run complete: {out_dir}")
+        return 0
     manifest_path = Path(args.manifest).resolve() if args.manifest else None
     manifest = load_manifest(manifest_path) if manifest_path is not None else build_manifest_from_args(args)
     manifest = merge_preset_defaults(manifest)
@@ -807,7 +983,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote manifest: {Path(args.write_manifest).resolve()}")
         if not args.run and manifest_path is None:
             return 0
-    output_dir = Path(args.out_dir).resolve() if args.out_dir else None
     if not args.run and manifest_path is None:
         print("Resolved manifest. Use --run to execute it.")
         return 0

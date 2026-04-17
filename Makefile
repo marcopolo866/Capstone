@@ -4,12 +4,14 @@
 
 .DEFAULT_GOAL := build-local
 
-.PHONY: build-all build-local build-local-sh build-local-ps1 build-runner clean submodules test help
+.PHONY: build-all build-local build-local-sh build-local-ps1 build-runner clean submodules test help headless data-collection
 
 BASH ?= bash
 POWERSHELL ?= powershell
 PYTHON ?= python
 SUPPRESS_DIAGNOSTICS ?= 1
+MANIFEST_DIR ?= data_collection
+HEADLESS_ARGS ?=
 
 ifeq ($(OS),Windows_NT)
 DEFAULT_BACKEND := ps1
@@ -64,6 +66,14 @@ test:
 	@echo "==> Running regression tests"
 	python -m unittest discover -s tests -p "test_*.py" -v
 
+headless:
+	@echo "==> Running headless benchmark runner"
+	"$(PYTHON)" "./scripts/benchmark-runner.py" $(HEADLESS_ARGS)
+
+data-collection: build-local
+	@echo "==> Running Data Collection manifests from $(MANIFEST_DIR)"
+	"$(PYTHON)" "./scripts/benchmark-runner.py" --manifest-dir "$(MANIFEST_DIR)" --run $(HEADLESS_ARGS)
+
 clean:
 	@echo "==> Removing local build artifacts"
 	"$(PYTHON)" "./scripts/clean-local-build.py"
@@ -73,6 +83,8 @@ help:
 	@echo "  make build-all                 Build local solvers and package desktop runner for this OS."
 	@echo "  make build-local               Build all local/native solvers (default)."
 	@echo "  make build-runner              Package desktop runner for this OS."
+	@echo "  make headless                  Run the headless benchmark runner with HEADLESS_ARGS."
+	@echo "  make data-collection           Build local solvers, then run all top-level manifests from MANIFEST_DIR."
 	@echo "  make clean                     Remove local build artifacts."
 	@echo "  make build-local BACKEND=sh    Force Bash backend (scripts/build-local.sh)."
 	@echo "  make build-local BACKEND=ps1   Force PowerShell backend (scripts/build-local.ps1)."
@@ -81,4 +93,6 @@ help:
 	@echo ""
 	@echo "Options:"
 	@echo "  CMAKE_GENERATOR=<name>         Forward generator to build script."
+	@echo "  MANIFEST_DIR=<path>            Override the Data Collection manifest directory."
+	@echo "  HEADLESS_ARGS=\"...\"            Pass raw arguments to scripts/benchmark-runner.py."
 	@echo "  SUPPRESS_DIAGNOSTICS=1         Suppress compile warnings/notes (default)."

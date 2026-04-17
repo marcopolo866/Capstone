@@ -172,6 +172,11 @@ def prefer_msys2_toolchain(env: dict[str, str]) -> None:
     if not msys_gpp.is_file():
         return
 
+    force_current = env_truthy(env.get("BUILD_LOCAL_KEEP_CURRENT_GPP", ""))
+    if force_current:
+        print("Keeping current Windows g++ because BUILD_LOCAL_KEEP_CURRENT_GPP=1")
+        return
+
     current_gpp = shutil.which("g++", path=env.get("PATH")) or ""
     if current_gpp:
         try:
@@ -179,8 +184,6 @@ def prefer_msys2_toolchain(env: dict[str, str]) -> None:
         except OSError:
             current_resolved = Path(current_gpp)
         if str(current_resolved).lower().startswith(str(msys_mingw_bin).lower()):
-            return
-        if _compiler_can_compile_cpp(current_resolved):
             return
 
     if not _compiler_can_compile_cpp(msys_gpp):
@@ -602,12 +605,6 @@ def patch_vf3_submodule() -> None:
                 ("t1out_len_c[i] = (uint32_t*)calloc(classes_count, sizeof(uint32_t));", "t1out_len_c[i] = new uint32_t[classes_count]();"),
             ],
         ),
-        (
-            REPO_ROOT / "baselines/vf3lib/include/VF3NodeSorter.hpp",
-            [
-                ("return nodes_order;", "for (VF3SortingNode* n : nodes) delete n;\n\t\t\treturn nodes_order;"),
-            ],
-        ),
     ]
 
     for path, replacements in patches:
@@ -622,6 +619,22 @@ def patch_vf3_submodule() -> None:
             patched_any = True
         else:
             print(f"No patch changes needed for {path}")
+
+    sorter_path = REPO_ROOT / "baselines/vf3lib/include/VF3NodeSorter.hpp"
+    sorter_text = sorter_path.read_text(encoding="utf-8")
+    sorter_updated = sorter_text
+    double_delete = "for (VF3SortingNode* n : nodes) delete n;\n\t\t\tfor (VF3SortingNode* n : nodes) delete n;\n\t\t\treturn nodes_order;"
+    single_delete = "for (VF3SortingNode* n : nodes) delete n;\n\t\t\treturn nodes_order;"
+    if double_delete in sorter_updated:
+        sorter_updated = sorter_updated.replace(double_delete, single_delete)
+    if "for (VF3SortingNode* n : nodes) delete n;" not in sorter_updated and "return nodes_order;" in sorter_updated:
+        sorter_updated = sorter_updated.replace("return nodes_order;", single_delete, 1)
+    if sorter_updated != sorter_text:
+        sorter_path.write_text(sorter_updated, encoding="utf-8")
+        print(f"Patched {sorter_path}")
+        patched_any = True
+    else:
+        print(f"No patch changes needed for {sorter_path}")
 
     if not patched_any:
         print("No VF3 submodule patch changes were required.")
@@ -937,7 +950,12 @@ def main() -> int:
     else:
         maybe_run_sp_via_correctness_check(python_exe, env)
 
-    vf3_flag_tokens = ["-std=c++11", *optimization_flag_tokens(sanitizer_mode), "-DNDEBUG", "-Wno-deprecated", "-fno-strict-aliasing", "-fwrapv", *sanitizer_flag_tokens(sanitizer_mode)]
+    vf3_opt_tokens = optimization_flag_tokens(sanitizer_mode)
+    if os.name == "nt" and sanitizer_mode == "none":
+        # vf3lib still exhibits Windows-only UB at -O3 during the baseline smoke
+        # test. Keep the baseline on a safer optimization level locally.
+        vf3_opt_tokens = ["-O1", "-g"]
+    vf3_flag_tokens = ["-std=c++11", *vf3_opt_tokens, "-DNDEBUG", "-Wno-deprecated", "-fno-strict-aliasing", "-fwrapv", *sanitizer_flag_tokens(sanitizer_mode)]
     if suppress_diagnostics:
         vf3_flag_tokens.append("-w")
     if os.name == "nt":

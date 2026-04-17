@@ -1,0 +1,35 @@
+{
+  "schema_version": "capstone-benchmark-manifest-v1",
+  "preset": "full",
+  "tab_id": "shortest_path",
+  "input_mode": "independent",
+  "graph_family": "erdos_renyi",
+  "selected_variants": [
+    "dijkstra_dial",
+    "dijkstra_chatgpt",
+    "dijkstra_gemini"
+  ],
+  "selected_datasets": [],
+  "k_mode": "absolute",
+  "prepare_datasets": true,
+  "iterations": 7,
+  "base_seed": 11,
+  "failure_policy": "continue",
+  "retry_failed_trials": 1,
+  "timeout_as_missing": true,
+  "outlier_filter": "mad",
+  "delete_generated_inputs": true,
+  "values": {
+    "n": [
+      4096
+    ],
+    "density": [
+      0.001,
+      0.003,
+      0.01,
+      0.03,
+      0.05,
+      0.1
+    ]
+  }
+}

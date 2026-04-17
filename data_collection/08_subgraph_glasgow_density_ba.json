@@ -1,0 +1,39 @@
+{
+  "schema_version": "capstone-benchmark-manifest-v1",
+  "preset": "full",
+  "tab_id": "subgraph",
+  "input_mode": "independent",
+  "graph_family": "barabasi_albert",
+  "selected_variants": [
+    "glasgow_chatgpt",
+    "glasgow_claude",
+    "glasgow_gemini"
+  ],
+  "selected_datasets": [],
+  "k_mode": "percent",
+  "prepare_datasets": true,
+  "iterations": 7,
+  "base_seed": 11,
+  "failure_policy": "continue",
+  "retry_failed_trials": 1,
+  "timeout_as_missing": true,
+  "outlier_filter": "mad",
+  "delete_generated_inputs": true,
+  "values": {
+    "n": [
+      64,
+      96,
+      128
+    ],
+    "density": [
+      0.01,
+      0.03,
+      0.05,
+      0.08,
+      0.12
+    ],
+    "k": [
+      20
+    ]
+  }
+}

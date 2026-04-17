@@ -350,6 +350,7 @@ $pyArgs = @(
     "--name", "capstone-benchmark-runner",
     "--hidden-import", "matplotlib.backends.backend_tkagg",
     "--hidden-import", "matplotlib.backends.backend_agg",
+    "--hidden-import", "matplotlib.backends.backend_svg",
     "--hidden-import", "tkwebview2.tkwebview2",
     "--hidden-import", "clr",
     "--hidden-import", "webview.window",
