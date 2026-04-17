@@ -149,6 +149,7 @@ def main() -> int:
             repo_root / "desktop_runner/.staging",
             # Headless Data Collection batch outputs
             repo_root / "data_collection" / "runs",
+            repo_root / ".github" / "ci_data_collection" / "runs",
             # Remove full dist/ to also clean benchmark_output_* folders written
             # next to packaged runner binaries.
             repo_root / "dist",

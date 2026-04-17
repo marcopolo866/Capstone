@@ -1,0 +1,32 @@
+{
+  "schema_version": "capstone-benchmark-manifest-v1",
+  "preset": "smoke",
+  "tab_id": "subgraph",
+  "input_mode": "independent",
+  "graph_family": "erdos_renyi",
+  "selected_variants": [
+    "vf3_chatgpt",
+    "glasgow_chatgpt"
+  ],
+  "selected_datasets": [],
+  "k_mode": "absolute",
+  "prepare_datasets": true,
+  "iterations": 1,
+  "base_seed": 11,
+  "failure_policy": "continue",
+  "retry_failed_trials": 0,
+  "timeout_as_missing": true,
+  "outlier_filter": "none",
+  "delete_generated_inputs": true,
+  "values": {
+    "n": [
+      24
+    ],
+    "density": [
+      0.05
+    ],
+    "k": [
+      8
+    ]
+  }
+}

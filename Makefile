@@ -8,54 +8,61 @@
 
 BASH ?= bash
 POWERSHELL ?= powershell
-PYTHON ?= python
 SUPPRESS_DIAGNOSTICS ?= 1
 MANIFEST_DIR ?= data_collection
 HEADLESS_ARGS ?=
 
 ifeq ($(OS),Windows_NT)
+PYTHON ?= py -3.11
 DEFAULT_BACKEND := ps1
 else
+PYTHON ?= python3
 DEFAULT_BACKEND := sh
 endif
 
 BACKEND ?= $(DEFAULT_BACKEND)
 
+ifneq ($(filter 1 true yes on,$(strip $(SUPPRESS_DIAGNOSTICS))),)
+SUPPRESS_DIAGNOSTICS_FLAG := --suppress-diagnostics
+else
+SUPPRESS_DIAGNOSTICS_FLAG :=
+endif
+
 build-local:
 ifeq ($(BACKEND),ps1)
 	@echo "==> Building native solvers via scripts/build-local.ps1"
-	BUILD_LOCAL_SUPPRESS_DIAGNOSTICS="$(SUPPRESS_DIAGNOSTICS)" "$(PYTHON)" "./scripts/build-local.py" --backend ps1 --cmake-generator "$(CMAKE_GENERATOR)"
+	$(PYTHON) "./scripts/build-local.py" --backend ps1 --cmake-generator "$(CMAKE_GENERATOR)" $(SUPPRESS_DIAGNOSTICS_FLAG)
 else ifeq ($(BACKEND),sh)
 	@echo "==> Building native solvers via scripts/build-local.sh"
-	BUILD_LOCAL_SUPPRESS_DIAGNOSTICS="$(SUPPRESS_DIAGNOSTICS)" "$(PYTHON)" "./scripts/build-local.py" --backend sh --cmake-generator "$(CMAKE_GENERATOR)"
+	$(PYTHON) "./scripts/build-local.py" --backend sh --cmake-generator "$(CMAKE_GENERATOR)" $(SUPPRESS_DIAGNOSTICS_FLAG)
 else
 	$(error Unsupported BACKEND '$(BACKEND)'. Use BACKEND=ps1 or BACKEND=sh)
 endif
 
 build-local-sh:
 	@echo "==> Building native solvers via scripts/build-local.sh"
-	BUILD_LOCAL_SUPPRESS_DIAGNOSTICS="$(SUPPRESS_DIAGNOSTICS)" "$(PYTHON)" "./scripts/build-local.py" --backend sh --cmake-generator "$(CMAKE_GENERATOR)"
+	$(PYTHON) "./scripts/build-local.py" --backend sh --cmake-generator "$(CMAKE_GENERATOR)" $(SUPPRESS_DIAGNOSTICS_FLAG)
 
 build-local-ps1:
 	@echo "==> Building native solvers via scripts/build-local.ps1"
-	BUILD_LOCAL_SUPPRESS_DIAGNOSTICS="$(SUPPRESS_DIAGNOSTICS)" "$(PYTHON)" "./scripts/build-local.py" --backend ps1 --cmake-generator "$(CMAKE_GENERATOR)"
+	$(PYTHON) "./scripts/build-local.py" --backend ps1 --cmake-generator "$(CMAKE_GENERATOR)" $(SUPPRESS_DIAGNOSTICS_FLAG)
 
 ifeq ($(OS),Windows_NT)
 build-all: build-local build-runner
 
 build-runner: build-local
 	@echo "==> Installing desktop runner Python dependencies"
-	"$(PYTHON)" -m pip install -r "./desktop_runner/requirements.txt"
+	$(PYTHON) -m pip install -r "./desktop_runner/requirements.txt"
 	@echo "==> Packaging Windows desktop runner (.exe)"
-	"$(PYTHON)" "./desktop_runner/build_runner.py"
+	$(PYTHON) "./desktop_runner/build_runner.py"
 else
 build-all: build-local build-runner
 
 build-runner: build-local
 	@echo "==> Installing desktop runner Python dependencies"
-	"$(PYTHON)" -m pip install -r "./desktop_runner/requirements.txt"
+	$(PYTHON) -m pip install -r "./desktop_runner/requirements.txt"
 	@echo "==> Packaging desktop runner for this OS"
-	"$(PYTHON)" "./desktop_runner/build_runner.py"
+	$(PYTHON) "./desktop_runner/build_runner.py"
 endif
 
 submodules:
@@ -64,19 +71,19 @@ submodules:
 
 test:
 	@echo "==> Running regression tests"
-	python -m unittest discover -s tests -p "test_*.py" -v
+	$(PYTHON) -m unittest discover -s tests -p "test_*.py" -v
 
 headless:
 	@echo "==> Running headless benchmark runner"
-	"$(PYTHON)" "./scripts/benchmark-runner.py" $(HEADLESS_ARGS)
+	$(PYTHON) "./scripts/benchmark-runner.py" $(HEADLESS_ARGS)
 
 data-collection: build-local
 	@echo "==> Running Data Collection manifests from $(MANIFEST_DIR)"
-	"$(PYTHON)" "./scripts/benchmark-runner.py" --manifest-dir "$(MANIFEST_DIR)" --run $(HEADLESS_ARGS)
+	$(PYTHON) "./scripts/benchmark-runner.py" --manifest-dir "$(MANIFEST_DIR)" --run $(HEADLESS_ARGS)
 
 clean:
 	@echo "==> Removing local build artifacts"
-	"$(PYTHON)" "./scripts/clean-local-build.py"
+	$(PYTHON) "./scripts/clean-local-build.py"
 
 help:
 	@echo "Targets:"

@@ -52,6 +52,12 @@ def resolve_binary(candidates: list[str]) -> Path:
     raise FileNotFoundError(f"Missing required binary. Tried: {', '.join(candidates)}")
 
 
+def is_required_solver(row: dict) -> bool:
+    role = str(row.get("role") or "").strip().lower()
+    llm_key = str(row.get("llm_key") or "").strip().lower()
+    return role == "baseline" or llm_key == "dial"
+
+
 def ensure_executable(path: Path) -> None:
     mode = path.stat().st_mode
     path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -157,8 +163,15 @@ def stage_binaries() -> list[Path]:
 
     staged: list[Path] = []
     staged_rows: list[dict] = []
+    skipped_optional: list[tuple[str, list[str]]] = []
     for out_name, candidates, row in binary_spec:
-        resolved = resolve_binary(candidates)
+        try:
+            resolved = resolve_binary(candidates)
+        except FileNotFoundError:
+            if is_required_solver(row):
+                raise
+            skipped_optional.append((out_name, candidates))
+            continue
         target = STAGING_BIN / out_name
         shutil.copy2(resolved, target)
         ensure_executable(target)
@@ -183,6 +196,12 @@ def stage_binaries() -> list[Path]:
         encoding="utf-8",
     )
     staged.append(manifest_path)
+
+    if skipped_optional:
+        print()
+        print("Skipped optional solver binaries during packaging:")
+        for variant_id, candidates in skipped_optional:
+            print(f"  - {variant_id}: {', '.join(candidates)}")
 
     run_staged_vf3_smoke_test(STAGING_BIN / "vf3_baseline")
     return staged

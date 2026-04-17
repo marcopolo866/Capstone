@@ -81,8 +81,23 @@ def prepend_path(env: dict[str, str], value: str) -> None:
     env["PATH"] = os.pathsep.join([value, *parts])
 
 
+def run_subprocess(cmd: list[str], *, env: dict[str, str] | None = None, cwd: Path | None = None, **kwargs):
+    if os.name != "nt" or env is None:
+        return subprocess.run(cmd, cwd=str(cwd or REPO_ROOT), env=env, **kwargs)
+
+    original = dict(os.environ)
+    new_env = dict(env)
+    try:
+        os.environ.clear()
+        os.environ.update(new_env)
+        return subprocess.run(cmd, cwd=str(cwd or REPO_ROOT), **kwargs)
+    finally:
+        os.environ.clear()
+        os.environ.update(original)
+
+
 def run_cmd(cmd: list[str], env: dict[str, str], cwd: Path | None = None) -> None:
-    completed = subprocess.run(cmd, cwd=str(cwd or REPO_ROOT), env=env)
+    completed = run_subprocess(cmd, cwd=cwd, env=env)
     if completed.returncode != 0:
         raise RuntimeError(f"Command failed ({completed.returncode}): {' '.join(cmd)}")
 
@@ -143,20 +158,34 @@ def ensure_valid_temp_env(env: dict[str, str]) -> Path:
     return fallback
 
 
-def _compiler_can_compile_cpp(gpp_path: Path) -> bool:
+def _compiler_can_compile_cpp(gpp_path: Path, env: dict[str, str] | None = None) -> bool:
     try:
+        probe_env = dict(env or os.environ)
+        if os.name == "nt":
+            try:
+                resolved_gpp = gpp_path.resolve()
+            except OSError:
+                resolved_gpp = gpp_path
+            gpp_dir = resolved_gpp.parent
+            if gpp_dir.name.lower() == "bin" and gpp_dir.parent.name.lower() == "mingw64":
+                prepend_path(probe_env, str(gpp_dir))
+                msys_usr_bin = gpp_dir.parent.parent / "usr" / "bin"
+                if msys_usr_bin.is_dir():
+                    prepend_path(probe_env, str(msys_usr_bin))
         with tempfile.TemporaryDirectory(prefix="capstone-gpp-probe-") as tmp:
             tmp_dir = Path(tmp)
             src = tmp_dir / "probe.cpp"
             out = tmp_dir / "probe.o"
             src.write_text("int main() { return 0; }\n", encoding="utf-8")
-            completed = subprocess.run(
+            completed = run_subprocess(
                 [str(gpp_path), "-std=c++20", "-c", str(src), "-o", str(out)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env=probe_env,
+                cwd=REPO_ROOT,
             )
             return completed.returncode == 0 and out.is_file()
     except OSError:
@@ -186,7 +215,7 @@ def prefer_msys2_toolchain(env: dict[str, str]) -> None:
         if str(current_resolved).lower().startswith(str(msys_mingw_bin).lower()):
             return
 
-    if not _compiler_can_compile_cpp(msys_gpp):
+    if not _compiler_can_compile_cpp(msys_gpp, env=env):
         print(f"Skipping MSYS2 MinGW toolchain preference; compiler probe failed for {msys_gpp}")
         return
 
@@ -816,6 +845,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional sanitizer build mode.",
     )
     parser.add_argument(
+        "--suppress-diagnostics",
+        action="store_true",
+        help="Suppress compiler warning and note diagnostics.",
+    )
+    parser.add_argument(
         "passthrough",
         nargs=argparse.REMAINDER,
         help="Extra args accepted for compatibility (ignored).",
@@ -857,7 +891,7 @@ def main() -> int:
         print(f"Sanitizer mode enabled: {sanitizer_mode}")
     if portable_mode:
         print("BUILD_LOCAL_PORTABLE enabled: disabling Glasgow -march=native for portable binaries")
-    suppress_diagnostics = env_truthy(env.get("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS", ""))
+    suppress_diagnostics = bool(args.suppress_diagnostics) or env_truthy(env.get("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS", ""))
     if suppress_diagnostics:
         print("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS enabled: suppressing warning/note diagnostics")
 

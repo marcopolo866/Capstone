@@ -9,6 +9,23 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
+function Resolve-PythonExecutable {
+    if ($env:CAPSTONE_PYTHON_EXE -and (Test-Path -LiteralPath $env:CAPSTONE_PYTHON_EXE -PathType Leaf)) {
+        return $env:CAPSTONE_PYTHON_EXE
+    }
+
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pythonCmd) {
+        $pythonCmd = Get-Command py -ErrorAction SilentlyContinue
+    }
+    if (-not $pythonCmd) {
+        throw "Missing required command: python (or py)"
+    }
+    return $pythonCmd.Source
+}
+
+$pythonExe = Resolve-PythonExecutable
+
 function Resolve-BinaryPath {
     param(
         [Parameter(Mandatory = $true)][string[]]$Candidates
@@ -40,6 +57,16 @@ function Test-IsPortableExecutable {
     } catch {
         return $false
     }
+}
+
+function Test-IsRequiredSolver {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Spec
+    )
+
+    $role = [string]$Spec.Role
+    $llmKey = [string]$Spec.LlmKey
+    return ($role.ToLowerInvariant() -eq "baseline" -or $llmKey.ToLowerInvariant() -eq "dial")
 }
 
 function Resolve-MingwRoot {
@@ -106,12 +133,6 @@ function Invoke-StagedVf3SmokeTest {
     if (-not (Test-Path -LiteralPath $vf3Path -PathType Leaf)) {
         throw "Staged VF3 baseline binary missing: $vf3Path"
     }
-
-    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $pythonCommand) {
-        throw "python is required for staged VF3 smoke test during packaging."
-    }
-    $pythonExe = $pythonCommand.Source
 
     $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vf3_pkg_smoke_" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tmpDir | Out-Null
@@ -235,7 +256,7 @@ function Publish-BuiltExecutable {
     return $fallbackPath
 }
 
-$discoveryRaw = & python "scripts/solver_discovery.py"
+$discoveryRaw = & $pythonExe "scripts/solver_discovery.py"
 if (-not $?) {
     throw "Failed to discover solver variants from scripts/solver_discovery.py"
 }
@@ -292,10 +313,18 @@ if (Test-Path -LiteralPath $stagingRoot) {
 }
 New-Item -ItemType Directory -Force -Path $stagingBin | Out-Null
 
+$skippedOptional = New-Object System.Collections.Generic.List[object]
 foreach ($spec in $binarySpec) {
     $resolved = Resolve-BinaryPath -Candidates $spec.Candidates
     if (-not $resolved) {
-        throw "Missing required binary. Tried: $($spec.Candidates -join ', ')"
+        if (Test-IsRequiredSolver -Spec $spec) {
+            throw "Missing required binary. Tried: $($spec.Candidates -join ', ')"
+        }
+        $skippedOptional.Add([pscustomobject]@{
+            VariantId = $spec.VariantId
+            Candidates = @($spec.Candidates)
+        }) | Out-Null
+        continue
     }
     if (($env:OS -eq "Windows_NT") -and -not (Test-IsPortableExecutable -Path $resolved)) {
         throw "Resolved binary is not a Windows PE executable: $resolved"
@@ -322,6 +351,14 @@ foreach ($spec in $binarySpec) {
 }
 $manifestPath = Join-Path $stagingBin "solver_variants.json"
 $solverManifest | ConvertTo-Json -Depth 16 | Out-File -FilePath $manifestPath -Encoding utf8
+
+if ($skippedOptional.Count -gt 0) {
+    Write-Host ""
+    Write-Host "Skipped optional solver binaries during packaging:"
+    foreach ($row in $skippedOptional) {
+        Write-Host ("  - {0}: {1}" -f $row.VariantId, ($row.Candidates -join ", "))
+    }
+}
 
 $mingwRoot = Resolve-MingwRoot
 Write-Host "Using MinGW runtime root: $mingwRoot"
@@ -384,7 +421,7 @@ $pyArgs += @("--add-data", "$visualizerJs;js/app")
 $exePath = Join-Path $repoRoot "dist/capstone-benchmark-runner.exe"
 $builtExePath = Join-Path $pyiDistDir "capstone-benchmark-runner.exe"
 
-python @pyArgs
+& $pythonExe @pyArgs
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE"
 }

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -40,16 +41,27 @@ def prefer_msys2_mingw(env: dict[str, str]) -> None:
     env["MINGW_ROOT"] = str(msys_mingw_bin.parent)
 
 
+def resolve_powershell_executable(env: dict[str, str]) -> str:
+    candidates = ["powershell", "pwsh"] if os.name == "nt" else ["pwsh", "powershell"]
+    for name in candidates:
+        found = shutil.which(name, path=env.get("PATH"))
+        if found:
+            return found
+    return candidates[0]
+
+
 def main() -> int:
     # Resolve the repo root once and delegate the real work to the platform
     # specific packaging entrypoints so local and CI packaging stay aligned.
     repo_root = Path(__file__).resolve().parent.parent
     env = dict(os.environ)
+    env["CAPSTONE_PYTHON_EXE"] = sys.executable
     prefer_msys2_mingw(env)
 
     if os.name == "nt":
+        powershell_exe = resolve_powershell_executable(env)
         cmd = [
-            "powershell",
+            powershell_exe,
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",

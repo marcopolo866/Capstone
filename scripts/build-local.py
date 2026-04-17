@@ -21,6 +21,19 @@ def run(cmd: list[str], env: dict[str, str], cwd: Path) -> int:
     return int(completed.returncode)
 
 
+def resolve_powershell_executable(env: dict[str, str]) -> str:
+    candidates: list[str] = []
+    if os.name == "nt":
+        candidates.extend(["powershell", "pwsh"])
+    else:
+        candidates.extend(["pwsh", "powershell"])
+    for name in candidates:
+        found = shutil.which(name, path=env.get("PATH"))
+        if found:
+            return found
+    return candidates[0]
+
+
 def resolve_bash_executable(env: dict[str, str]) -> str:
     if os.name != "nt":
         return "bash"
@@ -117,6 +130,11 @@ def main() -> int:
         help="Optional sanitizer build mode.",
     )
     parser.add_argument(
+        "--suppress-diagnostics",
+        action="store_true",
+        help="Suppress compiler warning and note diagnostics in the shared build core.",
+    )
+    parser.add_argument(
         "passthrough",
         nargs=argparse.REMAINDER,
         help="Additional arguments passed to the backend script.",
@@ -129,6 +147,7 @@ def main() -> int:
 
     env = dict(os.environ)
     python_dir = str(Path(sys.executable).resolve().parent)
+    env["CAPSTONE_PYTHON_EXE"] = sys.executable
     prepend_path(env, python_dir)
 
     generator = str(args.cmake_generator or env.get("CMAKE_GENERATOR", "")).strip()
@@ -141,14 +160,17 @@ def main() -> int:
         env["BUILD_LOCAL_VALIDATION"] = args.validation
     if args.sanitizer:
         env["BUILD_LOCAL_SANITIZER"] = args.sanitizer
+    if args.suppress_diagnostics:
+        env["BUILD_LOCAL_SUPPRESS_DIAGNOSTICS"] = "1"
 
     passthrough = list(args.passthrough or [])
     if passthrough and passthrough[0] == "--":
         passthrough = passthrough[1:]
 
     if backend == "ps1":
+        powershell_exe = resolve_powershell_executable(env)
         cmd = [
-            "powershell",
+            powershell_exe,
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",

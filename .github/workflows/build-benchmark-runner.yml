@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - '.github/workflows/build-benchmark-runner.yml'
+      - '.github/ci_data_collection/**'
       - 'desktop_runner/**'
       - 'scripts/build-local.ps1'
       - 'scripts/build-local.sh'
@@ -14,10 +15,31 @@ on:
       - 'scripts/build-local-core.py'
       - 'scripts/solver_discovery.py'
       - 'scripts/check-*.py'
+      - 'scripts/clean-local-build.py'
       - 'Makefile'
       - 'src/**'
       - 'baselines/**'
       - 'utilities/**'
+      - 'data_collection/**'
+      - 'tests/**'
+  pull_request:
+    paths:
+      - '.github/workflows/build-benchmark-runner.yml'
+      - '.github/ci_data_collection/**'
+      - 'desktop_runner/**'
+      - 'scripts/build-local.ps1'
+      - 'scripts/build-local.sh'
+      - 'scripts/build-local.py'
+      - 'scripts/build-local-core.py'
+      - 'scripts/solver_discovery.py'
+      - 'scripts/check-*.py'
+      - 'scripts/clean-local-build.py'
+      - 'Makefile'
+      - 'src/**'
+      - 'baselines/**'
+      - 'utilities/**'
+      - 'data_collection/**'
+      - 'tests/**'
 
 jobs:
   build-runner:
@@ -138,23 +160,22 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
 
-      - name: Build native benchmark binaries (Windows/MSYS2)
+      - name: Build and verify make data-collection smoke pipeline (Windows)
         if: matrix.os_tag == 'windows'
         shell: msys2 {0}
         run: |
           set -o pipefail
           export BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1
-          mingw_root_win="$(cygpath -w "$(dirname "$(dirname "$(which g++)")")")"
-          echo "Resolved MinGW root: ${mingw_root_win}"
-          echo "MINGW_ROOT=${mingw_root_win}" >> "$GITHUB_ENV"
-          python scripts/build-local.py --backend sh --cmake-generator "MinGW Makefiles" --validation full 2>&1 | tee logs/build-local-msys2.log
+          python_win="${pythonLocation}\\python.exe"
+          python_unix="$(cygpath -u "$python_win")"
+          make data-collection BACKEND=ps1 PYTHON="$python_unix" MANIFEST_DIR=.github/ci_data_collection 2>&1 | tee logs/data-collection-smoke.log
 
-      - name: Build native benchmark binaries (Linux/macOS)
+      - name: Build and verify make data-collection smoke pipeline (Linux/macOS)
         if: matrix.os_tag != 'windows'
         run: |
           set -euo pipefail
           export BUILD_LOCAL_SKIP_SUBMODULE_UPDATE=1
-          python scripts/build-local.py --backend sh --validation full 2>&1 | tee "logs/build-local-${{ matrix.os_tag }}.log"
+          make data-collection BACKEND=sh MANIFEST_DIR=.github/ci_data_collection 2>&1 | tee "logs/data-collection-smoke-${{ matrix.os_tag }}.log"
 
       - name: Show compiler cache stats (macOS)
         if: always() && matrix.os_tag == 'macos'
@@ -192,7 +213,24 @@ jobs:
           name: benchmark-runner-build-logs-${{ matrix.os_tag }}
           path: |
             logs/**
+            .github/ci_data_collection/runs/**
+            desktop_runner/.staging/**
             baselines/glasgow-subgraph-solver/build/CMakeFiles/CMakeOutput.log
             baselines/glasgow-subgraph-solver/build/CMakeFiles/CMakeError.log
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Clean workspace artifacts (Windows)
+        if: always() && matrix.os_tag == 'windows'
+        shell: msys2 {0}
+        run: |
+          set -o pipefail
+          python_win="${pythonLocation}\\python.exe"
+          python_unix="$(cygpath -u "$python_win")"
+          make clean PYTHON="$python_unix"
+
+      - name: Clean workspace artifacts (Linux/macOS)
+        if: always() && matrix.os_tag != 'windows'
+        run: |
+          set -euo pipefail
+          make clean
