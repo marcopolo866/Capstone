@@ -15,16 +15,41 @@ import sys
 from pathlib import Path
 
 
+def iter_msys2_roots(env: dict[str, str]) -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    raw_candidates = [
+        str(env.get("MSYS2_LOCATION") or "").strip(),
+        r"C:\msys64",
+    ]
+    for raw in raw_candidates:
+        if not raw:
+            continue
+        key = raw.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(Path(raw))
+    return roots
+
+
 def prefer_msys2_mingw(env: dict[str, str]) -> None:
     # Packaging on Windows is sensitive to mixed MinGW installations. Force the
     # known-good MSYS2 toolchain to the front of PATH before launching helpers.
     if os.name != "nt":
         return
 
-    msys_mingw_bin = Path(r"C:\msys64\mingw64\bin")
-    msys_usr_bin = Path(r"C:\msys64\usr\bin")
-    if not (msys_mingw_bin / "g++.exe").is_file():
+    selected_root: Path | None = None
+    for root in iter_msys2_roots(env):
+        mingw_bin = root / "mingw64" / "bin"
+        if (mingw_bin / "g++.exe").is_file():
+            selected_root = root
+            break
+    if selected_root is None:
         return
+
+    msys_mingw_bin = selected_root / "mingw64" / "bin"
+    msys_usr_bin = selected_root / "usr" / "bin"
 
     current = env.get("PATH", "")
     parts = [p for p in current.split(os.pathsep) if p]

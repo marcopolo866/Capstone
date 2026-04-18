@@ -91,7 +91,11 @@ function Test-MingwRuntimeRoot {
 }
 
 function Resolve-MingwRoot {
-    $msysRoot = "C:\\msys64\\mingw64"
+    $msysLocation = [string]$env:MSYS2_LOCATION
+    if (-not $msysLocation) {
+        $msysLocation = "C:\\msys64"
+    }
+    $msysRoot = Join-Path $msysLocation "mingw64"
     $msysBin = Join-Path $msysRoot "bin"
     $pathParts = @($env:PATH -split ';' | Where-Object { $_ })
 

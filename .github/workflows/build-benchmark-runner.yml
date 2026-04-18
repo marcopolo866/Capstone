@@ -66,6 +66,7 @@ jobs:
 
       - name: Setup MSYS2 toolchain (Windows)
         if: matrix.os_tag == 'windows'
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -82,9 +83,19 @@ jobs:
       - name: Add MinGW to PATH (Windows)
         if: matrix.os_tag == 'windows'
         shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
-          "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "C:\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          if (-not $env:MSYS2_LOCATION) {
+            throw "Missing MSYS2_LOCATION from setup-msys2 output"
+          }
+          $mingwRoot = Join-Path $env:MSYS2_LOCATION "mingw64"
+          $mingwBin = Join-Path $env:MSYS2_LOCATION "mingw64\bin"
+          $usrBin = Join-Path $env:MSYS2_LOCATION "usr\bin"
+          "MSYS2_LOCATION=$env:MSYS2_LOCATION" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MINGW_ROOT=$mingwRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $mingwBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $usrBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Setup Python
         uses: actions/setup-python@v5

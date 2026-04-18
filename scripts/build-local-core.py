@@ -21,6 +21,24 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def iter_msys2_roots(env: dict[str, str]) -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    raw_candidates = [
+        str(env.get("MSYS2_LOCATION") or "").strip(),
+        r"C:\msys64",
+    ]
+    for raw in raw_candidates:
+        if not raw:
+            continue
+        key = raw.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(Path(raw))
+    return roots
+
+
 def env_truthy(value: str) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -195,11 +213,18 @@ def _compiler_can_compile_cpp(gpp_path: Path, env: dict[str, str] | None = None)
 def prefer_msys2_toolchain(env: dict[str, str]) -> None:
     if os.name != "nt":
         return
-    msys_mingw_bin = Path(r"C:\msys64\mingw64\bin")
-    msys_usr_bin = Path(r"C:\msys64\usr\bin")
-    msys_gpp = msys_mingw_bin / "g++.exe"
-    if not msys_gpp.is_file():
+    msys_root: Path | None = None
+    msys_mingw_bin: Path | None = None
+    for root in iter_msys2_roots(env):
+        mingw_bin = root / "mingw64" / "bin"
+        if (mingw_bin / "g++.exe").is_file():
+            msys_root = root
+            msys_mingw_bin = mingw_bin
+            break
+    if msys_root is None or msys_mingw_bin is None:
         return
+    msys_usr_bin = msys_root / "usr" / "bin"
+    msys_gpp = msys_mingw_bin / "g++.exe"
 
     force_current = env_truthy(env.get("BUILD_LOCAL_KEEP_CURRENT_GPP", ""))
     if force_current:
