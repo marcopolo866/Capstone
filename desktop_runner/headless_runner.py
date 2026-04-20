@@ -12,9 +12,11 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import datetime as dt
 import json
+import os
 import random
 import re
 import shutil
@@ -150,6 +152,50 @@ def merge_preset_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def detect_logical_cores() -> int:
+    try:
+        detected = int(app_mod.psutil.cpu_count(logical=True) or os.cpu_count() or 1)
+    except Exception:
+        detected = int(os.cpu_count() or 1)
+    return max(1, detected)
+
+
+def default_parallel_workers(detected_logical_cores: int) -> int:
+    return max(1, int(detected_logical_cores) // 2)
+
+
+def resolve_parallel_settings(payload: dict[str, Any]) -> dict[str, int | bool]:
+    detected = detect_logical_cores()
+    explicit_requested = payload.get("parallel_requested")
+    explicit_workers = payload.get("requested_workers", payload.get("max_workers"))
+    auto_requested = bool(payload.get("parallel_auto", False))
+
+    if explicit_workers not in {None, ""}:
+        requested_workers = max(1, int(explicit_workers))
+        if explicit_requested is None:
+            parallel_requested = requested_workers > 1
+        else:
+            parallel_requested = bool(explicit_requested)
+    elif auto_requested:
+        requested_workers = default_parallel_workers(detected)
+        parallel_requested = requested_workers > 1
+    elif explicit_requested is not None:
+        parallel_requested = bool(explicit_requested)
+        requested_workers = default_parallel_workers(detected) if parallel_requested else 1
+    else:
+        requested_workers = default_parallel_workers(detected)
+        parallel_requested = requested_workers > 1
+
+    max_workers = max(1, min(requested_workers, detected)) if parallel_requested else 1
+    return {
+        "parallel_auto": bool(auto_requested),
+        "parallel_requested": bool(parallel_requested),
+        "requested_workers": int(requested_workers),
+        "max_workers": int(max_workers),
+        "detected_logical_cores": int(detected),
+    }
+
+
 def build_manifest_from_args(args: argparse.Namespace) -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -176,6 +222,12 @@ def build_manifest_from_args(args: argparse.Namespace) -> dict[str, Any]:
         manifest["retry_failed_trials"] = int(args.retry_failed_trials)
     if args.no_delete_generated_inputs:
         manifest["delete_generated_inputs"] = False
+    if args.parallel_auto:
+        manifest["parallel_auto"] = True
+    if args.max_workers is not None:
+        manifest["max_workers"] = int(args.max_workers)
+        manifest["requested_workers"] = int(args.max_workers)
+        manifest["parallel_requested"] = int(args.max_workers) > 1
     if manifest["input_mode"] == "independent":
         manifest["values"] = {}
         if args.n_values:
@@ -185,6 +237,25 @@ def build_manifest_from_args(args: argparse.Namespace) -> dict[str, Any]:
         if args.k_values:
             manifest["values"]["k"] = parse_value_list(args.k_values)
     return manifest
+
+
+def build_manifest_overrides_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    if args.parallel_auto:
+        overrides["parallel_auto"] = True
+    if args.max_workers is not None:
+        overrides["max_workers"] = int(args.max_workers)
+        overrides["requested_workers"] = int(args.max_workers)
+        overrides["parallel_requested"] = int(args.max_workers) > 1
+    return overrides
+
+
+def apply_manifest_overrides(payload: dict[str, Any], overrides: dict[str, Any] | None) -> dict[str, Any]:
+    if not overrides:
+        return dict(payload)
+    merged = dict(payload)
+    merged.update(overrides)
+    return merged
 
 
 def enforce_baselines(tab_id: str, selected_variants: list[str]) -> tuple[list[str], list[str]]:
@@ -224,6 +295,43 @@ def validate_binaries(selected_variants: list[str]) -> None:
     missing = [f"{variant_id} -> {binary_paths.get(variant_id)}" for variant_id in selected_variants if not binary_paths.get(variant_id) or not binary_paths[variant_id].exists()]
     if missing:
         raise FileNotFoundError("Missing solver binaries:\n" + "\n".join(missing))
+
+
+def resolve_selected_variants(selected_variants: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
+    by_id = solver_variants_by_id()
+    binary_paths = app_mod.build_binary_path_map()
+    runnable: list[str] = []
+    skipped_optional: list[dict[str, Any]] = []
+    missing_required: list[str] = []
+
+    for variant_id in selected_variants:
+        binary_path = binary_paths.get(variant_id)
+        if binary_path is not None and binary_path.exists():
+            runnable.append(variant_id)
+            continue
+
+        variant = by_id.get(variant_id)
+        role = str(getattr(variant, "role", "") or "").strip().lower()
+        llm_key = str(getattr(variant, "llm_key", "") or "").strip().lower()
+        label = str(getattr(variant, "label", "") or variant_id)
+        detail = {
+            "variant_id": variant_id,
+            "label": label,
+            "binary_path": str(binary_path) if binary_path is not None else "",
+            "role": role,
+            "llm_key": llm_key,
+        }
+        is_optional = role != "baseline" and llm_key != "dial"
+        if is_optional:
+            skipped_optional.append(detail)
+            continue
+        missing_required.append(f"{variant_id} -> {binary_path}")
+
+    if missing_required:
+        raise FileNotFoundError("Missing solver binaries:\n" + "\n".join(missing_required))
+    if not runnable:
+        raise FileNotFoundError("No runnable solver binaries remain after filtering missing optional variants.")
+    return runnable, skipped_optional
 
 def build_independent_config(tab_id: str, payload: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, list[float]], dict[str, float], str, str | None]:
     values = dict(payload.get("values") or {})
@@ -346,7 +454,11 @@ def build_runtime_config(payload: dict[str, Any], logger) -> dict[str, Any]:
     if tab_id not in {"subgraph", "shortest_path"}:
         raise ValueError("Manifest requires tab_id=subgraph or tab_id=shortest_path")
     selected_variants, injected_baselines = enforce_baselines(tab_id, [str(item).strip().lower() for item in list(merged.get("selected_variants") or []) if str(item).strip()])
-    validate_binaries(selected_variants)
+    selected_variants, skipped_missing_variants = resolve_selected_variants(selected_variants)
+    if skipped_missing_variants:
+        logger("Skipping missing optional solver binaries for this run:")
+        for row in skipped_missing_variants:
+            logger(f"  - {row['variant_id']} -> {row['binary_path']}")
     seed_value = merged.get("base_seed")
     if seed_value is None:
         seed_value = random.SystemRandom().randint(1, 2_147_483_647)
@@ -360,6 +472,7 @@ def build_runtime_config(payload: dict[str, Any], logger) -> dict[str, Any]:
         "selected_variants": selected_variants,
         "selected_variant_labels": {variant_id: solver_variants_by_id()[variant_id].label for variant_id in selected_variants},
         "injected_baselines": injected_baselines,
+        "skipped_missing_variants": skipped_missing_variants,
         "selected_datasets": list(merged.get("selected_datasets") or []),
         "iterations": int(max(1, int(merged.get("iterations") or 1))),
         "base_seed": int(seed_value),
@@ -372,6 +485,7 @@ def build_runtime_config(payload: dict[str, Any], logger) -> dict[str, Any]:
         "delete_generated_inputs": bool(merged.get("delete_generated_inputs", True)),
         "dataset_selection": [],
     }
+    config.update(resolve_parallel_settings(merged))
     if config["input_mode"] == "datasets":
         datapoints, var_ranges, fixed_values, primary_var, secondary_var, dataset_selection = build_dataset_config(tab_id, merged, logger)
         config["dataset_selection"] = dataset_selection
@@ -718,7 +832,15 @@ def execute_manifest(manifest: dict[str, Any], manifest_path: Path | None, outpu
     point_states: dict[int, dict[str, Any]] = {}
     completed_trials = 0
     planned_trials = len(config["datapoints"]) * len(config["selected_variants"]) * int(config["iterations"])
-    with datapoints_path.open("w", encoding="utf-8", newline="\n") as datapoint_stream, trials_path.open("w", encoding="utf-8", newline="\n") as trial_stream:
+    logger(
+        "Headless parallel workers: "
+        f"{int(config['max_workers'])}/{int(config['detected_logical_cores'])} "
+        f"(requested={int(config['requested_workers'])}, enabled={'yes' if config['parallel_requested'] else 'no'})"
+    )
+    with datapoints_path.open("w", encoding="utf-8", newline="\n") as datapoint_stream, trials_path.open("w", encoding="utf-8", newline="\n") as trial_stream, concurrent.futures.ThreadPoolExecutor(
+        max_workers=int(max(1, config.get("max_workers", 1))),
+        thread_name_prefix="headless-solver",
+    ) as executor:
         for point_idx, point in enumerate(config["datapoints"]):
             point_label = build_point_label(config, point)
             state = {
@@ -749,14 +871,31 @@ def execute_manifest(manifest: dict[str, Any], manifest_path: Path | None, outpu
                     point_dir.mkdir(parents=True, exist_ok=True)
                     inputs = build_generated_inputs(config, point, point_dir, iter_seed)
                 all_ok = True
-                for variant_id in config["selected_variants"]:
+                stop_failure: TrialFailure | None = None
+
+                def _run_variant_attempts(variant_id: str) -> dict[str, Any]:
                     trial = None
                     for attempt_idx in range(int(config.get("retry_failed_trials") or 0) + 1):
-                        trial = runner.run_trial(tab_id=config["tab_id"], variant_id=variant_id, inputs=inputs, solver_timeout_seconds=config.get("solver_timeout_seconds"), output_dir=outputs_root / f"point_{point_idx + 1:05d}" / f"iter_{iter_idx + 1:03d}" / f"attempt_{attempt_idx + 1:02d}")
+                        trial = runner.run_trial(
+                            tab_id=config["tab_id"],
+                            variant_id=variant_id,
+                            inputs=inputs,
+                            solver_timeout_seconds=config.get("solver_timeout_seconds"),
+                            output_dir=outputs_root / f"point_{point_idx + 1:05d}" / f"iter_{iter_idx + 1:03d}" / f"attempt_{attempt_idx + 1:02d}",
+                        )
                         if trial.get("status") == "ok":
                             break
                     if trial is None:
                         raise TrialFailure(f"No trial result produced for {variant_id}")
+                    return trial
+
+                future_map = {
+                    executor.submit(_run_variant_attempts, variant_id): variant_id
+                    for variant_id in config["selected_variants"]
+                }
+                for future in concurrent.futures.as_completed(future_map):
+                    trial = future.result()
+                    variant_id = str(trial.get("variant_id") or future_map[future])
                     trial_stream.write(json.dumps({
                         "schema_version": TRIAL_SCHEMA_VERSION,
                         "status": trial.get("status"),
@@ -801,8 +940,10 @@ def execute_manifest(manifest: dict[str, Any], manifest_path: Path | None, outpu
                             f"| stdout={trial.get('stdout_path')} "
                             f"| stderr={trial.get('stderr_path')}"
                         )
-                        if config.get("failure_policy") == "stop":
-                            raise TrialFailure(f"{variant_id} returned status={trial.get('status')} for {point_label} iteration {iter_idx + 1}")
+                        if config.get("failure_policy") == "stop" and stop_failure is None:
+                            stop_failure = TrialFailure(f"{variant_id} returned status={trial.get('status')} for {point_label} iteration {iter_idx + 1}")
+                if stop_failure is not None:
+                    raise stop_failure
                 if all_ok:
                     state["completed_iterations"] += 1
                 if point_dir is not None and config.get("delete_generated_inputs", True):
@@ -824,9 +965,12 @@ def execute_manifest(manifest: dict[str, Any], manifest_path: Path | None, outpu
             "preset": config.get("preset"), "tab_id": config["tab_id"], "input_mode": config["input_mode"], "graph_family": str(config.get("graph_family") or "random_density"),
             "selected_variants_requested": list(config.get("selected_variants_requested") or []), "selected_variants": list(config["selected_variants"]),
             "selected_variant_labels": dict(config["selected_variant_labels"]), "injected_baselines": list(config.get("injected_baselines") or []),
+            "skipped_missing_variants": list(config.get("skipped_missing_variants") or []),
             "selected_datasets": list(config.get("selected_datasets") or []), "iterations_per_datapoint": int(config["iterations"]), "seed": int(config["base_seed"]),
             "solver_timeout_seconds": config.get("solver_timeout_seconds"), "failure_policy": config.get("failure_policy"), "retry_failed_trials": config.get("retry_failed_trials"),
             "timeout_as_missing": config.get("timeout_as_missing"), "outlier_filter": config.get("outlier_filter", "none"), "outlier_filter_min_samples": int(app_mod.DEFAULT_OUTLIER_MIN_SAMPLES),
+            "parallel_requested": bool(config.get("parallel_requested", False)), "requested_workers": int(config.get("requested_workers", 1)),
+            "max_workers": int(config.get("max_workers", 1)), "detected_logical_cores": int(config.get("detected_logical_cores", 1)),
             "k_mode": config.get("k_mode", "absolute"), "primary_variable": config["primary_var"], "secondary_variable": config["secondary_var"],
             "var_ranges": config["var_ranges"], "fixed_values": config["fixed_values"], "delete_generated_inputs": config.get("delete_generated_inputs", True),
         },
@@ -847,6 +991,7 @@ def execute_manifest_collection(
     logger,
     *,
     continue_on_error: bool = False,
+    manifest_overrides: dict[str, Any] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     manifest_root = manifest_dir.resolve()
     manifest_paths = list_collection_manifest_paths(manifest_root)
@@ -864,7 +1009,7 @@ def execute_manifest_collection(
         manifest_output_dir.mkdir(parents=True, exist_ok=True)
         copied_manifest_path = manifest_output_dir / "input-manifest.json"
         shutil.copy2(manifest_path, copied_manifest_path)
-        manifest = merge_preset_defaults(load_manifest(manifest_path))
+        manifest = merge_preset_defaults(apply_manifest_overrides(load_manifest(manifest_path), manifest_overrides))
         record = {
             "manifest_name": manifest_path.name,
             "manifest_path": str(manifest_path),
@@ -931,6 +1076,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--failure-policy", default="", choices=["", "stop", "continue"], help="Stop or continue on failed trials.")
     parser.add_argument("--outlier-filter", default="", choices=["", "none", "mad", "iqr"], help="Outlier filter.")
     parser.add_argument("--retry-failed-trials", type=int, default=None, help="Retry count for failed trials.")
+    parser.add_argument("--parallel-auto", action="store_true", help="Use the headless default parallelism policy for this run (half of logical CPU threads, minimum 1).")
+    parser.add_argument("--max-workers", type=int, default=None, help="Override headless worker count. Use 1 to force serial execution.")
     parser.add_argument("--out-dir", default="", help="Optional benchmark output directory.")
     parser.add_argument("--no-delete-generated-inputs", action="store_true", help="Keep generated input files after the run.")
     parser.add_argument("--no-prepare-datasets", action="store_true", help="Assume selected datasets are already prepared.")
@@ -941,6 +1088,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.max_workers is not None and int(args.max_workers) < 1:
+        parser.error("--max-workers must be >= 1")
+    manifest_overrides = build_manifest_overrides_from_args(args)
     if args.list_variants:
         for variant in app_mod.SOLVER_VARIANTS:
             print(f"{variant.variant_id}\t{variant.tab_id}\t{variant.family}\t{variant.role}\t{variant.label}")
@@ -968,6 +1118,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir,
             print,
             continue_on_error=bool(args.continue_on_error),
+            manifest_overrides=manifest_overrides,
         )
         failures = [row for row in list(summary.get("runs") or []) if str(row.get("status") or "") != "ok"]
         if failures:
@@ -976,7 +1127,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Data Collection run complete: {out_dir}")
         return 0
     manifest_path = Path(args.manifest).resolve() if args.manifest else None
-    manifest = load_manifest(manifest_path) if manifest_path is not None else build_manifest_from_args(args)
+    manifest = apply_manifest_overrides(load_manifest(manifest_path), manifest_overrides) if manifest_path is not None else build_manifest_from_args(args)
     manifest = merge_preset_defaults(manifest)
     if args.write_manifest:
         write_json(Path(args.write_manifest).resolve(), manifest)

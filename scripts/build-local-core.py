@@ -509,7 +509,7 @@ def compile_discovered_variants_for_family(catalog: dict, family: str, env: dict
         print(f"==> Building {label}")
         suppress_diagnostics = env_truthy(env.get("BUILD_LOCAL_SUPPRESS_DIAGNOSTICS", ""))
         compile_flags = ["g++", "-std=c++20", *common_compile_flag_tokens(suppress_diagnostics, sanitizer_mode)]
-        completed = subprocess.run(
+        completed = run_subprocess(
             [*compile_flags, source, "-o", binary],
             cwd=str(REPO_ROOT),
             env=env,

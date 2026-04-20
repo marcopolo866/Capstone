@@ -24,7 +24,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertEqual(injected, ["vf3_baseline"])
 
     def test_build_runtime_config_generates_subgraph_points(self):
-        with mock.patch.object(headless_runner, "validate_binaries", lambda _selected: None):
+        with mock.patch.object(headless_runner, "resolve_selected_variants", side_effect=lambda selected: (selected, [])):
             config = headless_runner.build_runtime_config(
                 {
                     "preset": "smoke",
@@ -87,7 +87,7 @@ class HeadlessRunnerTests(unittest.TestCase):
             self.assertEqual([row["status"] for row in summary["runs"]], ["ok", "ok"])
 
     def test_build_runtime_config_has_no_solver_timeout_by_default(self):
-        with mock.patch.object(headless_runner, "validate_binaries", lambda _selected: None):
+        with mock.patch.object(headless_runner, "resolve_selected_variants", side_effect=lambda selected: (selected, [])):
             config = headless_runner.build_runtime_config(
                 {
                     "preset": "full",
@@ -100,6 +100,74 @@ class HeadlessRunnerTests(unittest.TestCase):
                 lambda _msg: None,
             )
         self.assertIsNone(config["solver_timeout_seconds"])
+
+    def test_build_runtime_config_defaults_parallel_workers_to_half_logical_cores(self):
+        with mock.patch.object(headless_runner, "detect_logical_cores", return_value=8):
+            with mock.patch.object(headless_runner, "resolve_selected_variants", side_effect=lambda selected: (selected, [])):
+                config = headless_runner.build_runtime_config(
+                    {
+                        "preset": "full",
+                        "tab_id": "shortest_path",
+                        "input_mode": "independent",
+                        "graph_family": "erdos_renyi",
+                        "selected_variants": ["dijkstra_chatgpt"],
+                        "values": {"n": [128], "density": [0.01]},
+                    },
+                    lambda _msg: None,
+                )
+
+        self.assertTrue(config["parallel_requested"])
+        self.assertEqual(config["requested_workers"], 4)
+        self.assertEqual(config["max_workers"], 4)
+        self.assertEqual(config["detected_logical_cores"], 8)
+
+    def test_build_manifest_from_args_accepts_parallel_flags(self):
+        parser = headless_runner.build_parser()
+        args = parser.parse_args(
+            [
+                "--tab-id",
+                "shortest_path",
+                "--variants",
+                "dijkstra_chatgpt",
+                "--parallel-auto",
+                "--max-workers",
+                "3",
+            ]
+        )
+
+        manifest = headless_runner.build_manifest_from_args(args)
+
+        self.assertTrue(manifest["parallel_auto"])
+        self.assertEqual(manifest["max_workers"], 3)
+        self.assertEqual(manifest["requested_workers"], 3)
+        self.assertTrue(manifest["parallel_requested"])
+
+    def test_build_runtime_config_skips_missing_optional_variants(self):
+        captured = []
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            baseline = root / "dijkstra_baseline.exe"
+            baseline.write_text("ok", encoding="utf-8")
+            binary_map = {
+                "dijkstra_baseline": baseline,
+                "dijkstra_chatgpt": root / "dijkstra_chatgpt.exe",
+            }
+            with mock.patch.object(app, "build_binary_path_map", return_value=binary_map):
+                config = headless_runner.build_runtime_config(
+                    {
+                        "preset": "smoke",
+                        "tab_id": "shortest_path",
+                        "input_mode": "independent",
+                        "graph_family": "erdos_renyi",
+                        "selected_variants": ["dijkstra_chatgpt"],
+                        "values": {"n": [128], "density": [0.01]},
+                    },
+                    lambda msg: captured.append(msg),
+                )
+
+        self.assertEqual(config["selected_variants"], ["dijkstra_baseline"])
+        self.assertEqual([row["variant_id"] for row in config["skipped_missing_variants"]], ["dijkstra_chatgpt"])
+        self.assertTrue(any("Skipping missing optional solver binaries" in line for line in captured))
 
     def test_run_trial_extracts_shortest_path_length_from_output(self):
         runner = headless_runner.Runner(output_dir=None, logger=lambda _msg: None)
@@ -135,6 +203,108 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertIn("\rUpdate: still running", console_output)
         self.assertIn("\r", console_output)
         self.assertEqual(captured, ["Datapoint complete"])
+
+    def test_execute_manifest_uses_configured_parallel_worker_count(self):
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td) / "out"
+            captured = {"max_workers": None, "submit_count": 0}
+
+            class FakeExecutor:
+                def __init__(self, *, max_workers: int, thread_name_prefix: str):
+                    captured["max_workers"] = max_workers
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def submit(self, fn, *args, **kwargs):
+                    captured["submit_count"] += 1
+                    future = headless_runner.concurrent.futures.Future()
+                    try:
+                        future.set_result(fn(*args, **kwargs))
+                    except Exception as exc:
+                        future.set_exception(exc)
+                    return future
+
+            config = {
+                "preset": "smoke",
+                "tab_id": "shortest_path",
+                "input_mode": "independent",
+                "graph_family": "erdos_renyi",
+                "selected_variants_requested": ["dijkstra_baseline", "dijkstra_chatgpt"],
+                "selected_variants": ["dijkstra_baseline", "dijkstra_chatgpt"],
+                "selected_variant_labels": {
+                    "dijkstra_baseline": "Dijkstra Baseline",
+                    "dijkstra_chatgpt": "Dijkstra Chatgpt",
+                },
+                "injected_baselines": [],
+                "skipped_missing_variants": [],
+                "selected_datasets": [],
+                "iterations": 1,
+                "base_seed": 11,
+                "solver_timeout_seconds": None,
+                "failure_policy": "continue",
+                "retry_failed_trials": 0,
+                "timeout_as_missing": True,
+                "outlier_filter": "none",
+                "k_mode": "absolute",
+                "delete_generated_inputs": True,
+                "dataset_selection": [],
+                "parallel_requested": True,
+                "requested_workers": 2,
+                "max_workers": 2,
+                "detected_logical_cores": 4,
+                "datapoints": [{"n": 8.0, "density": 0.2}],
+                "var_ranges": {"n": [8.0], "density": [0.2]},
+                "fixed_values": {"n": 8.0, "density": 0.2},
+                "primary_var": "n",
+                "secondary_var": None,
+            }
+
+            trial_counter = {"value": 0}
+
+            def fake_run_trial(**kwargs):
+                trial_counter["value"] += 1
+                variant_id = kwargs["variant_id"]
+                output_dir = kwargs["output_dir"]
+                output_dir.mkdir(parents=True, exist_ok=True)
+                stdout_path = output_dir / f"{variant_id}.stdout.txt"
+                stderr_path = output_dir / f"{variant_id}.stderr.txt"
+                stdout_path.write_text("ok\n", encoding="utf-8")
+                stderr_path.write_text("", encoding="utf-8")
+                return {
+                    "schema_version": headless_runner.TRIAL_SCHEMA_VERSION,
+                    "status": "ok",
+                    "variant_id": variant_id,
+                    "family": "dijkstra",
+                    "command": [variant_id],
+                    "cwd": str(output_dir),
+                    "runtime_ms": 10.0 + trial_counter["value"],
+                    "peak_kb": 128.0,
+                    "return_code": 0,
+                    "stdout_path": stdout_path,
+                    "stderr_path": stderr_path,
+                    "normalized_result": {
+                        "answer_kind": "distance",
+                        "answer_value": "7",
+                        "solution_count": None,
+                        "distance": "7",
+                        "path_length": 2,
+                    },
+                    "answer_signature": ("distance", "7"),
+                }
+
+            with mock.patch.object(headless_runner, "build_runtime_config", return_value=config):
+                with mock.patch.object(headless_runner, "build_generated_inputs", return_value={"dijkstra_file": Path(td) / "generated.csv"}):
+                    with mock.patch.object(headless_runner.Runner, "run_trial", side_effect=fake_run_trial):
+                        with mock.patch.object(headless_runner.concurrent.futures, "ThreadPoolExecutor", FakeExecutor):
+                            final_out_dir = headless_runner.execute_manifest({}, None, out_dir, lambda _msg: None)
+
+        self.assertEqual(final_out_dir, out_dir)
+        self.assertEqual(captured["max_workers"], 2)
+        self.assertEqual(captured["submit_count"], 2)
 
     def test_save_session_plot_exports_writes_runtime_and_memory_pngs(self):
         payload = {

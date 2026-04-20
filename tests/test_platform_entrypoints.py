@@ -131,6 +131,59 @@ class PlatformEntrypointTests(unittest.TestCase):
         self.assertEqual(captured["cmd"], ["g++", "--version"])
         self.assertNotIn("env", captured["kwargs"])
 
+    def test_build_local_core_variant_compile_uses_windows_safe_subprocess_wrapper(self):
+        module = load_module("build_local_core_variant_compile_module", "scripts/build-local-core.py")
+        captured = {}
+
+        class DummyCompleted:
+            returncode = 0
+            stdout = ""
+
+        def fake_run_subprocess(cmd, *, env=None, cwd=None, **kwargs):
+            captured["cmd"] = list(cmd)
+            captured["env"] = dict(env or {})
+            captured["cwd"] = cwd
+            captured["kwargs"] = dict(kwargs)
+            return DummyCompleted()
+
+        catalog = {
+            "variants": [
+                {
+                    "family": "dijkstra",
+                    "variant_id": "dijkstra_chatgpt",
+                    "label": "Dijkstra Chatgpt",
+                    "source_path": "src/[ShortestPath][CHATGPT][csv].cpp",
+                    "binary_path": "binaries/dijkstra_chatgpt",
+                    "llm_label": "chatgpt",
+                }
+            ]
+        }
+
+        with mock.patch.object(module, "run_subprocess", side_effect=fake_run_subprocess):
+            skipped = module.compile_discovered_variants_for_family(
+                catalog,
+                "dijkstra",
+                {"PATH": r"C:\msys64\mingw64\bin", "BUILD_LOCAL_SUPPRESS_DIAGNOSTICS": "1"},
+                "none",
+            )
+
+        self.assertEqual(skipped, [])
+        self.assertEqual(
+            captured["cmd"],
+            [
+                "g++",
+                "-std=c++20",
+                "-O3",
+                "-w",
+                "src/[ShortestPath][CHATGPT][csv].cpp",
+                "-o",
+                "binaries/dijkstra_chatgpt",
+            ],
+        )
+        self.assertIn("stdout", captured["kwargs"])
+        self.assertIn("stderr", captured["kwargs"])
+        self.assertEqual(captured["cwd"], str(REPO_ROOT))
+
 
 if __name__ == "__main__":
     unittest.main()
