@@ -1,8 +1,9 @@
-﻿# Project Datasets
+# Project Datasets
 
 ## Bundled Example Inputs (`data/`)
 
-The repository currently ships deterministic sample inputs used by the UI and local runs.
+The repository currently ships deterministic sample inputs used by the UI and
+local runs.
 
 | Problem Area | File(s) | Format | Notes |
 |---|---|---|---|
@@ -19,7 +20,8 @@ When input mode is `generate`, graphs are produced by:
 Determinism contract:
 
 - Fixed `(algorithm, n, k, density, seed)` must generate identical graph files.
-- Subgraph flow records equivalence diagnostics in `outputs/equivalence_report.jsonl`.
+- Subgraph flow records equivalence diagnostics in
+  `outputs/equivalence_report.jsonl`.
 
 ## Desktop Runner Dataset Catalog
 
@@ -28,13 +30,16 @@ The desktop runner dataset catalog lives at `desktop_runner/datasets_catalog.jso
 Current external datasets:
 
 - `subgraph_sip_full`
-  - TGZ archive with a representative LAD pattern/target pair extracted on demand.
+  - TGZ archive with a representative LAD pattern/target pair extracted on
+    demand.
 - `subgraph_mivia_arg`
   - Outer ZIP archive with nested benchmark ZIPs and `.gtr` files.
-  - The runner now converts one representative `si2_*` non-induced subgraph pair on demand after download.
+  - The runner converts one representative `si2_*` non-induced subgraph pair on
+    demand after download.
 - `subgraph_practical_bigraphs`
   - `instances.tar.xz` archive in BigraphER string format.
-  - The runner now converts one representative pair from `instances/savannah_instances.txt` on demand after download.
+  - The runner converts one representative pair from
+    `instances/savannah_instances.txt` on demand after download.
 - `shortest_dimacs_usa_road_d`
   - DIMACS `.gr.gz` converted to runner CSV on demand.
 - `shortest_snap_*`
@@ -43,5 +48,7 @@ Current external datasets:
 Operational rules:
 
 - Dataset downloads and conversions happen before measured solver trials.
-- Conversion time and conversion memory are not included in solver runtime or peak-memory statistics.
-- Subgraph dataset conversion normalizes graphs into non-induced, undirected runner inputs only.
+- Conversion time and conversion memory are not included in solver runtime or
+  peak-memory statistics.
+- Subgraph dataset conversion normalizes graphs into simple, undirected,
+  vertex-labelled, non-induced runner inputs only.

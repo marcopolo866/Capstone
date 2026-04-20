@@ -1,0 +1,220 @@
+================================================================================
+SUBGRAPH MATCHING SOLVER - PROMPT GLASGOW DENSE
+SHARED CONTRACT: UNDIRECTED, VERTEX-LABELLED, NON-INDUCED, COUNT-ALL
+================================================================================
+
+OVERVIEW
+--------
+You are tasked with implementing a high-performance subgraph matching solver in
+C++. This prompt is for the Glasgow-family `.lad` branch of the Capstone
+subgraph benchmark.
+
+Your implementation must solve exactly the same mathematical problem that the
+current benchmark pipeline evaluates:
+
+  Count ALL injective embeddings of a simple undirected vertex-labelled pattern
+  graph H into a simple undirected vertex-labelled target graph G under
+  non-induced semantics.
+
+Do NOT implement or reference any named algorithm (for example VF2, VF3,
+Glasgow, Ullmann, RI, LAD, etc.). Derive your own approach from first
+principles. Your solution will be evaluated on runtime speed and memory usage.
+
+
+PROBLEM DEFINITION
+------------------
+Given a pattern graph H and a target graph G, both simple, undirected, and
+vertex-labelled, count all injective mappings f: V(H) -> V(G) such that:
+
+  (1) EDGE PRESERVATION (undirected):
+      For every undirected edge {u, v} in H, the undirected edge
+      {f(u), f(v)} must exist in G.
+
+  (2) NON-INDUCED SEMANTICS:
+      Extra edges between mapped target vertices are allowed.
+      In other words, if {f(u), f(v)} exists in G while {u, v} does not
+      exist in H, that does NOT invalidate the mapping.
+
+  (3) INJECTIVITY:
+      f must be injective. No two distinct pattern vertices may map to the
+      same target vertex.
+
+  (4) VERTEX LABEL MATCHING:
+      Every vertex carries an integer label, and labels must match exactly:
+        label(u) == label(f(u))
+      There are no edge labels.
+
+  (5) ENUMERATION:
+      Count ALL valid mappings. Do not stop at the first match.
+      Do not apply symmetry breaking. Automorphic variants count separately.
+
+  (6) GRAPH CLASS:
+      Graphs are simple and undirected:
+      - no self-loops
+      - no parallel edges
+      - adjacency is symmetric
+      Pattern graphs may be disconnected and may contain isolated vertices.
+
+
+INPUT FORMAT
+------------
+Your program must accept two file paths as command line arguments:
+
+  ./solver <pattern_file> <target_file>
+
+Use exactly this interface:
+
+  - `argv[1]` is the pattern graph path
+  - `argv[2]` is the target graph path
+  - expect exactly two non-option positional arguments
+  - do not require stdin, prompts, config files, environment variables, or
+    extra command line flags in the benchmark path
+
+The benchmark uses the current Glasgow-family vertex-labelled LAD text format
+(stored as `.lad`) shown below:
+
+  Line 1:         number of vertices n
+  Next n lines:   <vertex_label> <degree> <neighbor_0> <neighbor_1> ...
+
+Notes:
+  - Vertex ids are implicit: the first adjacency row is vertex 0, the second is
+    vertex 1, and so on.
+  - Graphs are undirected, so each undirected edge appears in both endpoint
+    rows in benchmark-generated inputs.
+  - The active generated Glasgow inputs use the `vertexlabelledlad` flavor:
+    each row begins with the vertex label, then the degree, then neighbour ids.
+  - There are no edge labels.
+
+Example (3-vertex path 0-1-2, all labels = 1):
+
+  3
+  1 1 1
+  1 2 0 2
+  1 1 1
+
+
+OUTPUT FORMAT
+-------------
+Print exactly one parseable integer solution count to stdout:
+
+  <count>
+
+where `<count>` is the total number of valid injective non-induced embeddings.
+
+Do not rely on any external files or sidecar outputs. Print only the count in
+the normal success path. Do not print explanations, labels, timing lines,
+debugging logs, Markdown, or any extra prose to stdout.
+
+
+PERFORMANCE REQUIREMENTS
+------------------------
+Your implementation will be benchmarked mainly on dense, irregular graph
+instances:
+
+  - Pattern graph H: dense, high average degree, weak local uniqueness
+  - Target graph G: dense, irregular, large candidate domains
+  - Many vertices share similar local signatures, so naive branching explodes
+
+In this regime, local structure alone does not prune enough. The critical task
+is to cut candidate domains aggressively and maintain strong consistency across
+the remaining unmatched pattern vertices.
+
+Optimize aggressively for:
+
+  (a) RUNTIME SPEED
+      - Compute strong initial candidate domains before search
+      - Propagate the consequences of each committed match immediately
+      - Backtrack as soon as any unmatched pattern vertex has no candidates
+      - Match the pattern vertex with the smallest current feasible domain
+      - Exploit pairwise and higher-order consistency where it pays off
+
+  (b) MEMORY EFFICIENCY
+      - Use candidate-domain representations that support fast intersection,
+        subtraction, and membership tests
+      - Restore search state cheaply during backtracking
+      - Keep domain/state storage compact
+      - Avoid repeated heap allocation in the inner loop
+
+Standard C++20 and the STL are permitted. No external libraries.
+
+
+CORRECTNESS VERIFICATION
+------------------------
+Before submitting, verify your implementation on the following undirected,
+vertex-labelled, non-induced test cases in vertex-labelled LAD form.
+
+  Test 1 - Basic positive case (triangle in triangle-with-tail):
+    Pattern H:
+      3
+      1 2 1 2
+      1 2 0 2
+      1 2 0 1
+    Target G:
+      4
+      1 2 1 2
+      1 2 0 2
+      1 3 0 1 3
+      1 1 2
+    Expected output: 6
+
+  Test 2 - Exact vertex-label matching:
+    Pattern H:
+      2
+      1 1 1
+      2 1 0
+    Target G:
+      3
+      1 1 1
+      2 2 0 2
+      2 1 1
+    Expected output: 1
+
+  Test 3 - Non-induced semantics (extra target edge is allowed):
+    Pattern H (path of length 2):
+      3
+      1 1 1
+      1 2 0 2
+      1 1 1
+    Target G (triangle):
+      3
+      1 2 1 2
+      1 2 0 2
+      1 2 0 1
+    Expected output: 6
+    Note:
+      This is positive only under NON-INDUCED matching.
+
+  Test 4 - Disconnected pattern with isolated vertex:
+    Pattern H:
+      3
+      1 1 1
+      1 1 0
+      1 0
+    Target G (path 0-1-2-3):
+      4
+      1 1 1
+      1 2 0 2
+      1 2 1 3
+      1 1 2
+    Expected output: 12
+
+Your implementation must pass all four tests before benchmarking.
+
+
+DELIVERABLE
+-----------
+Provide a single self-contained C++ source file: `solver.cpp`
+
+When responding as an LLM, output only the raw contents of `solver.cpp`.
+Do not wrap the code in Markdown fences. Do not add any explanation before or
+after the code.
+
+It must compile cleanly with:
+
+  g++ -O2 -std=c++20 -o solver solver.cpp
+
+And run as:
+
+  ./solver pattern.lad target.lad
+
+================================================================================

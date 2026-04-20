@@ -1,0 +1,223 @@
+================================================================================
+SINGLE-PAIR SHORTEST PATH SOLVER - PROMPT DIJKSTRA DENSE
+SHARED CONTRACT: DIRECTED, WEIGHTED, NONNEGATIVE, EXACT SHORTEST PATH
+================================================================================
+
+OVERVIEW
+--------
+You are tasked with implementing a high-performance shortest-path solver in
+C++. This prompt is for the Dijkstra-family `.csv` branch of the Capstone
+benchmark.
+
+Your implementation must solve exactly the same mathematical problem that the
+current benchmark pipeline evaluates:
+
+  Given a weighted directed graph G and designated start and target vertices,
+  compute the exact shortest-path distance from start to target and output one
+  valid shortest path when reachable.
+
+Do NOT depend on external graph libraries or helper frameworks. Write a compact
+and exact standalone implementation using only standard C++20. Your solution
+will be evaluated on runtime speed and memory usage.
+
+
+PROBLEM DEFINITION
+------------------
+Given a directed graph G = (V, E) with nonnegative integer edge weights,
+compute the minimum possible total weight of a directed path from start vertex
+s to target vertex t.
+
+Your solver must obey the following contract:
+
+  (1) DIRECTED EDGE SEMANTICS:
+      Every input row describes a directed arc:
+        source -> target
+      Do NOT assume the reverse arc exists unless it is explicitly present in
+      the input.
+
+  (2) WEIGHT DOMAIN:
+      Edge weights are nonnegative integers.
+      Negative-weight handling is NOT required because it is outside the
+      benchmark contract.
+
+  (3) EXACT OPTIMALITY:
+      Return the exact minimum path weight from s to t.
+      Approximation is not allowed.
+
+  (4) UNREACHABLE CASE:
+      If no directed path from s to t exists, report the instance as
+      unreachable.
+
+  (5) PATH OUTPUT:
+      When a path exists, output one valid shortest path from s to t.
+      The path does not need to be unique; any shortest path is acceptable.
+
+  (6) LABEL HANDLING:
+      Vertex identifiers in the CSV are opaque labels and must be matched
+      exactly and case-sensitively.
+
+  (7) DUPLICATE ARCS:
+      If the input repeats the same directed arc multiple times, correctness
+      should behave as though the minimum weight among those duplicate rows is
+      the effective edge cost.
+
+
+INPUT FORMAT
+------------
+Your program must accept one file path as a command line argument:
+
+  ./solver <input_file>
+
+Use exactly this interface:
+
+  - `argv[1]` is the CSV input path
+  - expect exactly one non-option positional argument
+  - do not require stdin, prompts, config files, environment variables, or
+    extra command line flags in the benchmark path
+
+The benchmark uses the current shortest-path CSV format shown below:
+
+  Line 1:         comment header with start/target labels
+                  # start=<start_label> target=<target_label>
+  Line 2:         CSV header
+                  source,target,weight
+  Remaining rows: directed weighted edges
+                  <source_label>,<target_label>,<weight>
+
+Notes:
+  - The benchmark runner always supplies the start and target labels in the
+    first comment line.
+  - Generated inputs and converted datasets use this same CSV shape.
+  - Labels should be treated as strings.
+  - Weights are integers and are nonnegative in the benchmark contract.
+  - A reverse edge is present only if another row explicitly provides it.
+
+Example:
+
+  # start=A target=D
+  source,target,weight
+  A,B,2
+  A,C,10
+  B,C,1
+  B,D,5
+  C,D,1
+
+
+OUTPUT FORMAT
+-------------
+Print exactly one parseable shortest-path result on the first stdout line.
+
+If the target is reachable, print:
+
+  <distance>; <node_0> <node_1> ... <node_m>
+
+where:
+
+  - `<distance>` is the exact shortest-path weight as a nonnegative integer
+  - `<node_0>` is the start label
+  - `<node_m>` is the target label
+  - the listed nodes form a valid directed path whose total weight equals
+    `<distance>`
+
+If the target is unreachable, print:
+
+  INF
+
+Do not rely on any external files or sidecar outputs. Do not print runtime
+lines, debugging logs, Markdown, or any extra prose to stdout or stderr in the
+normal success path.
+
+
+PERFORMANCE REQUIREMENTS
+------------------------
+This prompt is tuned for denser and more irregular shortest-path workloads.
+Expect many outgoing arcs per vertex, frequent relaxations, and comparatively
+large frontier churn. You still must remain correct on every benchmark input,
+including sparse graphs and converted datasets.
+
+Prioritize:
+
+  - compact adjacency layouts that scan quickly when out-degree is high
+  - queue/update behavior that remains efficient under heavy relaxation volume
+  - low-overhead parsing and label canonicalization
+  - early target termination once optimality is guaranteed
+  - minimizing redundant stale-work processing
+
+The benchmark still includes a mix of:
+
+  - generated directed graphs with varying `n` and density
+  - random-density and Erdos-Renyi style inputs
+  - Barabasi-Albert-derived and grid-derived directed inputs
+  - converted real datasets such as road networks and large social graphs
+
+Standard C++20 and the STL are permitted. No external libraries.
+
+
+CORRECTNESS VERIFICATION
+------------------------
+Before submitting, verify your implementation on the following directed,
+weighted test cases.
+
+  Test 1 - Basic positive case:
+    Input:
+      # start=A target=D
+      source,target,weight
+      A,B,2
+      A,C,10
+      B,C,1
+      B,D,5
+      C,D,1
+    Expected output:
+      4; A B C D
+
+  Test 2 - Directed semantics (reverse edge is not implied):
+    Input:
+      # start=B target=A
+      source,target,weight
+      A,B,1
+      B,C,2
+      C,A,3
+    Expected output:
+      5; B C A
+
+  Test 3 - Unreachable target:
+    Input:
+      # start=A target=E
+      source,target,weight
+      A,B,2
+      B,C,2
+      D,E,1
+    Expected output:
+      INF
+
+  Test 4 - Duplicate directed edges:
+    Input:
+      # start=A target=C
+      source,target,weight
+      A,B,7
+      A,B,3
+      B,C,4
+      A,C,20
+    Expected output:
+      7; A B C
+
+Your implementation must pass all four tests before benchmarking.
+
+
+DELIVERABLE
+-----------
+Provide a single self-contained C++ source file: `solver.cpp`
+
+When responding as an LLM, output only the raw contents of `solver.cpp`.
+Do not wrap the code in Markdown fences. Do not add any explanation before or
+after the code.
+
+It must compile cleanly with:
+
+  g++ -O2 -std=c++20 -o solver solver.cpp
+
+And run as:
+
+  ./solver input.csv
+
+================================================================================

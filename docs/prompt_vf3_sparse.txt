@@ -1,0 +1,292 @@
+================================================================================
+SUBGRAPH MATCHING SOLVER - PROMPT VF3 SPARSE
+SHARED CONTRACT: UNDIRECTED, VERTEX-LABELLED, NON-INDUCED, COUNT-ALL
+================================================================================
+
+OVERVIEW
+--------
+You are tasked with implementing a high-performance subgraph matching solver in
+C++. This prompt is for the VF3-family `.vf` / `.grf` branch of the Capstone
+subgraph benchmark.
+
+Your implementation must solve exactly the same mathematical problem that the
+current benchmark pipeline evaluates:
+
+  Count ALL injective embeddings of a simple undirected vertex-labelled pattern
+  graph H into a simple undirected vertex-labelled target graph G under
+  non-induced semantics.
+
+Do NOT implement or reference any named algorithm (for example VF2, VF3,
+Glasgow, Ullmann, RI, LAD, etc.). Derive your own approach from first
+principles. Your solution will be evaluated on runtime speed and memory usage.
+
+
+PROBLEM DEFINITION
+------------------
+Given a pattern graph H and a target graph G, both simple, undirected, and
+vertex-labelled, count all injective mappings f: V(H) -> V(G) such that:
+
+  (1) EDGE PRESERVATION (undirected):
+      For every undirected edge {u, v} in H, the undirected edge
+      {f(u), f(v)} must exist in G.
+
+  (2) NON-INDUCED SEMANTICS:
+      Extra edges between mapped target vertices are allowed.
+      In other words, if {f(u), f(v)} exists in G while {u, v} does not
+      exist in H, that does NOT invalidate the mapping.
+
+  (3) INJECTIVITY:
+      f must be injective. No two distinct pattern vertices may map to the
+      same target vertex.
+
+  (4) VERTEX LABEL MATCHING:
+      Every vertex carries an integer label, and labels must match exactly:
+        label(u) == label(f(u))
+      There are no edge labels.
+
+  (5) ENUMERATION:
+      Count ALL valid mappings. Do not stop at the first match.
+      Do not apply symmetry breaking. Automorphic variants count separately.
+
+  (6) GRAPH CLASS:
+      Graphs are simple and undirected:
+      - no self-loops
+      - no parallel edges
+      - adjacency is symmetric
+      Pattern graphs may be disconnected and may contain isolated vertices.
+
+
+INPUT FORMAT
+------------
+Your program must accept two file paths as command line arguments:
+
+  ./solver <pattern_file> <target_file>
+
+Use exactly this interface:
+
+  - `argv[1]` is the pattern graph path
+  - `argv[2]` is the target graph path
+  - expect exactly two non-option positional arguments
+  - do not require stdin, prompts, config files, environment variables, or
+    extra command line flags in the benchmark path
+
+The benchmark uses the current VF3-style text format (commonly stored as `.vf`
+or `.grf`) shown below:
+
+  Line 1:         number of vertices n
+  Next n lines:   <vertex_id> <vertex_label>
+                  (vertex ids are 0 to n-1 in order)
+  Then for each vertex in order:
+    Line:         number of neighbours k
+    Next k lines: <source_id> <destination_id>
+
+Notes:
+  - Graphs are undirected, so each undirected edge appears in both endpoint
+    adjacency sections in benchmark-generated inputs.
+  - The `source_id` column is redundant and matches the current section's
+    vertex id in benchmark-generated inputs.
+  - There are no edge labels.
+
+Example (3-vertex path 0-1-2, all labels = 1):
+
+  3
+  0 1
+  1 1
+  2 1
+  1
+  0 1
+  2
+  1 0
+  1 2
+  1
+  2 1
+
+
+OUTPUT FORMAT
+-------------
+Print exactly one parseable integer solution count to stdout:
+
+  <count>
+
+where `<count>` is the total number of valid injective non-induced embeddings.
+
+Do not rely on any external files or sidecar outputs. Print only the count in
+the normal success path. Do not print explanations, labels, timing lines,
+debugging logs, Markdown, or any extra prose to stdout.
+
+
+PERFORMANCE REQUIREMENTS
+------------------------
+Your implementation will be benchmarked mainly on sparse, structured graph
+instances:
+
+  - Pattern graph H: sparse, low average degree, informative local structure
+  - Target graph G: sparse, with discriminative neighbourhood shapes
+  - Vertex labels and local topology together provide strong pruning signal
+
+In this regime, neighbour relationships are highly informative. Knowing that a
+pattern vertex maps to a target vertex should strongly restrict the feasible
+placements of adjacent pattern vertices.
+
+Optimize aggressively for:
+
+  (a) RUNTIME SPEED
+      - Exploit local structure and label constraints as early as possible
+      - Use a strong pattern-vertex ordering based on structural
+        discriminativeness
+      - Prune candidate mappings immediately when neighbourhood consistency
+        fails
+      - Avoid redundant work on states that are effectively equivalent
+
+  (b) MEMORY EFFICIENCY
+      - Minimise heap allocations in the search loop
+      - Keep search state compact
+      - Do not materialize every mapping if only the count is required
+      - Prefer reused buffers or compact stack state over repeated allocation
+
+Standard C++20 and the STL are permitted. No external libraries.
+
+
+CORRECTNESS VERIFICATION
+------------------------
+Before submitting, verify your implementation on the following undirected,
+vertex-labelled, non-induced test cases.
+
+  Test 1 - Basic positive case (triangle in triangle-with-tail):
+    Pattern H:
+      3
+      0 1
+      1 1
+      2 1
+      2
+      0 1
+      0 2
+      2
+      1 0
+      1 2
+      2
+      2 0
+      2 1
+    Target G:
+      4
+      0 1
+      1 1
+      2 1
+      3 1
+      2
+      0 1
+      0 2
+      2
+      1 0
+      1 2
+      3
+      2 0
+      2 1
+      2 3
+      1
+      3 2
+    Expected output: 6
+
+  Test 2 - Exact vertex-label matching:
+    Pattern H:
+      2
+      0 1
+      1 2
+      1
+      0 1
+      1
+      1 0
+    Target G:
+      3
+      0 1
+      1 2
+      2 2
+      1
+      0 1
+      2
+      1 0
+      1 2
+      1
+      2 1
+    Expected output: 1
+
+  Test 3 - Non-induced semantics (extra target edge is allowed):
+    Pattern H (path of length 2):
+      3
+      0 1
+      1 1
+      2 1
+      1
+      0 1
+      2
+      1 0
+      1 2
+      1
+      2 1
+    Target G (triangle):
+      3
+      0 1
+      1 1
+      2 1
+      2
+      0 1
+      0 2
+      2
+      1 0
+      1 2
+      2
+      2 0
+      2 1
+    Expected output: 6
+    Note:
+      This is positive only under NON-INDUCED matching.
+
+  Test 4 - Disconnected pattern with isolated vertex:
+    Pattern H:
+      3
+      0 1
+      1 1
+      2 1
+      1
+      0 1
+      1
+      1 0
+      0
+    Target G (path 0-1-2-3):
+      4
+      0 1
+      1 1
+      2 1
+      3 1
+      1
+      0 1
+      2
+      1 0
+      1 2
+      2
+      2 1
+      2 3
+      1
+      3 2
+    Expected output: 12
+
+Your implementation must pass all four tests before benchmarking.
+
+
+DELIVERABLE
+-----------
+Provide a single self-contained C++ source file: `solver.cpp`
+
+When responding as an LLM, output only the raw contents of `solver.cpp`.
+Do not wrap the code in Markdown fences. Do not add any explanation before or
+after the code.
+
+It must compile cleanly with:
+
+  g++ -O2 -std=c++20 -o solver solver.cpp
+
+And run as:
+
+  ./solver pattern.vf target.vf
+
+================================================================================
