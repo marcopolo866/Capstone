@@ -355,6 +355,7 @@ if (Test-Path -LiteralPath $stagingRoot) {
 New-Item -ItemType Directory -Force -Path $stagingBin | Out-Null
 
 $skippedOptional = New-Object System.Collections.Generic.List[object]
+$stagedSolverRows = @()
 foreach ($spec in $binarySpec) {
     $resolved = Resolve-BinaryPath -Candidates $spec.Candidates
     if (-not $resolved) {
@@ -372,14 +373,7 @@ foreach ($spec in $binarySpec) {
     }
     Write-Host ("Using binary {0}: {1}" -f $spec.Out, $resolved)
     Copy-Item -LiteralPath $resolved -Destination (Join-Path $stagingBin $spec.Out) -Force
-}
-
-$solverManifest = @{
-    schema_version = 1
-    solvers = @()
-}
-foreach ($spec in $binarySpec) {
-    $solverManifest.solvers += @{
+    $stagedSolverRows += [pscustomobject]@{
         variant_id = $spec.VariantId
         family = $spec.Family
         algorithm = $spec.Algorithm
@@ -389,6 +383,11 @@ foreach ($spec in $binarySpec) {
         llm_label = $spec.LlmLabel
         binary_name = $spec.VariantId
     }
+}
+
+$solverManifest = @{
+    schema_version = 1
+    solvers = $stagedSolverRows
 }
 $manifestPath = Join-Path $stagingBin "solver_variants.json"
 $solverManifest | ConvertTo-Json -Depth 16 | Out-File -FilePath $manifestPath -Encoding utf8
@@ -431,6 +430,7 @@ $pyArgs = @(
     "--hidden-import", "matplotlib.backends.backend_tkagg",
     "--hidden-import", "matplotlib.backends.backend_agg",
     "--hidden-import", "matplotlib.backends.backend_svg",
+    "--hidden-import", "matplotlib.backends.backend_pdf",
     "--hidden-import", "tkwebview2.tkwebview2",
     "--hidden-import", "clr",
     "--hidden-import", "webview.window",

@@ -224,6 +224,8 @@ def package_runner(staged_files: list[Path]) -> list[Path]:
         "matplotlib.backends.backend_agg",
         "--hidden-import",
         "matplotlib.backends.backend_svg",
+        "--hidden-import",
+        "matplotlib.backends.backend_pdf",
         "--collect-submodules",
         "webview",
         "desktop_runner/app.py",

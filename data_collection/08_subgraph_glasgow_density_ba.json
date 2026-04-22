@@ -5,9 +5,9 @@
   "input_mode": "independent",
   "graph_family": "barabasi_albert",
   "selected_variants": [
-    "glasgow_chatgpt",
-    "glasgow_claude",
-    "glasgow_gemini"
+    "glasgow_chatgpt_control",
+    "glasgow_claude_control",
+    "glasgow_gemini_control"
   ],
   "selected_datasets": [],
   "k_mode": "percent",

@@ -57,6 +57,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 try:
@@ -1072,6 +1073,205 @@ def build_metric_summary_figure(payload: dict, metric: str) -> Figure:
     return fig
 
 
+STATS_EXPORT_COLUMNS = (
+    "variant",
+    "baseline",
+    "n",
+    "p_value",
+    "direction",
+    "mean_delta_ms",
+    "ci95_ms",
+    "hedges_g",
+    "cliffs_delta",
+    "mode",
+)
+
+
+def stats_column_heading_map() -> dict[str, str]:
+    return {
+        "variant": "Variant",
+        "baseline": "Baseline",
+        "n": "n",
+        "p_value": "p-value",
+        "direction": "Direction",
+        "mean_delta_ms": "Mean Delta (ms)",
+        "ci95_ms": "95% CI Delta (ms)",
+        "hedges_g": "Hedges g",
+        "cliffs_delta": "Cliff's Delta",
+        "mode": "Mode",
+    }
+
+
+def format_stats_number(value, decimals: int = 4) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        numeric = float(value)
+    except Exception:
+        return "n/a"
+    if not math.isfinite(numeric):
+        return "n/a"
+    return f"{numeric:.{int(max(0, decimals))}f}"
+
+
+def _wrap_stats_cell(value: object, width: int) -> str:
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return ""
+    return "\n".join(textwrap.wrap(text, width=max(8, int(width)), break_long_words=False)) or text
+
+
+def _stats_export_row_color(row: dict) -> str:
+    n = int(row.get("n") or 0)
+    if n < 2:
+        return "#FFF3CD"
+    if not bool(row.get("significant_at_alpha")):
+        return "#FFFFFF"
+    direction = str(row.get("direction") or "").strip().lower()
+    if direction == "faster":
+        return "#DFF3E4"
+    if direction == "slower":
+        return "#F8D7DA"
+    return "#E8EEF7"
+
+
+def _build_stats_export_rows(payload: dict) -> tuple[list[list[str]], list[str], dict]:
+    stats_block = payload.get("statistical_tests") if isinstance(payload, dict) else None
+    if not isinstance(stats_block, dict):
+        return [], [], {"alpha": 0.05, "significant_count": 0}
+
+    raw_rows = [row for row in list(stats_block.get("pairs") or []) if isinstance(row, dict)]
+    raw_rows.sort(key=lambda row: (str(row.get("variant_label") or row.get("variant_id") or ""), str(row.get("mode") or "")))
+
+    table_rows: list[list[str]] = []
+    row_colors: list[str] = []
+    significant_count = 0
+    for row in raw_rows:
+        variant_label = str(row.get("variant_label") or row.get("variant_id") or "variant")
+        baseline_label = str(row.get("baseline_label") or row.get("baseline_variant_id") or "baseline")
+        n = int(row.get("n") or 0)
+        paired = row.get("paired_t_test") if isinstance(row.get("paired_t_test"), dict) else {}
+        effects = row.get("effect_sizes") if isinstance(row.get("effect_sizes"), dict) else {}
+        ci = row.get("delta_ci_95_ms") if isinstance(row.get("delta_ci_95_ms"), dict) else {}
+        p_value = paired.get("p_value_two_sided")
+        ci_text = f"[{format_stats_number(ci.get('low'), 3)}, {format_stats_number(ci.get('high'), 3)}]"
+        if bool(row.get("significant_at_alpha")):
+            significant_count += 1
+
+        table_rows.append(
+            [
+                _wrap_stats_cell(variant_label, 24),
+                _wrap_stats_cell(baseline_label, 24),
+                str(n),
+                format_stats_number(p_value, 6),
+                str(row.get("direction") or "n/a"),
+                format_stats_number(row.get("mean_delta_ms"), 3),
+                ci_text,
+                format_stats_number(effects.get("hedges_g"), 4),
+                format_stats_number(effects.get("cliffs_delta"), 4),
+                str(row.get("mode") or "single"),
+            ]
+        )
+        row_colors.append(_stats_export_row_color(row))
+
+    return table_rows, row_colors, {
+        "alpha": float(stats_block.get("alpha") or 0.05),
+        "significant_count": int(significant_count),
+    }
+
+
+def build_stats_summary_figure(payload: dict) -> Figure:
+    rows, row_colors, meta = _build_stats_export_rows(payload)
+    alpha = float(meta.get("alpha") or 0.05)
+    heading_map = stats_column_heading_map()
+    headings = [heading_map.get(col, col) for col in STATS_EXPORT_COLUMNS]
+    row_count = max(1, len(rows))
+    fig_height = max(4.2, min(32.0, 2.15 + (0.42 * row_count)))
+    fig = Figure(figsize=(17.0, fig_height), dpi=120)
+    FigureCanvasAgg(fig)
+    ax = fig.add_subplot(111)
+    ax.set_axis_off()
+
+    title = "Runtime Statistical Tests vs Family Baseline"
+    summary = (
+        f"Comparisons: {len(rows)} | significant (p < {alpha:.3f}): "
+        f"{int(meta.get('significant_count') or 0)}"
+    )
+    blurb = "Runtime deltas are variant - baseline. Negative mean delta means faster; positive means slower."
+    fig.text(0.025, 0.975, title, ha="left", va="top", fontsize=15, weight="bold", color="#1F2933")
+    fig.text(0.025, 0.935, summary, ha="left", va="top", fontsize=10.5, color="#374151")
+    fig.text(0.025, 0.905, blurb, ha="left", va="top", fontsize=9.5, color="#4B5563")
+
+    legend_items = [
+        ("#DFF3E4", "Significant faster"),
+        ("#F8D7DA", "Significant slower"),
+        ("#FFFFFF", "Not significant"),
+        ("#FFF3CD", "Insufficient matched samples"),
+        ("#E8EEF7", "Significant other/equal"),
+    ]
+    legend_x = 0.025
+    legend_y = 0.865
+    for color, label in legend_items:
+        fig.patches.append(
+            Rectangle((legend_x, legend_y - 0.012), 0.014, 0.014, transform=fig.transFigure, facecolor=color, edgecolor="#9CA3AF", linewidth=0.5)
+        )
+        fig.text(legend_x + 0.018, legend_y - 0.001, label, ha="left", va="center", fontsize=8.8, color="#374151")
+        legend_x += 0.155
+
+    display_rows = rows if rows else [["No pairwise comparisons were recorded for this run.", "", "", "", "", "", "", "", "", ""]]
+    display_colors = row_colors if row_colors else ["#FFFFFF"]
+    col_widths = [0.18, 0.18, 0.045, 0.075, 0.075, 0.095, 0.14, 0.08, 0.085, 0.055]
+    table = ax.table(
+        cellText=display_rows,
+        colLabels=headings,
+        cellLoc="left",
+        colLoc="left",
+        colWidths=col_widths,
+        loc="upper left",
+        bbox=[0.02, 0.02, 0.96, 0.78],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(7.6 if len(display_rows) > 28 else 8.2)
+    table.scale(1.0, 1.22)
+
+    for (row_idx, col_idx), cell in table.get_celld().items():
+        cell.set_edgecolor("#D1D5DB")
+        cell.set_linewidth(0.45)
+        if row_idx == 0:
+            cell.set_facecolor("#E5E7EB")
+            cell.set_text_props(weight="bold", color="#111827", va="center")
+            continue
+        color_idx = max(0, min(row_idx - 1, len(display_colors) - 1))
+        cell.set_facecolor(display_colors[color_idx])
+        cell.set_text_props(color="#111827", va="center")
+        if STATS_EXPORT_COLUMNS[col_idx] in {"n", "p_value", "mean_delta_ms", "ci95_ms", "hedges_g", "cliffs_delta"}:
+            cell.get_text().set_ha("right")
+        elif STATS_EXPORT_COLUMNS[col_idx] in {"direction", "mode"}:
+            cell.get_text().set_ha("center")
+
+    return fig
+
+
+def save_session_stats_exports(payload: dict, out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig = build_stats_summary_figure(payload)
+    try:
+        for suffix, kwargs in (
+            ("png", {"dpi": 160}),
+            ("svg", {}),
+            ("pdf", {}),
+        ):
+            try:
+                fig.savefig(out_dir / f"stats-summary.{suffix}", **kwargs)
+            except Exception as exc:
+                print(f"Warning: failed to export stats-summary.{suffix}: {exc}", file=sys.stderr)
+    finally:
+        try:
+            fig.clear()
+        except Exception:
+            pass
+
+
 def _filtered_payload_for_variants(payload: dict, variant_ids: list[str], scope_label: str) -> dict:
     selected = [str(item).strip().lower() for item in variant_ids if str(item).strip()]
     selected_set = set(selected)
@@ -2085,6 +2285,19 @@ def _load_solver_rows() -> list[dict]:
                 merged[normalized[0]["variant_id"]] = normalized[0]
 
     rows = list(merged.values())
+    filtered_rows: list[dict] = []
+    root = resource_root()
+    for row in rows:
+        role = str(row.get("role") or "variant").strip().lower() or "variant"
+        variant_id = str(row.get("variant_id") or "").strip()
+        binary_name = str(row.get("binary_name") or variant_id).strip() or variant_id
+        if role == "baseline":
+            filtered_rows.append(row)
+            continue
+        resolved = _resolve_binary_for_variant(root, variant_id, binary_name)
+        if resolved.is_file():
+            filtered_rows.append(row)
+    rows = filtered_rows
     rows.sort(key=lambda row: (str(row.get("family") or ""), str(row.get("role") or "") != "baseline", str(row.get("label") or "").lower()))
     return rows
 
@@ -8330,29 +8543,10 @@ class BenchmarkRunnerApp(tk.Tk):
         return fig
 
     def _format_stats_number(self, value, decimals: int = 4) -> str:
-        if value is None:
-            return "n/a"
-        try:
-            numeric = float(value)
-        except Exception:
-            return "n/a"
-        if not math.isfinite(numeric):
-            return "n/a"
-        return f"{numeric:.{int(max(0, decimals))}f}"
+        return format_stats_number(value, decimals)
 
     def _stats_column_heading_map(self) -> dict[str, str]:
-        return {
-            "variant": "Variant",
-            "baseline": "Baseline",
-            "n": "n",
-            "p_value": "p-value",
-            "direction": "Direction",
-            "mean_delta_ms": "Mean Delta (ms)",
-            "ci95_ms": "95% CI Delta (ms)",
-            "hedges_g": "Hedges g",
-            "cliffs_delta": "Cliff's Delta",
-            "mode": "Mode",
-        }
+        return stats_column_heading_map()
 
     def _stats_sort_column_from_label(self, label: str) -> str | None:
         lookup = self._stats_column_heading_map()
@@ -11894,6 +12088,7 @@ class BenchmarkRunnerApp(tk.Tk):
                 ])
 
         save_session_plot_exports(payload, out_dir)
+        save_session_stats_exports(payload, out_dir)
 
         optional_exports = []
         if payload.get("run_config", {}).get("secondary_variable") is not None:

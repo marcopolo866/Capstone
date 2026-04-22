@@ -7,8 +7,7 @@
   "selected_variants": [
     "vf3_chatgpt_control",
     "vf3_chatgpt_sparse",
-    "vf3_chatgpt_dense",
-    "vf3_chatgpt"
+    "vf3_chatgpt_dense"
   ],
   "selected_datasets": [],
   "k_mode": "percent",

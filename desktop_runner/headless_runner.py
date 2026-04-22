@@ -982,6 +982,7 @@ def execute_manifest(manifest: dict[str, Any], manifest_path: Path | None, outpu
     write_session_json(out_dir / "benchmark-session.json", payload)
     write_session_csv(out_dir / "benchmark-session.csv", datapoint_rows)
     app_mod.save_session_plot_exports(payload, out_dir)
+    app_mod.save_session_stats_exports(payload, out_dir)
     return out_dir
 
 

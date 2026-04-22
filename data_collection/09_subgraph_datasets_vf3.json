@@ -5,10 +5,9 @@
   "input_mode": "datasets",
   "graph_family": "random_density",
   "selected_variants": [
-    "vf3_chatgpt",
-    "vf3_claude",
-    "vf3_gemini",
-    "vf3_copilot"
+    "vf3_chatgpt_control",
+    "vf3_claude_control",
+    "vf3_gemini_control"
   ],
   "selected_datasets": [
     "subgraph_sip_full",
