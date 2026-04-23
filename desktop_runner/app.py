@@ -1544,6 +1544,32 @@ def parse_lad_graph(path: Path) -> list[list[int]]:
     return [sorted(row) for row in adj]
 
 
+def parse_vertex_labelled_lad_graph(path: Path) -> list[list[int]]:
+    lines = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not lines:
+        raise RuntimeError(f"Empty LAD graph file: {path}")
+    n_tokens = parse_int_tokens(lines[0])
+    if not n_tokens:
+        raise RuntimeError(f"Invalid LAD header in {path}")
+    n = max(0, int(n_tokens[0]))
+    adj: list[set[int]] = [set() for _ in range(n)]
+    for u in range(n):
+        if u + 1 >= len(lines):
+            break
+        values = parse_int_tokens(lines[u + 1])
+        if len(values) < 2:
+            continue
+        degree = max(0, int(values[1]))
+        for v in values[2 : 2 + degree]:
+            if 0 <= v < n and v != u:
+                adj[u].add(v)
+    return [sorted(row) for row in adj]
+
+
 def edge_key(u: int, v: int) -> tuple[int, int] | None:
     if not isinstance(u, int) or not isinstance(v, int):
         return None
@@ -3071,8 +3097,23 @@ def _select_bigraph_pair(archive_path: Path, prepare: dict) -> tuple[list[list[i
         if not listing_lines:
             raise RuntimeError(f"Bigraph instance listing is empty: {list_member}")
         instance_id, pattern_member, target_member = listing_lines[0].split()[:3]
-        pattern_fh = tf.extractfile(pattern_member)
-        target_fh = tf.extractfile(target_member)
+        listing_dir = list_member.rsplit("/", 1)[0] if "/" in list_member else ""
+
+        def extract_listed_member(member_name: str):
+            candidates = [member_name]
+            if listing_dir and not member_name.startswith(f"{listing_dir}/"):
+                candidates.append(f"{listing_dir}/{member_name}")
+            for candidate in candidates:
+                try:
+                    fh = tf.extractfile(candidate)
+                except KeyError:
+                    continue
+                if fh is not None:
+                    return candidate, fh
+            raise RuntimeError(f"Bigraph archive member missing: {member_name}")
+
+        pattern_member, pattern_fh = extract_listed_member(pattern_member)
+        target_member, target_fh = extract_listed_member(target_member)
         if pattern_fh is None or target_fh is None:
             raise RuntimeError(f"Failed to extract bigraph pair members: {pattern_member} / {target_member}")
         pattern_adj, pattern_labels = _parse_bigraph_instance(pattern_fh.read().decode("utf-8", errors="replace"))
@@ -3124,8 +3165,9 @@ def _convert_subgraph_from_adj_pair(
 
     parsed_vf_pattern = normalize_adj_lists(parse_vf_graph(vf_pattern))
     parsed_vf_target = normalize_adj_lists(parse_vf_graph(vf_target))
-    parsed_lad_pattern = normalize_adj_lists(parse_lad_graph(lad_pattern))
-    parsed_lad_target = normalize_adj_lists(parse_lad_graph(lad_target))
+    lad_parser = parse_vertex_labelled_lad_graph if lad_format == "vertexlabelledlad" else parse_lad_graph
+    parsed_lad_pattern = normalize_adj_lists(lad_parser(lad_pattern))
+    parsed_lad_target = normalize_adj_lists(lad_parser(lad_target))
 
     if parsed_vf_pattern != pattern_adj or parsed_lad_pattern != pattern_adj:
         raise RuntimeError("Converted pattern graph failed identity verification across VF/LAD.")

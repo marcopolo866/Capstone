@@ -46,7 +46,7 @@ on:
         description: Comma-separated variant ids
         required: false
         type: string
-        default: vf3_chatgpt
+        default: vf3_chatgpt_control
       datasets:
         description: Comma-separated dataset ids
         required: false

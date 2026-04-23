@@ -15,6 +15,7 @@ import argparse
 import concurrent.futures
 import csv
 import datetime as dt
+import importlib.util
 import json
 import os
 import random
@@ -94,7 +95,49 @@ def parse_value_list(raw: str) -> list[float]:
 
 
 def solver_variants_by_id() -> dict[str, app_mod.SolverVariant]:
-    return {variant.variant_id: variant for variant in app_mod.SOLVER_VARIANTS}
+    by_id = _source_discovered_solver_variants_by_id()
+    by_id.update({variant.variant_id: variant for variant in app_mod.SOLVER_VARIANTS})
+    return by_id
+
+
+def _source_discovered_solver_variants_by_id() -> dict[str, app_mod.SolverVariant]:
+    module_path = repo_root() / "scripts" / "solver_discovery.py"
+    if not module_path.is_file():
+        return {}
+    try:
+        module_name = f"headless_solver_discovery_{abs(hash(str(module_path)))}"
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        if spec is None or spec.loader is None:
+            return {}
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        catalog = module.build_catalog(repo_root())
+    except Exception:
+        return {}
+
+    discovered: dict[str, app_mod.SolverVariant] = {}
+    for row in list(catalog.get("solvers") or []):
+        if not isinstance(row, dict):
+            continue
+        variant_id = str(row.get("variant_id") or "").strip().lower()
+        family = str(row.get("family") or "").strip().lower()
+        role = str(row.get("role") or "variant").strip().lower() or "variant"
+        label = str(row.get("label") or variant_id).strip() or variant_id
+        if variant_id == "dijkstra_dial":
+            family = "dial"
+            role = "baseline"
+            label = "Dial Benchmark"
+        if not variant_id:
+            continue
+        if family in {"dijkstra", "sp_via", "dial"}:
+            tab_id = "shortest_path"
+        elif family in {"vf3", "glasgow"}:
+            tab_id = "subgraph"
+        else:
+            continue
+        discovered[variant_id] = app_mod.SolverVariant(variant_id, label, tab_id, family, role)
+    return discovered
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -714,12 +757,11 @@ def build_generated_inputs(config: dict[str, Any], point: dict[str, Any], point_
 def build_point_label(config: dict[str, Any], point: dict[str, Any]) -> str:
     if config["input_mode"] == "datasets":
         return str(point.get("dataset_name") or point.get("dataset_id") or "dataset")
-    dummy = Runner()
     primary = config["primary_var"]
-    label = f"{primary}={app_mod.BenchmarkRunnerApp._format_point_value(dummy, primary, float(point[primary]), config)}"
+    label = f"{primary}={app_mod.format_point_value_for_config(primary, float(point[primary]), config)}"
     secondary = config["secondary_var"]
     if secondary is not None:
-        label += f", {secondary}={app_mod.BenchmarkRunnerApp._format_point_value(dummy, secondary, float(point[secondary]), config)}"
+        label += f", {secondary}={app_mod.format_point_value_for_config(secondary, float(point[secondary]), config)}"
     return label
 
 

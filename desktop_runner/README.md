@@ -62,7 +62,7 @@ python scripts/benchmark-runner.py \
   --preset smoke \
   --tab-id subgraph \
   --input-mode datasets \
-  --variants vf3_chatgpt \
+  --variants vf3_chatgpt_control \
   --datasets subgraph_sip_full
 ```
 

@@ -18,9 +18,16 @@ from desktop_runner import app, headless_runner
 #   those are the contracts external automation depends on.
 class HeadlessRunnerTests(unittest.TestCase):
     def test_enforce_baselines_injects_family_baseline(self):
-        selected, injected = headless_runner.enforce_baselines("subgraph", ["vf3_chatgpt"])
-        self.assertIn("vf3_chatgpt", selected)
+        selected, injected = headless_runner.enforce_baselines("subgraph", ["vf3_chatgpt_control"])
+        self.assertIn("vf3_chatgpt_control", selected)
         self.assertIn("vf3_baseline", selected)
+        self.assertEqual(injected, ["vf3_baseline"])
+
+    def test_enforce_baselines_uses_source_discovery_catalog(self):
+        baseline_rows = [variant for variant in app.SOLVER_VARIANTS if variant.role == "baseline"]
+        with mock.patch.object(app, "SOLVER_VARIANTS", baseline_rows):
+            selected, injected = headless_runner.enforce_baselines("subgraph", ["vf3_chatgpt_control"])
+        self.assertIn("vf3_chatgpt_control", selected)
         self.assertEqual(injected, ["vf3_baseline"])
 
     def test_build_runtime_config_generates_subgraph_points(self):
@@ -31,7 +38,7 @@ class HeadlessRunnerTests(unittest.TestCase):
                     "tab_id": "subgraph",
                     "input_mode": "independent",
                     "graph_family": "erdos_renyi",
-                    "selected_variants": ["vf3_chatgpt"],
+                    "selected_variants": ["vf3_chatgpt_control"],
                     "k_mode": "absolute",
                     "values": {"n": [8], "density": [0.2], "k": [3, 4]},
                 },
@@ -403,12 +410,12 @@ class HeadlessRunnerTests(unittest.TestCase):
                 "tab_id": "subgraph",
                 "input_mode": "independent",
                 "graph_family": "erdos_renyi",
-                "selected_variants": ["vf3_baseline", "vf3_chatgpt", "glasgow_baseline", "glasgow_chatgpt"],
+                "selected_variants": ["vf3_baseline", "vf3_chatgpt_control", "glasgow_baseline", "glasgow_chatgpt_control"],
                 "selected_variant_labels": {
                     "vf3_baseline": "VF3 Baseline",
-                    "vf3_chatgpt": "VF3 Chatgpt",
+                    "vf3_chatgpt_control": "VF3 Chatgpt Control",
                     "glasgow_baseline": "Glasgow Baseline",
-                    "glasgow_chatgpt": "Glasgow Chatgpt",
+                    "glasgow_chatgpt_control": "Glasgow Chatgpt Control",
                 },
                 "selected_datasets": [],
                 "iterations_per_datapoint": 2,
@@ -436,8 +443,8 @@ class HeadlessRunnerTests(unittest.TestCase):
                     "memory_stdev_kb": 4.0,
                 },
                 {
-                    "variant_id": "vf3_chatgpt",
-                    "variant_label": "VF3 Chatgpt",
+                    "variant_id": "vf3_chatgpt_control",
+                    "variant_label": "VF3 Chatgpt Control",
                     "x_value": 32.0,
                     "y_value": None,
                     "runtime_median_ms": 6.0,
@@ -456,8 +463,8 @@ class HeadlessRunnerTests(unittest.TestCase):
                     "memory_stdev_kb": 5.0,
                 },
                 {
-                    "variant_id": "glasgow_chatgpt",
-                    "variant_label": "Glasgow Chatgpt",
+                    "variant_id": "glasgow_chatgpt_control",
+                    "variant_label": "Glasgow Chatgpt Control",
                     "x_value": 32.0,
                     "y_value": None,
                     "runtime_median_ms": 8.0,

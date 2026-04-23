@@ -104,7 +104,7 @@ python scripts/benchmark-runner.py \
   --preset smoke \
   --tab-id subgraph \
   --input-mode independent \
-  --variants vf3_chatgpt \
+  --variants vf3_chatgpt_control \
   --n-values 64 \
   --density-values 0.05 \
   --k-values 10
@@ -118,14 +118,14 @@ python scripts/benchmark-runner.py \
   --preset smoke \
   --tab-id subgraph \
   --input-mode datasets \
-  --variants vf3_chatgpt \
+  --variants vf3_chatgpt_control \
   --datasets subgraph_sip_full
 ```
 
 Manifest workflow:
 
 ```bash
-python scripts/benchmark-runner.py --write-manifest benchmarks/smoke.json --preset smoke --tab-id subgraph --variants vf3_chatgpt --n-values 64 --density-values 0.05 --k-values 10
+python scripts/benchmark-runner.py --write-manifest benchmarks/smoke.json --preset smoke --tab-id subgraph --variants vf3_chatgpt_control --n-values 64 --density-values 0.05 --k-values 10
 python scripts/benchmark-runner.py --manifest benchmarks/smoke.json --run
 ```
 
