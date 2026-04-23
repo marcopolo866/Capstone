@@ -317,6 +317,23 @@
         let workflowDispatchEndpointCache = null;
         let runAlgorithmWorkflowIdCache = null;
         let benchmarkRunnerWorkflowIdCache = null;
+
+        async function apiRequestPublicFallback(endpoint, method = 'GET', body = null, options = {}) {
+            const preferPublic = Boolean(options && options.preferPublic);
+            if (preferPublic || !config.token) {
+                return await apiRequest(endpoint, method, body, { useAuth: false });
+            }
+            try {
+                return await apiRequest(endpoint, method, body, options);
+            } catch (error) {
+                const msg = String((error && error.message) || error || '');
+                if (!msg.includes('401') && !msg.includes('403') && !msg.includes('404')) {
+                    throw error;
+                }
+                return await apiRequest(endpoint, method, body, { useAuth: false });
+            }
+        }
+
         async function getWorkflowDispatchEndpoint() {
             if (workflowDispatchEndpointCache) return workflowDispatchEndpointCache;
             // Prefer workflow ID to avoid path mismatches; fall back to path if needed.
@@ -360,7 +377,7 @@
         async function getBenchmarkRunnerWorkflowId() {
             if (benchmarkRunnerWorkflowIdCache) return benchmarkRunnerWorkflowIdCache;
             try {
-                const data = await apiRequest('/actions/workflows');
+                const data = await apiRequestPublicFallback('/actions/workflows');
                 if (data && Array.isArray(data.workflows)) {
                     const match = data.workflows.find(wf =>
                         wf.path === '.github/workflows/build-benchmark-runner-windows.yml' ||
@@ -418,7 +435,7 @@
             if (status) params.push(`status=${encodeURIComponent(status)}`);
 
             const endpoint = `/actions/workflows/${id}/runs?${params.join('&')}`;
-            const data = await apiRequest(endpoint);
+            const data = await apiRequestPublicFallback(endpoint, 'GET', null, options);
             return (data && Array.isArray(data.workflow_runs)) ? data.workflow_runs : [];
         }
 
@@ -636,9 +653,6 @@
                 if (!config.owner || !config.repo) {
                     throw new Error('Enter repository owner and name first.');
                 }
-                if (!config.token) {
-                    throw new Error('A GitHub token is required to download workflow artifacts.');
-                }
                 if (btn) {
                     btn.disabled = true;
                     btn.textContent = 'Downloading...';
@@ -660,7 +674,7 @@
                     throw new Error('No successful benchmark-runner workflow run was found.');
                 }
 
-                const artifactData = await apiRequest(`/actions/runs/${latestSuccess.id}/artifacts`);
+                const artifactData = await apiRequestPublicFallback(`/actions/runs/${latestSuccess.id}/artifacts`);
                 const artifactsRaw = (artifactData && Array.isArray(artifactData.artifacts)) ? artifactData.artifacts : [];
                 const artifacts = artifactsRaw.filter(item => item && !item.expired);
                 if (!artifacts.length) {
@@ -743,9 +757,12 @@
 
             const url = item.archive_download_url ||
                 `https://api.github.com/repos/${config.owner}/${config.repo}/actions/artifacts/${id}/zip`;
-            const headers = buildRequestHeaders({ accept: 'application/vnd.github+json' });
-
-            const response = await fetch(url, { method: 'GET', headers });
+            let headers = buildRequestHeaders({ accept: 'application/vnd.github+json' });
+            let response = await fetch(url, { method: 'GET', headers });
+            if (!response.ok && config.token && [401, 403, 404].includes(Number(response.status))) {
+                headers = buildRequestHeaders({ useAuth: false, accept: 'application/vnd.github+json' });
+                response = await fetch(url, { method: 'GET', headers });
+            }
             if (!response.ok) {
                 const text = await response.text().catch(() => '');
                 throw new Error(`Artifact download failed: ${response.status} ${response.statusText} ${text}`);
