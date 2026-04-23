@@ -245,3 +245,73 @@ jobs:
         run: |
           set -euo pipefail
           make clean
+
+  publish-public-release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build-runner
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download packaged runner artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_inputs
+          pattern: benchmark-runner-*
+
+      - name: Build public release archives
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          root = Path("release_inputs")
+          out = Path("release_assets")
+          out.mkdir(parents=True, exist_ok=True)
+
+          targets = {
+              "windows": ("benchmark-runner-windows", "capstone-benchmark-runner.exe"),
+              "linux": ("benchmark-runner-linux", "capstone-benchmark-runner"),
+              "macos": ("benchmark-runner-macos", "capstone-benchmark-runner.app"),
+          }
+
+          for os_tag, (artifact_dir_name, payload_name) in targets.items():
+              artifact_dir = root / artifact_dir_name
+              payload = artifact_dir / payload_name
+              if not payload.exists():
+                  raise SystemExit(f"Missing expected packaged runner payload: {payload}")
+              archive_base = out / f"benchmark-runner-{os_tag}"
+              archive_path = shutil.make_archive(
+                  str(archive_base),
+                  "zip",
+                  root_dir=str(payload.parent),
+                  base_dir=payload.name,
+              )
+              print(f"Created {archive_path}")
+          PY
+
+      - name: Publish public benchmark runner release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > release_notes.md <<EOF
+          Public benchmark runner build for commit \`${GITHUB_SHA}\`.
+
+          Source workflow: \`.github/workflows/build-benchmark-runner.yml\`
+          Updated at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          EOF
+
+          if gh release view benchmark-runner-latest >/dev/null 2>&1; then
+            gh release edit benchmark-runner-latest \
+              --title "Benchmark Runner Latest" \
+              --notes-file release_notes.md
+          else
+            gh release create benchmark-runner-latest \
+              --title "Benchmark Runner Latest" \
+              --notes-file release_notes.md
+          fi
+
+          gh release upload benchmark-runner-latest release_assets/*.zip --clobber

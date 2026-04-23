@@ -23,22 +23,20 @@
         </div>
         
         <div class="config-section">
-            <div class="config-fields">
-                <div class="input-group">
-                    <label>GitHub Username/Org</label>
-                    <input type="text" id="owner" placeholder="marcopolo866" value="marcopolo866">
-                </div>
-                <div class="input-group">
-                    <label>Repository Name</label>
-                    <input type="text" id="repo" placeholder="Capstone" value="Capstone">
-                </div>
-                <div class="input-group">
-                    <label>Personal Access Token (Required for running algorithms)</label>
-                    <input type="password" id="token" placeholder="ghp_xxxxxxxxxxxx">
-                </div>
-                <button class="btn" onclick="connect()">Connect to Repository</button>
+            <div class="input-group">
+                <label>GitHub Username/Org</label>
+                <input type="text" id="owner" placeholder="marcopolo866" value="marcopolo866">
             </div>
-            <div class="download-cta">
+            <div class="input-group">
+                <label>Repository Name</label>
+                <input type="text" id="repo" placeholder="Capstone" value="Capstone">
+            </div>
+            <div class="input-group">
+                <label>Personal Access Token (Required for running algorithms)</label>
+                <input type="password" id="token" placeholder="ghp_xxxxxxxxxxxx">
+            </div>
+            <div class="config-actions">
+                <button class="btn" onclick="connect()">Connect to Repository</button>
                 <button class="btn btn-primary" id="download-runner-btn" onclick="downloadDesktopRunner()">Download Benchmark Runner</button>
                 <div class="inline-note">Token Not Needed</div>
             </div>

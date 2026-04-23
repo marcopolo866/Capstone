@@ -317,6 +317,7 @@
         let workflowDispatchEndpointCache = null;
         let runAlgorithmWorkflowIdCache = null;
         let benchmarkRunnerWorkflowIdCache = null;
+        let benchmarkRunnerReleaseCache = null;
 
         async function apiRequestPublicFallback(endpoint, method = 'GET', body = null, options = {}) {
             const preferPublic = Boolean(options && options.preferPublic);
@@ -391,6 +392,18 @@
                 }
             } catch (_) {}
             return '';
+        }
+
+        async function getBenchmarkRunnerRelease() {
+            if (benchmarkRunnerReleaseCache) return benchmarkRunnerReleaseCache;
+            try {
+                const release = await apiRequestPublicFallback('/releases/tags/benchmark-runner-latest', 'GET', null, { preferPublic: true });
+                if (release && typeof release === 'object') {
+                    benchmarkRunnerReleaseCache = release;
+                    return benchmarkRunnerReleaseCache;
+                }
+            } catch (_) {}
+            return null;
         }
 
         async function dispatchWorkflow(workflowData) {
@@ -600,6 +613,15 @@
             URL.revokeObjectURL(url);
         }
 
+        function triggerUrlDownload(url) {
+            const a = document.createElement('a');
+            a.href = String(url || '');
+            a.rel = 'noopener';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }
+
         function detectClientRunnerOs() {
             const nav = (typeof navigator !== 'undefined' && navigator) ? navigator : {};
             const platform = String(nav.platform || '').toLowerCase();
@@ -658,6 +680,21 @@
                     btn.textContent = 'Downloading...';
                 }
 
+                const clientOs = detectClientRunnerOs();
+                const publicRelease = await getBenchmarkRunnerRelease();
+                const releaseAssetsRaw = (publicRelease && Array.isArray(publicRelease.assets)) ? publicRelease.assets : [];
+                const releaseAssets = releaseAssetsRaw.filter(item =>
+                    item &&
+                    String(item.state || '').toLowerCase() === 'uploaded' &&
+                    String(item.name || '').trim()
+                );
+                const releaseAsset = chooseDesktopRunnerArtifact(releaseAssets, clientOs);
+                if (releaseAsset && releaseAsset.browser_download_url) {
+                    triggerUrlDownload(String(releaseAsset.browser_download_url));
+                    showStatus('Benchmark runner public download started.', 'success');
+                    return;
+                }
+
                 const workflowId = await getBenchmarkRunnerWorkflowId();
                 if (!workflowId) {
                     throw new Error('Could not find the benchmark-runner build workflow in this repository.');
@@ -681,10 +718,13 @@
                     throw new Error('No non-expired artifacts were found for the latest successful runner build.');
                 }
 
-                const clientOs = detectClientRunnerOs();
                 const artifact = chooseDesktopRunnerArtifact(artifacts, clientOs);
                 if (!artifact) {
                     throw new Error('Could not determine which runner artifact to download.');
+                }
+
+                if (!config.token) {
+                    throw new Error('Public runner release is not available yet. Provide a GitHub token to download the latest workflow artifact instead.');
                 }
 
                 const buffer = await downloadArtifactZip(artifact);

@@ -42,26 +42,6 @@ body {
     background: #f6f8fa;
     padding: 20px 30px;
     border-bottom: 1px solid #e1e4e8;
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 24px;
-    flex-wrap: wrap;
-}
-
-.config-fields {
-    flex: 1 1 520px;
-    min-width: min(520px, 100%);
-}
-
-.download-cta {
-    flex: 0 0 auto;
-    margin-left: auto;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    min-width: 220px;
 }
 
 .input-group {
@@ -241,9 +221,16 @@ body {
     color: #6a737d;
 }
 
-.download-cta .inline-note {
+.config-actions {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.config-actions .inline-note {
     margin-top: 0;
-    text-align: center;
+    align-self: center;
 }
 
 .inline-warning {
@@ -474,25 +461,13 @@ body {
 }
 
 @media (max-width: 860px) {
-    .config-section {
+    .config-actions {
         flex-direction: column;
         align-items: stretch;
     }
 
-    .config-fields,
-    .download-cta {
-        min-width: 0;
-        width: 100%;
-    }
-
-    .download-cta {
-        margin-left: 0;
-        align-items: stretch;
-    }
-
-    .download-cta .btn,
-    .download-cta .inline-note {
-        text-align: center;
+    .config-actions .inline-note {
+        align-self: flex-start;
     }
 }
 
