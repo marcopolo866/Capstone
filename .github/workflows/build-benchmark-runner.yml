@@ -295,6 +295,7 @@ jobs:
       - name: Publish public benchmark runner release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           cat > release_notes.md <<EOF
@@ -304,14 +305,16 @@ jobs:
           Updated at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
           EOF
 
-          if gh release view benchmark-runner-latest >/dev/null 2>&1; then
+          if gh release view benchmark-runner-latest --repo "$GH_REPO" >/dev/null 2>&1; then
             gh release edit benchmark-runner-latest \
+              --repo "$GH_REPO" \
               --title "Benchmark Runner Latest" \
               --notes-file release_notes.md
           else
             gh release create benchmark-runner-latest \
+              --repo "$GH_REPO" \
               --title "Benchmark Runner Latest" \
               --notes-file release_notes.md
           fi
 
-          gh release upload benchmark-runner-latest release_assets/*.zip --clobber
+          gh release upload benchmark-runner-latest release_assets/*.zip --repo "$GH_REPO" --clobber
