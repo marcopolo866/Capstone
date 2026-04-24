@@ -133,7 +133,6 @@ def main() -> int:
 
     required = [("dijkstra_baseline", "baselines/dijkstra")]
     optional = [
-        ("dijkstra_dial", "baselines/dial"),
         ("dijkstra_chatgpt", "src/dijkstra_chatgpt"),
         ("dijkstra_gemini", "src/dijkstra_gemini"),
         ("dijkstra_claude", "src/dijkstra_claude"),

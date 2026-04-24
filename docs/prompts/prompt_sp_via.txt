@@ -1,0 +1,215 @@
+================================================================================
+SINGLE-PAIR SHORTEST PATH SOLVER - PROMPT WITH VIA
+PIPELINE CONTRACT: DIRECTED, WEIGHTED, NONNEGATIVE, EXACT PATH THROUGH VIA
+================================================================================
+
+OVERVIEW
+--------
+Write one self-contained C++20 program that solves the Capstone shortest-path
+"with intermediate" benchmark task.
+
+The program must compile in the existing pipeline without manual remediation.
+That means:
+
+  - use standard C++20 only
+  - do NOT use external libraries
+  - do NOT use non-portable headers such as <bits/stdc++.h>
+  - do NOT require stdin, config files, interactive prompts, or extra flags
+
+The solver will be benchmarked for runtime and memory usage, but correctness and
+pipeline compatibility come first.
+
+
+PROBLEM DEFINITION
+------------------
+Given a directed graph G = (V, E) with nonnegative integer edge weights,
+distinguished start and target vertices, and a required intermediate vertex
+`via`, compute the exact minimum total weight of any directed path from start
+to target that includes `via`.
+
+The solver must obey all of the following rules:
+
+  (1) DIRECTED EDGE SEMANTICS
+      Every row is a directed arc source -> target.
+      Do not assume the reverse edge exists unless it also appears in the file.
+
+  (2) WEIGHT DOMAIN
+      Edge weights are nonnegative integers.
+      Negative-weight handling is not required.
+
+  (3) EXACT OPTIMALITY
+      Return the exact minimum path weight among paths that go through `via`.
+
+  (4) DUPLICATE ARCS
+      If the same directed arc appears multiple times, correctness must behave
+      as if the minimum repeated weight is the effective cost for that arc.
+
+  (5) LABEL HANDLING
+      Node labels are opaque strings and must be matched exactly and
+      case-sensitively.
+
+  (6) PATH OUTPUT
+      If a path exists, output one valid minimum-weight path from start to
+      target that includes `via`.
+
+  (7) UNREACHABLE CASE
+      If no valid start -> via -> target path exists, report that case cleanly.
+
+
+COMMAND-LINE INTERFACE
+----------------------
+Your program must accept exactly two non-option positional arguments:
+
+  ./solver <input_file> <via_label>
+
+Use:
+  - `argv[1]` as the CSV input path
+  - `argv[2]` as the required via node label
+
+For pipeline compatibility, the solver must work when the via label is supplied
+only on the command line. It may also accept a `via=` field in the file header
+as a fallback, but `argv[2]` must be supported.
+
+
+INPUT FORMAT
+------------
+The benchmark runner supplies CSV files in this format:
+
+  Line 1:         comment header with start/target labels and sometimes via
+                  # start=<start_label> target=<target_label> via=<via_label>
+  Line 2:         CSV header
+                  source,target,weight
+  Remaining rows: directed weighted edges
+                  <source_label>,<target_label>,<weight>
+
+Notes:
+  - labels are strings
+  - weights are nonnegative integers
+  - generated and converted datasets use this same shape
+  - start and target labels are supplied in the first comment line
+  - the runner invokes the binary with the via label as `argv[2]`
+
+Example:
+
+  # start=A target=E via=C
+  source,target,weight
+  A,B,2
+  B,C,1
+  C,E,3
+  A,D,10
+  D,E,1
+
+
+OUTPUT FORMAT
+-------------
+Print exactly one parseable result on the first stdout line.
+
+If a valid path exists, print:
+
+  <distance>; <node_0> <node_1> ... <node_m>
+
+where:
+  - `<distance>` is the exact minimum total weight of a start -> via -> target
+    path
+  - `<node_0>` is the start label
+  - `<node_m>` is the target label
+  - the node list forms a valid directed path
+  - the listed path must include the via label at least once
+
+If no valid path exists, print exactly:
+
+  INF; (no path)
+
+Do not print explanations, Markdown, debug logs, or timing lines to stdout or
+stderr in the normal success path.
+
+
+PERFORMANCE GUIDANCE
+--------------------
+The benchmark includes both generated and converted real datasets. The solver
+should be robust across sparse and dense directed graphs without requiring
+regime-specific prompt variants.
+
+Prioritize:
+  - efficient CSV parsing
+  - compact adjacency storage
+  - efficient shortest-path computation
+  - low-overhead reconstruction of a valid start -> via -> target path
+  - low allocation churn in the hot path
+
+
+CORRECTNESS CHECKS
+------------------
+Before submitting, verify these cases:
+
+  Test 1:
+    Input file:
+      # start=A target=E via=C
+      source,target,weight
+      A,B,2
+      B,C,1
+      C,E,3
+      A,D,10
+      D,E,1
+    CLI:
+      ./solver input.csv C
+    Expected first line:
+      6; A B C E
+
+  Test 2:
+    Input file:
+      # start=A target=E via=D
+      source,target,weight
+      A,B,2
+      B,C,2
+      C,E,2
+      A,D,5
+      D,E,1
+    CLI:
+      ./solver input.csv D
+    Expected first line:
+      6; A D E
+
+  Test 3:
+    Input file:
+      # start=A target=E via=D
+      source,target,weight
+      A,B,2
+      B,C,2
+      C,E,2
+    CLI:
+      ./solver input.csv D
+    Expected first line:
+      INF; (no path)
+
+  Test 4:
+    Input file:
+      # start=A target=D via=B
+      source,target,weight
+      A,B,7
+      A,B,3
+      B,D,4
+      A,D,20
+    CLI:
+      ./solver input.csv B
+    Expected first line:
+      7; A B D
+
+
+DELIVERABLE
+-----------
+Provide exactly one self-contained source file named `solver.cpp`.
+
+When responding as an LLM, output only the raw contents of `solver.cpp`.
+Do not wrap the code in Markdown fences.
+Do not add commentary before or after the code.
+
+It must compile cleanly with:
+
+  g++ -O2 -std=c++20 -o solver solver.cpp
+
+And run as:
+
+  ./solver input.csv VIA_LABEL
+
+================================================================================

@@ -54,8 +54,7 @@ def resolve_binary(candidates: list[str]) -> Path:
 
 def is_required_solver(row: dict) -> bool:
     role = str(row.get("role") or "").strip().lower()
-    llm_key = str(row.get("llm_key") or "").strip().lower()
-    return role == "baseline" or llm_key == "dial"
+    return role == "baseline"
 
 
 def ensure_executable(path: Path) -> None:

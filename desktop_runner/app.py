@@ -2082,11 +2082,10 @@ def format_bytes_human(num_bytes: int) -> str:
     return f"{size:.2f} {units[idx]}"
 
 
-SUPPORTED_FAMILIES = {"dijkstra", "sp_via", "dial", "vf3", "glasgow"}
+SUPPORTED_FAMILIES = {"dijkstra", "sp_via", "vf3", "glasgow"}
 FAMILY_LABELS = {
     "dijkstra": "Dijkstra",
     "sp_via": "With Intermediate",
-    "dial": "Dial",
     "vf3": "VF3",
     "glasgow": "Glasgow",
 }
@@ -2106,9 +2105,7 @@ def _baseline_solver_rows() -> list[dict]:
         {"variant_id": "vf3_baseline", "label": "VF3 Baseline", "family": "vf3", "role": "baseline"},
         {"variant_id": "glasgow_baseline", "label": "Glasgow Baseline", "family": "glasgow", "role": "baseline"},
         {"variant_id": "dijkstra_baseline", "label": "Dijkstra Baseline", "family": "dijkstra", "role": "baseline"},
-        {"variant_id": "dijkstra_dial", "label": "Dial Benchmark", "family": "dial", "role": "baseline"},
         {"variant_id": "sp_via_baseline", "label": "With Intermediate Baseline", "family": "sp_via", "role": "baseline"},
-        {"variant_id": "sp_via_dial", "label": "With Intermediate Dial", "family": "sp_via", "role": "variant", "llm_key": "dial", "llm_label": "Dial"},
     ]
 
 
@@ -2150,13 +2147,6 @@ def _normalize_solver_rows(rows: list[dict]) -> list[dict]:
         label = str(row.get("label") or variant_id).strip() or variant_id
         llm_key = str(row.get("llm_key") or "").strip().lower() or None
         llm_label = str(row.get("llm_label") or "").strip() or None
-        if variant_id == "dijkstra_dial":
-            # Treat Dial as a benchmark row in the desktop selector.
-            family = "dial"
-            role = "baseline"
-            label = "Dial Benchmark"
-            llm_key = None
-            llm_label = None
         if not variant_id or family not in SUPPORTED_FAMILIES:
             continue
         normalized.append(
@@ -2335,12 +2325,8 @@ def _resolve_binary_for_variant(root: Path, variant_id: str, binary_name: str) -
     # Source-tree fallback for local development runs without a packaged binaries folder.
     if variant_id == "dijkstra_baseline":
         candidates.extend([root / "baselines" / "dijkstra", root / "baselines" / "dijkstra.exe"])
-    elif variant_id == "dijkstra_dial":
-        candidates.extend([root / "baselines" / "dial", root / "baselines" / "dial.exe"])
     elif variant_id == "sp_via_baseline":
         candidates.extend([root / "baselines" / "via_dijkstra", root / "baselines" / "via_dijkstra.exe"])
-    elif variant_id == "sp_via_dial":
-        candidates.extend([root / "baselines" / "via_dial", root / "baselines" / "via_dial.exe"])
     elif variant_id == "vf3_baseline":
         candidates.extend([root / "baselines" / "vf3lib" / "bin" / "vf3", root / "baselines" / "vf3lib" / "bin" / "vf3.exe"])
     elif variant_id == "glasgow_baseline":
@@ -2390,13 +2376,13 @@ def _build_solver_variants_and_binary_map() -> tuple[list[SolverVariant], dict[s
         family = str(row.get("family") or "").strip().lower()
         if not variant_id or family not in SUPPORTED_FAMILIES:
             continue
-        tab_id = "shortest_path" if family in {"dijkstra", "sp_via", "dial"} else "subgraph"
+        tab_id = "shortest_path" if family in {"dijkstra", "sp_via"} else "subgraph"
         label = str(row.get("label") or variant_id)
         role = str(row.get("role") or "variant").strip().lower() or "variant"
         variants.append(SolverVariant(variant_id, label, tab_id, family, role))
         binary_name = str(row.get("binary_name") or variant_id).strip() or variant_id
         binary_map[variant_id] = _resolve_binary_for_variant(root, variant_id, binary_name)
-    family_order = {"dijkstra": 0, "dial": 1, "sp_via": 2, "vf3": 3, "glasgow": 4}
+    family_order = {"dijkstra": 0, "sp_via": 1, "vf3": 2, "glasgow": 3}
     variants.sort(
         key=lambda item: (
             item.tab_id,
@@ -5199,7 +5185,6 @@ class BenchmarkRunnerApp(tk.Tk):
             "glasgow": "Glasgow",
             "dijkstra": "Dijkstra",
             "sp_via": "With Intermediate",
-            "dial": "Dial",
         }
 
         def role_key_and_label(variant: SolverVariant) -> tuple[str, str]:
@@ -5234,8 +5219,6 @@ class BenchmarkRunnerApp(tk.Tk):
                 return "Glasgow (.lad)"
             if f == "dijkstra":
                 return "Dijkstra (.csv)"
-            if f == "dial":
-                return "Dial (.csv)"
             if f == "sp_via":
                 return "With Intermediate (.csv)"
             return f.title()

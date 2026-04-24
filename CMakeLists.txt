@@ -40,13 +40,7 @@ if(CAPSTONE_BUILD_SOLVERS)
   add_executable(capstone_dijkstra_baseline baselines/dijkstra_main.cpp)
   target_include_directories(capstone_dijkstra_baseline PRIVATE baselines/nyaan-library)
 
-  add_executable(capstone_dial_baseline baselines/dial_main.cpp)
-  target_include_directories(capstone_dial_baseline PRIVATE baselines/cxxgraph/include)
-
   add_executable(capstone_sp_via_baseline baselines/via_dijkstra_main.cpp)
-
-  add_executable(capstone_sp_via_dial baselines/via_dial_main.cpp)
-  target_include_directories(capstone_sp_via_dial PRIVATE baselines/cxxgraph/include)
 
   file(GLOB CAPSTONE_DISCOVERED_SOLVER_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.cpp")
   foreach(source_file IN LISTS CAPSTONE_DISCOVERED_SOLVER_SOURCES)

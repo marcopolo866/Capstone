@@ -1,0 +1,192 @@
+================================================================================
+SINGLE-PAIR SHORTEST PATH SOLVER - PROMPT DIJKSTRA
+PIPELINE CONTRACT: DIRECTED, WEIGHTED, NONNEGATIVE, EXACT SHORTEST PATH
+================================================================================
+
+OVERVIEW
+--------
+Write one self-contained C++20 program that solves the Capstone shortest-path
+benchmark's plain Dijkstra-style task.
+
+The program must compile in the existing pipeline without manual remediation.
+That means:
+
+  - use standard C++20 only
+  - do NOT use external libraries
+  - do NOT use non-portable headers such as <bits/stdc++.h>
+  - do NOT require stdin, config files, interactive prompts, or extra flags
+
+The solver will be benchmarked for runtime and memory usage, but correctness and
+pipeline compatibility come first.
+
+
+PROBLEM DEFINITION
+------------------
+Given a directed graph G = (V, E) with nonnegative integer edge weights and
+distinguished start and target vertices, compute the exact shortest-path
+distance from start to target and output one valid shortest path.
+
+The solver must obey all of the following rules:
+
+  (1) DIRECTED EDGE SEMANTICS
+      Every row is a directed arc source -> target.
+      Do not assume the reverse edge exists unless it also appears in the file.
+
+  (2) WEIGHT DOMAIN
+      Edge weights are nonnegative integers.
+      Negative-weight handling is not required.
+
+  (3) EXACT OPTIMALITY
+      Return the exact shortest-path distance, not an approximation.
+
+  (4) DUPLICATE ARCS
+      If the same directed arc appears multiple times, correctness must behave
+      as if the minimum repeated weight is the effective cost for that arc.
+
+  (5) LABEL HANDLING
+      Node labels are opaque strings and must be matched exactly and
+      case-sensitively.
+
+  (6) PATH OUTPUT
+      If a path exists, output one valid shortest path from start to target.
+      Any valid shortest path is acceptable.
+
+  (7) UNREACHABLE CASE
+      If the target is unreachable, report that case cleanly.
+
+
+COMMAND-LINE INTERFACE
+----------------------
+Your program must accept exactly one non-option positional argument:
+
+  ./solver <input_file>
+
+Use `argv[1]` as the CSV input path.
+
+
+INPUT FORMAT
+------------
+The benchmark runner supplies CSV files in this format:
+
+  Line 1:         comment header with start/target labels
+                  # start=<start_label> target=<target_label>
+  Line 2:         CSV header
+                  source,target,weight
+  Remaining rows: directed weighted edges
+                  <source_label>,<target_label>,<weight>
+
+Notes:
+  - labels are strings
+  - weights are nonnegative integers
+  - generated and converted datasets use this same shape
+  - the start and target labels are supplied in the first comment line
+
+Example:
+
+  # start=A target=D
+  source,target,weight
+  A,B,2
+  A,C,10
+  B,C,1
+  B,D,5
+  C,D,1
+
+
+OUTPUT FORMAT
+-------------
+Print exactly one parseable result on the first stdout line.
+
+If the target is reachable, print:
+
+  <distance>; <node_0> <node_1> ... <node_m>
+
+where:
+  - `<distance>` is the exact shortest-path weight as a nonnegative integer
+  - `<node_0>` is the start label
+  - `<node_m>` is the target label
+  - the node list forms a valid directed path whose total weight equals
+    `<distance>`
+
+If the target is unreachable, print exactly:
+
+  INF; (no path)
+
+Do not print explanations, Markdown, debug logs, or timing lines to stdout or
+stderr in the normal success path.
+
+
+PERFORMANCE GUIDANCE
+--------------------
+The benchmark includes both generated and converted real datasets. The solver
+should be robust across sparse and dense directed graphs without requiring
+regime-specific prompt variants.
+
+Prioritize:
+  - efficient CSV parsing
+  - compact adjacency storage
+  - efficient priority-queue updates
+  - early exit once the target distance is finalized
+  - low allocation churn in the hot path
+
+
+CORRECTNESS CHECKS
+------------------
+Before submitting, verify these cases:
+
+  Test 1:
+    # start=A target=D
+    source,target,weight
+    A,B,2
+    A,C,10
+    B,C,1
+    B,D,5
+    C,D,1
+    Expected first line:
+    4; A B C D
+
+  Test 2:
+    # start=B target=A
+    source,target,weight
+    A,B,1
+    B,C,2
+    C,A,3
+    Expected first line:
+    5; B C A
+
+  Test 3:
+    # start=A target=E
+    source,target,weight
+    A,B,2
+    B,C,2
+    D,E,1
+    Expected first line:
+    INF; (no path)
+
+  Test 4:
+    # start=A target=C
+    source,target,weight
+    A,B,7
+    A,B,3
+    B,C,4
+    A,C,20
+    Expected first line:
+    7; A B C
+
+
+DELIVERABLE
+-----------
+Provide exactly one self-contained source file named `solver.cpp`.
+
+When responding as an LLM, output only the raw contents of `solver.cpp`.
+Do not wrap the code in Markdown fences.
+Do not add commentary before or after the code.
+
+It must compile cleanly with:
+
+  g++ -O2 -std=c++20 -o solver solver.cpp
+
+And run as:
+
+  ./solver input.csv
+
+================================================================================

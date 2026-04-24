@@ -65,8 +65,7 @@ function Test-IsRequiredSolver {
     )
 
     $role = [string]$Spec.Role
-    $llmKey = [string]$Spec.LlmKey
-    return ($role.ToLowerInvariant() -eq "baseline" -or $llmKey.ToLowerInvariant() -eq "dial")
+    return ($role.ToLowerInvariant() -eq "baseline")
 }
 
 function Test-MingwRuntimeRoot {

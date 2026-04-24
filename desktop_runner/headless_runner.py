@@ -124,13 +124,9 @@ def _source_discovered_solver_variants_by_id() -> dict[str, app_mod.SolverVarian
         family = str(row.get("family") or "").strip().lower()
         role = str(row.get("role") or "variant").strip().lower() or "variant"
         label = str(row.get("label") or variant_id).strip() or variant_id
-        if variant_id == "dijkstra_dial":
-            family = "dial"
-            role = "baseline"
-            label = "Dial Benchmark"
         if not variant_id:
             continue
-        if family in {"dijkstra", "sp_via", "dial"}:
+        if family in {"dijkstra", "sp_via"}:
             tab_id = "shortest_path"
         elif family in {"vf3", "glasgow"}:
             tab_id = "subgraph"
@@ -364,7 +360,7 @@ def resolve_selected_variants(selected_variants: list[str]) -> tuple[list[str], 
             "role": role,
             "llm_key": llm_key,
         }
-        is_optional = role != "baseline" and llm_key != "dial"
+        is_optional = role != "baseline"
         if is_optional:
             skipped_optional.append(detail)
             continue

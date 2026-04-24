@@ -5,7 +5,6 @@
   "input_mode": "datasets",
   "graph_family": "random_density",
   "selected_variants": [
-    "dijkstra_dial",
     "dijkstra_chatgpt",
     "dijkstra_gemini"
   ],

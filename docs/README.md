@@ -15,29 +15,24 @@ research protocol.
     trial/datapoint schema notes.
 - [prompting_protocol.md](prompting_protocol.md)
   - LLM prompting process used in this capstone.
-- [prompt_dijkstra_sparse.txt](prompt_dijkstra_sparse.txt)
-  - Dijkstra CSV-format shortest-path seed prompt tuned for sparse structured
-    graph regimes.
-- [prompt_dijkstra_dense.txt](prompt_dijkstra_dense.txt)
-  - Dijkstra CSV-format shortest-path seed prompt tuned for dense irregular
-    graph regimes.
-- [prompt_dijkstra_control.txt](prompt_dijkstra_control.txt)
-  - Dijkstra CSV-format shortest-path seed prompt with the shared contract but
-    no regime-specific hint.
-- [prompt_vf3_sparse.txt](prompt_vf3_sparse.txt)
+- [prompts/prompt_dijkstra.txt](prompts/prompt_dijkstra.txt)
+  - Plain single-pair shortest-path seed prompt for the CSV pipeline contract.
+- [prompts/prompt_sp_via.txt](prompts/prompt_sp_via.txt)
+  - Shortest-path-with-intermediate seed prompt for the CSV pipeline contract.
+- [prompts/prompt_vf3_sparse.txt](prompts/prompt_vf3_sparse.txt)
   - VF3-format subgraph seed prompt tuned for sparse structured graph regimes.
-- [prompt_vf3_dense.txt](prompt_vf3_dense.txt)
+- [prompts/prompt_vf3_dense.txt](prompts/prompt_vf3_dense.txt)
   - VF3-format subgraph seed prompt tuned for dense irregular graph regimes.
-- [prompt_vf3_control.txt](prompt_vf3_control.txt)
+- [prompts/prompt_vf3_control.txt](prompts/prompt_vf3_control.txt)
   - VF3-format subgraph seed prompt with the shared contract but no
     regime-specific hint.
-- [prompt_glasgow_sparse.txt](prompt_glasgow_sparse.txt)
+- [prompts/prompt_glasgow_sparse.txt](prompts/prompt_glasgow_sparse.txt)
   - Glasgow LAD-format subgraph seed prompt tuned for sparse structured graph
     regimes.
-- [prompt_glasgow_dense.txt](prompt_glasgow_dense.txt)
+- [prompts/prompt_glasgow_dense.txt](prompts/prompt_glasgow_dense.txt)
   - Glasgow LAD-format subgraph seed prompt tuned for dense irregular graph
     regimes.
-- [prompt_glasgow_control.txt](prompt_glasgow_control.txt)
+- [prompts/prompt_glasgow_control.txt](prompts/prompt_glasgow_control.txt)
   - Glasgow LAD-format subgraph seed prompt with the shared contract but no
     regime-specific hint.
 - [refactor-split-structure.md](refactor-split-structure.md)

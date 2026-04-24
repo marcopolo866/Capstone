@@ -31,9 +31,7 @@ class SolverDiscoveryTests(unittest.TestCase):
 
         solver_ids = {str(row.get("variant_id") or "") for row in catalog.get("solvers", [])}
         self.assertIn("dijkstra_baseline", solver_ids)
-        self.assertIn("dijkstra_dial", solver_ids)
         self.assertIn("sp_via_baseline", solver_ids)
-        self.assertIn("sp_via_dial", solver_ids)
 
     def test_shortest_path_via_filename_maps_to_sp_via(self):
         module = load_solver_discovery_module()

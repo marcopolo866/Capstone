@@ -5,7 +5,6 @@
   "input_mode": "independent",
   "graph_family": "erdos_renyi",
   "selected_variants": [
-    "dijkstra_dial",
     "dijkstra_chatgpt",
     "dijkstra_gemini"
   ],

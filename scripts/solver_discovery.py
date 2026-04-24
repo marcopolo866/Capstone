@@ -37,16 +37,6 @@ BASELINES = [
         "llm_label": None,
     },
     {
-        "variant_id": "dijkstra_dial",
-        "family": "dijkstra",
-        "algorithm": "dijkstra",
-        "label": "Dial Benchmark",
-        "binary_path": "baselines/dial",
-        "role": "variant",
-        "llm_key": "dial",
-        "llm_label": "Dial",
-    },
-    {
         "variant_id": "sp_via_baseline",
         "family": "sp_via",
         "algorithm": "sp_via",
@@ -55,16 +45,6 @@ BASELINES = [
         "role": "baseline",
         "llm_key": None,
         "llm_label": None,
-    },
-    {
-        "variant_id": "sp_via_dial",
-        "family": "sp_via",
-        "algorithm": "sp_via",
-        "label": "With Intermediate Dial",
-        "binary_path": "baselines/via_dial",
-        "role": "variant",
-        "llm_key": "dial",
-        "llm_label": "Dial",
     },
     {
         "variant_id": "vf3_baseline",

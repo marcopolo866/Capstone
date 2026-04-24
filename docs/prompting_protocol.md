@@ -1,7 +1,7 @@
 # Prompting Protocol for LLM Graph Algorithm Evaluation
 
-**Version:** 1.2  
-**Date:** 04/20/2026
+**Version:** 1.3  
+**Date:** 04/24/2026
 
 This document outlines the standardized methodology for interacting with the
 LLM so the generated solver variants line up with the benchmark pipeline that
@@ -27,43 +27,43 @@ Our interaction with the LLM follows a three-stage process:
 
 ### 3.1 Seed Prompt Family: Single-Pair Shortest Path
 
-The active shortest-path experiment now uses three dedicated prompt files with
-the naming scheme:
+The active shortest-path experiment now uses two dedicated prompt files:
 
-`prompt_dijkstra_<regime>.txt`
+- [prompts/prompt_dijkstra.txt](prompts/prompt_dijkstra.txt)
+- [prompts/prompt_sp_via.txt](prompts/prompt_sp_via.txt)
 
-Where `regime` is `sparse`, `dense`, or `control`.
+Both prompts are written directly against the current benchmark pipeline
+contract and compile chain:
 
-Current files:
+1. Use **standard C++20 only**.
+2. Do **not** rely on non-portable headers such as `<bits/stdc++.h>`.
+3. Return output in a format the runner and correctness scripts already parse.
+4. Avoid runtime/debug chatter in the normal success path.
 
-- [prompt_dijkstra_sparse.txt](prompt_dijkstra_sparse.txt)
-- [prompt_dijkstra_dense.txt](prompt_dijkstra_dense.txt)
-- [prompt_dijkstra_control.txt](prompt_dijkstra_control.txt)
+The two shortest-path prompt files differ by mathematical contract:
 
-All three prompts intentionally share the same shortest-path contract. They
-differ only by performance steering:
+- `prompt_dijkstra.txt`
+  - Plain **single-pair shortest path** on a **directed weighted** graph.
+  - CLI contract:
+    `./solver <input_file>`
+  - Input format:
+    `# start=<label> target=<label>` plus `source,target,weight` rows.
+  - Required first-line output:
+    `<distance>; <path labels...>` when reachable, or `INF; (no path)` if
+    unreachable.
 
-1. Solve **single-pair shortest path** on a **directed weighted** graph.
-2. Edge weights are **nonnegative integers**.
-3. Accept the benchmark CSV format with:
-   `# start=<label> target=<label>` followed by
-   `source,target,weight` rows.
-4. Return the **exact** shortest-path distance.
-5. Treat reverse arcs as absent unless explicitly present in the CSV.
-6. Handle duplicate directed arcs correctly; the minimum repeated weight should
-   determine the effective cost.
-7. Print a parseable shortest-path result that the runner can normalize.
-8. The preferred output format is:
-   `<distance>; <path labels...>` when reachable, or `INF` if unreachable.
-
-The three prompt files differ as follows:
-
-- `prompt_dijkstra_sparse.txt`: shortest-path CSV format + sparse structured
-  regime hint
-- `prompt_dijkstra_dense.txt`: shortest-path CSV format + dense irregular
-  regime hint
-- `prompt_dijkstra_control.txt`: shortest-path CSV format + no regime-specific
-  hint
+- `prompt_sp_via.txt`
+  - **Single-pair shortest path through a required intermediate node** on a
+    **directed weighted** graph.
+  - CLI contract:
+    `./solver <input_file> <via_label>`
+  - Input format:
+    `# start=<label> target=<label> via=<label>` plus
+    `source,target,weight` rows, with the runner also passing the via label on
+    the command line.
+  - Required first-line output:
+    `<distance>; <path labels...>` when reachable, or `INF; (no path)` if
+    unreachable.
 
 ### 3.2 Seed Prompt Family: Subgraph Matching
 
@@ -79,12 +79,12 @@ Where:
 
 Current files:
 
-- [prompt_vf3_sparse.txt](prompt_vf3_sparse.txt)
-- [prompt_vf3_dense.txt](prompt_vf3_dense.txt)
-- [prompt_vf3_control.txt](prompt_vf3_control.txt)
-- [prompt_glasgow_sparse.txt](prompt_glasgow_sparse.txt)
-- [prompt_glasgow_dense.txt](prompt_glasgow_dense.txt)
-- [prompt_glasgow_control.txt](prompt_glasgow_control.txt)
+- [prompts/prompt_vf3_sparse.txt](prompts/prompt_vf3_sparse.txt)
+- [prompts/prompt_vf3_dense.txt](prompts/prompt_vf3_dense.txt)
+- [prompts/prompt_vf3_control.txt](prompts/prompt_vf3_control.txt)
+- [prompts/prompt_glasgow_sparse.txt](prompts/prompt_glasgow_sparse.txt)
+- [prompts/prompt_glasgow_dense.txt](prompts/prompt_glasgow_dense.txt)
+- [prompts/prompt_glasgow_control.txt](prompts/prompt_glasgow_control.txt)
 
 All six prompts intentionally share the same mathematical contract. They differ
 only by solver-family input format framing and by performance steering:

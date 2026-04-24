@@ -262,7 +262,6 @@ def main() -> int:
 
     required_binaries = [("sp_via_baseline", "baselines/via_dijkstra")]
     optional_binaries = [
-        ("sp_via_dial", "baselines/via_dial"),
         ("sp_via_chatgpt", "src/sp_via_chatgpt"),
         ("sp_via_gemini", "src/sp_via_gemini"),
     ]
