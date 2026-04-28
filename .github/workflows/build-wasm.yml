@@ -17,6 +17,8 @@ jobs:
     # Prevent infinite loops when this workflow commits WASM artifacts back to the repo.
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
+    env:
+      EMSDK_VERSION: "5.0.5"
     permissions:
       contents: write
     steps:
@@ -31,18 +33,26 @@ jobs:
         uses: actions/cache@v4
         with:
           path: emsdk
-          key: emsdk-${{ runner.os }}-${{ hashFiles('emsdk/upstream/emscripten/emscripten-version.txt') }}
+          key: emsdk-${{ runner.os }}-${{ env.EMSDK_VERSION }}-v1
           restore-keys: emsdk-${{ runner.os }}-
 
       - name: Install Emscripten SDK
         run: |
           set -euo pipefail
           if [ ! -d emsdk ]; then
-            git clone https://github.com/emscripten-core/emsdk.git emsdk
+            git clone --depth 1 https://github.com/emscripten-core/emsdk.git emsdk
+          else
+            git -C emsdk fetch --depth 1 origin main
+            git -C emsdk reset --hard origin/main
           fi
           cd emsdk
-          ./emsdk install 5.0.5
-          ./emsdk activate 5.0.5
+          if ! ./emsdk list | grep -Eq "^[[:space:]]+${EMSDK_VERSION}([[:space:]]|$)"; then
+            echo "Emscripten SDK ${EMSDK_VERSION} is not available in this emsdk manifest."
+            ./emsdk list | sed -n '1,80p'
+            exit 1
+          fi
+          ./emsdk install "$EMSDK_VERSION"
+          ./emsdk activate "$EMSDK_VERSION"
 
       - name: Build VF3 WASM modules
         run: |
