@@ -626,6 +626,7 @@
             const nav = (typeof navigator !== 'undefined' && navigator) ? navigator : {};
             const platform = String(nav.platform || '').toLowerCase();
             const userAgent = String(nav.userAgent || '').toLowerCase();
+            if (userAgent.includes('android')) return 'android';
             if (platform.includes('win') || userAgent.includes('windows')) return 'windows';
             if (platform.includes('mac') || userAgent.includes('mac os')) return 'macos';
             if (platform.includes('linux') || userAgent.includes('linux')) return 'linux';
@@ -637,6 +638,7 @@
             if (tag === 'windows') return ['benchmark-runner-windows', 'benchmark-runner-windows-exe'];
             if (tag === 'macos') return ['benchmark-runner-macos', 'benchmark-runner-mac'];
             if (tag === 'linux') return ['benchmark-runner-linux'];
+            if (tag === 'android') return ['benchmark-runner-android.apk', 'benchmark-runner-android', 'capstone-benchmark-runner-android'];
             return [];
         }
 
@@ -691,7 +693,10 @@
                 const releaseAsset = chooseDesktopRunnerArtifact(releaseAssets, clientOs);
                 if (releaseAsset && releaseAsset.browser_download_url) {
                     triggerUrlDownload(String(releaseAsset.browser_download_url));
-                    showStatus('Benchmark runner public download started.', 'success');
+                    const hint = clientOs === 'android'
+                        ? 'Android benchmark runner APK download started. Open the APK on your device to install it.'
+                        : 'Benchmark runner public download started.';
+                    showStatus(hint, 'success');
                     return;
                 }
 
@@ -732,7 +737,10 @@
                 const rawName = artifact && artifact.name ? String(artifact.name).trim() : 'benchmark-runner';
                 const zipName = rawName.toLowerCase().endsWith('.zip') ? rawName : `${rawName}.zip`;
                 triggerBinaryDownload(zipName, blob);
-                showStatus('Benchmark runner artifact download started. Extract the zip and run the packaged app for your OS.', 'success');
+                const hint = clientOs === 'android'
+                    ? 'Android benchmark runner artifact download started. Extract the zip, then open the APK on your device.'
+                    : 'Benchmark runner artifact download started. Extract the zip and run the packaged app for your OS.';
+                showStatus(hint, 'success');
             } catch (error) {
                 const msg = (error && error.message) ? error.message : String(error);
                 showStatus(`Runner download failed: ${msg}`, 'error');

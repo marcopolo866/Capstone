@@ -1,0 +1,6 @@
+<resources>
+    <color name="runner_bg">#F4F6F8</color>
+    <color name="runner_panel">#FFFFFF</color>
+    <color name="runner_text">#1F2933</color>
+    <color name="runner_accent">#0B5CAD</color>
+</resources>

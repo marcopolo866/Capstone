@@ -39,3 +39,8 @@ dist/
 
 # Local dataset cache for desktop runner
 .datasets/
+
+# Android runner local build artifacts
+android_runner/.gradle/
+android_runner/**/build/
+android_runner/local.properties

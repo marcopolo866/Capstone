@@ -11,6 +11,7 @@ The project provides:
 
 - A browser UI (`index.html`) for local WASM runs and GitHub Actions runs
 - A manifest-driven headless benchmark CLI (`scripts/benchmark-runner.py`)
+- A native Android runner module (`android_runner/`) for on-device mobile runs
 - Native build scripts for baseline + LLM binaries
 - Workflow-driven benchmark execution and artifact generation
 - Visualization and result export (`outputs/result.json`, `outputs/visualization.json`)
@@ -66,6 +67,7 @@ For detailed setup/run instructions, see [docs/quickstart.md](docs/quickstart.md
 - `utilities/generate_graphs.py`: deterministic graph generation
 - `scripts/`: local build and parity tooling
 - `desktop_runner/`: downloadable desktop benchmark runner source + packager
+- `android_runner/`: native Android on-device benchmark runner module
 - `tests/`: automated regression tests
 - `wasm/`: prebuilt wasm modules + manifest for local mode
 

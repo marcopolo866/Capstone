@@ -184,9 +184,9 @@ python -m py_compile .github/scripts/run-algorithm-dynamic.py
 python -m py_compile .github/scripts/create-result-json-step.py
 ```
 
-## 7. Desktop Benchmark Runner (Windows/macOS/Linux)
+## 7. Benchmark Runner Downloads (Windows/macOS/Linux/Android)
 
-Users can download an OS-specific desktop benchmark runner artifact from the web UI:
+Users can download an OS-specific benchmark runner artifact from the web UI:
 
 1. Open `index.html` in the browser.
 2. Enter `owner`, `repo`, and a token with Actions read access.
@@ -195,7 +195,7 @@ Users can download an OS-specific desktop benchmark runner artifact from the web
 The button pulls the latest successful artifact from:
 
 - workflow: `.github/workflows/build-benchmark-runner.yml`
-- artifact name: `benchmark-runner-windows`, `benchmark-runner-macos`, or `benchmark-runner-linux` (based on your browser OS)
+- artifact name: `benchmark-runner-windows`, `benchmark-runner-macos`, `benchmark-runner-linux`, or `benchmark-runner-android` (based on your browser OS)
 
 The downloaded artifact zip contains the packaged desktop runner plus bundled solver binaries for that platform.
 

@@ -1,0 +1,3 @@
+C:/Users/noahw/My Stuff/School/University of Idaho/Capstone/Capstone/android_runner/app/.cxx/Debug/1d2k6g3z/arm64-v8a/CMakeFiles/capstone_mobile_runner.dir
+C:/Users/noahw/My Stuff/School/University of Idaho/Capstone/Capstone/android_runner/app/.cxx/Debug/1d2k6g3z/arm64-v8a/CMakeFiles/edit_cache.dir
+C:/Users/noahw/My Stuff/School/University of Idaho/Capstone/Capstone/android_runner/app/.cxx/Debug/1d2k6g3z/arm64-v8a/CMakeFiles/rebuild_cache.dir

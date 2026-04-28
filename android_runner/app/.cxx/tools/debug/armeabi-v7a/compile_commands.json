@@ -1,0 +1,7 @@
+[
+{
+  "directory": "C:/Users/noahw/My Stuff/School/University of Idaho/Capstone/Capstone/android_runner/app/.cxx/Debug/1d2k6g3z/armeabi-v7a",
+  "command": "C:\\Users\\noahw\\AppData\\Local\\Android\\Sdk\\ndk\\28.2.13676358\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=armv7-none-linux-androideabi26 --sysroot=C:/Users/noahw/AppData/Local/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/sysroot -Dcapstone_mobile_runner_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -march=armv7-a -mthumb -Wformat -Werror=format-security  -std=c++20 -O3 -Wall -Wextra -fno-limit-debug-info  -fPIC -o CMakeFiles\\capstone_mobile_runner.dir\\capstone_mobile_core.cpp.o -c \"C:\\Users\\noahw\\My Stuff\\School\\University of Idaho\\Capstone\\Capstone\\android_runner\\app\\src\\main\\cpp\\capstone_mobile_core.cpp\"",
+  "file": "C:\\Users\\noahw\\My Stuff\\School\\University of Idaho\\Capstone\\Capstone\\android_runner\\app\\src\\main\\cpp\\capstone_mobile_core.cpp"
+}
+]

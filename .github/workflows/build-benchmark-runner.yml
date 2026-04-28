@@ -9,6 +9,7 @@ on:
       - '.github/workflows/build-benchmark-runner.yml'
       - '.github/ci_data_collection/**'
       - 'desktop_runner/**'
+      - 'android_runner/**'
       - 'scripts/build-local.ps1'
       - 'scripts/build-local.sh'
       - 'scripts/build-local.py'
@@ -27,6 +28,7 @@ on:
       - '.github/workflows/build-benchmark-runner.yml'
       - '.github/ci_data_collection/**'
       - 'desktop_runner/**'
+      - 'android_runner/**'
       - 'scripts/build-local.ps1'
       - 'scripts/build-local.sh'
       - 'scripts/build-local.py'
@@ -246,9 +248,64 @@ jobs:
           set -euo pipefail
           make clean
 
+  build-android-runner:
+    runs-on: ubuntu-24.04
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358" \
+            "cmake;3.22.1"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.4.1
+
+      - name: Build Android runner APK
+        run: |
+          set -euo pipefail
+          gradle -p android_runner :app:assembleDebug --no-daemon
+
+      - name: Stage Android runner APK
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp android_runner/app/build/outputs/apk/debug/app-debug.apk \
+            dist/capstone-benchmark-runner-android-debug.apk
+
+      - name: Upload Android runner artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-runner-android
+          path: dist/capstone-benchmark-runner-android-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
   publish-public-release:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: build-runner
+    needs:
+      - build-runner
+      - build-android-runner
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -290,6 +347,13 @@ jobs:
                   base_dir=payload.name,
               )
               print(f"Created {archive_path}")
+
+          android_payload = root / "benchmark-runner-android" / "capstone-benchmark-runner-android-debug.apk"
+          if not android_payload.exists():
+              raise SystemExit(f"Missing expected Android runner payload: {android_payload}")
+          android_asset = out / "benchmark-runner-android.apk"
+          shutil.copy2(android_payload, android_asset)
+          print(f"Created {android_asset}")
           PY
 
       - name: Publish public benchmark runner release
@@ -317,4 +381,4 @@ jobs:
               --notes-file release_notes.md
           fi
 
-          gh release upload benchmark-runner-latest release_assets/*.zip --repo "$GH_REPO" --clobber
+          gh release upload benchmark-runner-latest release_assets/* --repo "$GH_REPO" --clobber
