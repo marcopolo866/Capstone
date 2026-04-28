@@ -46,9 +46,10 @@ jobs:
             git -C emsdk reset --hard origin/main
           fi
           cd emsdk
-          if ! ./emsdk list | grep -Eq "^[[:space:]]+${EMSDK_VERSION}([[:space:]]|$)"; then
+          ./emsdk list > ../emsdk-list.txt
+          if ! grep -Eq "^[[:space:]]+${EMSDK_VERSION}([[:space:]]|$)" ../emsdk-list.txt; then
             echo "Emscripten SDK ${EMSDK_VERSION} is not available in this emsdk manifest."
-            ./emsdk list | sed -n '1,80p'
+            sed -n '1,80p' ../emsdk-list.txt
             exit 1
           fi
           ./emsdk install "$EMSDK_VERSION"
