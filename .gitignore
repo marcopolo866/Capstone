@@ -42,5 +42,6 @@ dist/
 
 # Android runner local build artifacts
 android_runner/.gradle/
+android_runner/**/.cxx/
 android_runner/**/build/
 android_runner/local.properties

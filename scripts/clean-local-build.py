@@ -150,6 +150,11 @@ def main() -> int:
             # Headless Data Collection batch outputs
             repo_root / "data_collection" / "runs",
             repo_root / ".github" / "ci_data_collection" / "runs",
+            # Android runner Gradle/CMake outputs
+            repo_root / "android_runner" / ".gradle",
+            repo_root / "android_runner" / "build",
+            repo_root / "android_runner" / "app" / "build",
+            repo_root / "android_runner" / "app" / ".cxx",
             # Remove full dist/ to also clean benchmark_output_* folders written
             # next to packaged runner binaries.
             repo_root / "dist",

@@ -20,6 +20,7 @@ public final class GraphVisualizerView extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final List<int[]> targetEdges = new ArrayList<>();
     private final List<int[]> patternEdges = new ArrayList<>();
+    private final List<int[]> targetSolutionEdges = new ArrayList<>();
     private final List<Integer> solutionNodes = new ArrayList<>();
     private final RectF graphArea = new RectF();
     private final RectF patternBounds = new RectF();
@@ -63,6 +64,7 @@ public final class GraphVisualizerView extends View {
     public void setInputs(GeneratedInputs inputs) {
         targetEdges.clear();
         patternEdges.clear();
+        targetSolutionEdges.clear();
         solutionNodes.clear();
         if (inputs == null) {
             targetNodeCount = 0;
@@ -75,6 +77,7 @@ public final class GraphVisualizerView extends View {
             targetEdges.addAll(inputs.targetEdges);
             patternEdges.addAll(inputs.patternEdges);
             solutionNodes.addAll(inputs.solutionNodes);
+            buildTargetSolutionEdges();
             caption = "Seed " + inputs.seed + ": subgraph " + patternNodeCount
                     + " nodes, supergraph " + targetNodeCount + " nodes";
             setContentDescription(caption);
@@ -143,10 +146,10 @@ public final class GraphVisualizerView extends View {
         canvas.translate(offsetX, offsetY);
         canvas.scale(scale, scale, cx, cy);
         if (patternNodeCount > 0) {
-            drawGraph(canvas, patternBounds, "Subgraph", patternNodeCount, patternEdges, allHighlighted(patternNodeCount), true);
+            drawGraph(canvas, patternBounds, "Subgraph", patternNodeCount, patternEdges, patternEdges, allHighlighted(patternNodeCount), true);
         }
         if (targetNodeCount > 0) {
-            drawGraph(canvas, targetBounds, "Supergraph", targetNodeCount, targetEdges, targetHighlights(), false);
+            drawGraph(canvas, targetBounds, "Supergraph", targetNodeCount, targetEdges, targetSolutionEdges, targetHighlights(), false);
         }
         canvas.restore();
 
@@ -189,6 +192,7 @@ public final class GraphVisualizerView extends View {
             String title,
             int nodeCount,
             List<int[]> edges,
+            List<int[]> highlightedEdges,
             boolean[] highlighted,
             boolean pattern
     ) {
@@ -215,7 +219,8 @@ public final class GraphVisualizerView extends View {
             ys[i] = cy + (float) Math.sin(angle) * radius;
         }
 
-        drawEdges(canvas, bounds, xs, ys, nodeCount, edges, highlighted);
+        drawEdges(canvas, xs, ys, nodeCount, edges);
+        drawHighlightedEdges(canvas, bounds, xs, ys, nodeCount, highlightedEdges);
         drawNodes(canvas, xs, ys, nodeCount, highlighted, pattern);
     }
 
@@ -238,26 +243,40 @@ public final class GraphVisualizerView extends View {
         canvas.drawText("No generated graph available.", graphArea.left + dp(18), graphArea.top + dp(42), paint);
     }
 
-    private void drawEdges(Canvas canvas, RectF bounds, float[] xs, float[] ys, int nodeCount, List<int[]> edges, boolean[] highlighted) {
-        int edgeLimit = Math.min(edges.size(), 4000);
-        for (int i = 0; i < edgeLimit; i++) {
-            int[] edge = edges.get(i);
+    private void drawEdges(Canvas canvas, float[] xs, float[] ys, int nodeCount, List<int[]> edges) {
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setStrokeWidth(nodeCount > 120 ? dp(1) : dp(1.5f));
+        paint.setColor(Color.rgb(178, 188, 199));
+        for (int[] edge : edges) {
             if (edge.length < 2) continue;
             int u = edge[0];
             int v = edge[1];
             if (u < 0 || u >= nodeCount || v < 0 || v >= nodeCount) continue;
-            boolean highlightedEdge = highlighted[u] && highlighted[v];
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(highlightedEdge ? dp(3) : (nodeCount > 120 ? dp(1) : dp(1.5f)));
-            paint.setColor(highlightedEdge ? Color.rgb(29, 122, 80) : Color.rgb(178, 188, 199));
             canvas.drawLine(xs[u], ys[u], xs[v], ys[v], paint);
         }
-        if (edges.size() > edgeLimit) {
-            paint.setStyle(Paint.Style.FILL);
-            paint.setTextSize(dp(10));
-            paint.setColor(Color.rgb(93, 104, 117));
-            canvas.drawText("+" + (edges.size() - edgeLimit) + " edges hidden", bounds.left + dp(12), bounds.bottom - dp(12), paint);
+        paint.setStrokeCap(Paint.Cap.BUTT);
+    }
+
+    private void drawHighlightedEdges(Canvas canvas, RectF bounds, float[] xs, float[] ys, int nodeCount, List<int[]> highlightedEdges) {
+        if (highlightedEdges.isEmpty()) return;
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setStrokeWidth(dp(4));
+        paint.setColor(Color.rgb(29, 122, 80));
+        for (int[] edge : highlightedEdges) {
+            if (edge.length < 2) continue;
+            int u = edge[0];
+            int v = edge[1];
+            if (u < 0 || u >= nodeCount || v < 0 || v >= nodeCount) continue;
+            canvas.drawLine(xs[u], ys[u], xs[v], ys[v], paint);
         }
+        paint.setStyle(Paint.Style.FILL);
+        paint.setTextSize(dp(10));
+        paint.setColor(Color.rgb(29, 122, 80));
+        canvas.drawText(highlightedEdges.size() + " highlighted edge" + (highlightedEdges.size() == 1 ? "" : "s"),
+                bounds.left + dp(12), bounds.bottom - dp(12), paint);
+        paint.setStrokeCap(Paint.Cap.BUTT);
     }
 
     private void drawNodes(Canvas canvas, float[] xs, float[] ys, int nodeCount, boolean[] highlighted, boolean pattern) {
@@ -289,6 +308,21 @@ public final class GraphVisualizerView extends View {
             if (node != null && node >= 0 && node < highlighted.length) highlighted[node] = true;
         }
         return highlighted;
+    }
+
+    private void buildTargetSolutionEdges() {
+        targetSolutionEdges.clear();
+        if (solutionNodes.isEmpty()) return;
+        for (int[] edge : patternEdges) {
+            if (edge.length < 2) continue;
+            int patternU = edge[0];
+            int patternV = edge[1];
+            if (patternU < 0 || patternU >= solutionNodes.size() || patternV < 0 || patternV >= solutionNodes.size()) continue;
+            Integer targetU = solutionNodes.get(patternU);
+            Integer targetV = solutionNodes.get(patternV);
+            if (targetU == null || targetV == null) continue;
+            targetSolutionEdges.add(new int[]{targetU, targetV});
+        }
     }
 
     private boolean[] allHighlighted(int count) {
