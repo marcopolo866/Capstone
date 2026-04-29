@@ -566,7 +566,10 @@ public final class MainActivity extends Activity {
 
         graphVisualizer = new GraphVisualizerView(this);
         graphVisualizer.setShowLabels(true);
-        host.addView(graphVisualizer, new LinearLayout.LayoutParams(-1, 0, 1f));
+        ScrollView graphScroll = new ScrollView(this);
+        graphScroll.setFillViewport(false);
+        graphScroll.addView(graphVisualizer, new ScrollView.LayoutParams(-1, dp(1120)));
+        host.addView(graphScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         updateVisualizerNavState();
         return host;
     }
@@ -993,28 +996,31 @@ public final class MainActivity extends Activity {
     }
 
     private View visualizerNavRow(String label, String kind, int[] deltas) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, 0, 0, dp(6));
+        LinearLayout block = new LinearLayout(this);
+        block.setOrientation(LinearLayout.VERTICAL);
+        block.setPadding(0, 0, 0, dp(8));
         TextView title = new TextView(this);
         title.setText(label);
         title.setTextColor(color(R.color.runner_text));
         title.setTextSize(13f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         visualizerNavLabels.put(kind, title);
-        row.addView(title, new LinearLayout.LayoutParams(dp(112), -2));
+        block.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
         List<MaterialButton> buttons = new ArrayList<>();
         visualizerNavButtons.put(kind, buttons);
         for (int delta : deltas) {
-            MaterialButton button = outlinedButton(navDeltaLabel(delta));
+            MaterialButton button = compactNavButton(navDeltaLabel(delta));
             button.setOnClickListener(v -> shiftVisualizer(kind, delta));
             buttons.add(button);
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(40), 1f);
             params.setMargins(dp(2), 0, dp(2), 0);
             row.addView(button, params);
         }
-        return row;
+        block.addView(row, new LinearLayout.LayoutParams(-1, dp(40)));
+        return block;
     }
 
     private int findVisualizerByIteration(GeneratedInputs current, int delta) {
@@ -1704,6 +1710,24 @@ public final class MainActivity extends Activity {
         return button;
     }
 
+    private MaterialButton compactNavButton(String text) {
+        MaterialButton button = new MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle);
+        button.setText(text);
+        button.setTextSize(12f);
+        button.setTextColor(navButtonTextColors());
+        button.setAllCaps(false);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setMinHeight(dp(40));
+        button.setMinimumHeight(dp(40));
+        button.setInsetTop(0);
+        button.setInsetBottom(0);
+        button.setIcon(null);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(0, 0, 0, 0);
+        return button;
+    }
+
     private MaterialButton iconOnlyButton(int iconRes, String description) {
         MaterialButton button = new MaterialButton(this, null, com.google.android.material.R.attr.materialIconButtonStyle);
         button.setIconResource(iconRes);
@@ -1768,6 +1792,13 @@ public final class MainActivity extends Activity {
         return new ColorStateList(
                 new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
                 new int[]{color(R.color.runner_primary), color(R.color.runner_surface)}
+        );
+    }
+
+    private ColorStateList navButtonTextColors() {
+        return new ColorStateList(
+                new int[][]{new int[]{-android.R.attr.state_enabled}, new int[]{}},
+                new int[]{color(R.color.runner_muted), color(R.color.runner_primary)}
         );
     }
 

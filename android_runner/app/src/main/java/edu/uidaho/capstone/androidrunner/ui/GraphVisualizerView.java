@@ -97,7 +97,7 @@ public final class GraphVisualizerView extends View {
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         if (targetNodeCount <= 0 && patternNodeCount <= 0) return true;
-        if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+        if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(event.getPointerCount() > 1);
         scaleDetector.onTouchEvent(event);
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
@@ -110,7 +110,6 @@ public final class GraphVisualizerView extends View {
                     float x = event.getX();
                     float y = event.getY();
                     offsetX += x - lastX;
-                    offsetY += y - lastY;
                     lastX = x;
                     lastY = y;
                     invalidate();
