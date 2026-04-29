@@ -566,12 +566,12 @@ public final class MainActivity extends Activity {
 
         graphVisualizer = new GraphVisualizerView(this);
         graphVisualizer.setShowLabels(true);
-        ScrollView graphScroll = new ScrollView(this);
-        graphScroll.setFillViewport(false);
-        graphScroll.addView(graphVisualizer, new ScrollView.LayoutParams(-1, dp(1120)));
-        host.addView(graphScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        host.addView(graphVisualizer, new LinearLayout.LayoutParams(-1, dp(1280)));
         updateVisualizerNavState();
-        return host;
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.addView(host, new ScrollView.LayoutParams(-1, -2));
+        return scroll;
     }
 
     private void startRun() {
