@@ -22,12 +22,20 @@ public final class GraphVisualizerView extends View {
     private final List<int[]> patternEdges = new ArrayList<>();
     private final List<int[]> targetSolutionEdges = new ArrayList<>();
     private final List<Integer> solutionNodes = new ArrayList<>();
+    private final List<Integer> shortestPathNodes = new ArrayList<>();
+    private final List<int[]> shortestPathEdges = new ArrayList<>();
     private final RectF graphArea = new RectF();
     private final RectF patternBounds = new RectF();
     private final RectF targetBounds = new RectF();
     private ScaleGestureDetector scaleDetector;
     private int targetNodeCount = 0;
     private int patternNodeCount = 0;
+    private int shortestStartNode = -1;
+    private int shortestTargetNode = -1;
+    private int shortestViaNode = -1;
+    private long shortestPathWeight = -1L;
+    private boolean shortestPathReachable = false;
+    private String shortestFamily = "";
     private String caption = "No graph loaded";
     private boolean showLabels = true;
     private float scale = 1f;
@@ -66,6 +74,14 @@ public final class GraphVisualizerView extends View {
         patternEdges.clear();
         targetSolutionEdges.clear();
         solutionNodes.clear();
+        shortestPathNodes.clear();
+        shortestPathEdges.clear();
+        shortestStartNode = -1;
+        shortestTargetNode = -1;
+        shortestViaNode = -1;
+        shortestPathWeight = -1L;
+        shortestPathReachable = false;
+        shortestFamily = "";
         if (inputs == null) {
             targetNodeCount = 0;
             patternNodeCount = 0;
@@ -77,6 +93,14 @@ public final class GraphVisualizerView extends View {
             targetEdges.addAll(inputs.targetEdges);
             patternEdges.addAll(inputs.patternEdges);
             solutionNodes.addAll(inputs.solutionNodes);
+            shortestPathNodes.addAll(inputs.shortestPathNodes);
+            shortestPathEdges.addAll(inputs.shortestPathEdges);
+            shortestStartNode = inputs.shortestStartNode;
+            shortestTargetNode = inputs.shortestTargetNode;
+            shortestViaNode = inputs.shortestViaNode;
+            shortestPathWeight = inputs.shortestPathWeight;
+            shortestPathReachable = inputs.shortestPathReachable;
+            shortestFamily = inputs.shortestFamily == null ? "" : inputs.shortestFamily;
             buildTargetSolutionEdges();
             caption = "Seed " + inputs.seed + ": subgraph " + patternNodeCount
                     + " nodes, supergraph " + targetNodeCount + " nodes";
@@ -149,7 +173,10 @@ public final class GraphVisualizerView extends View {
             drawGraph(canvas, patternBounds, "Subgraph", patternNodeCount, patternEdges, patternEdges, allHighlighted(patternNodeCount), true);
         }
         if (targetNodeCount > 0) {
-            drawGraph(canvas, targetBounds, "Supergraph", targetNodeCount, targetEdges, targetSolutionEdges, targetHighlights(), false);
+            drawGraph(canvas, targetBounds, "Supergraph", targetNodeCount, targetEdges,
+                    hasShortestPathMetadata() ? shortestPathEdges : targetSolutionEdges,
+                    hasShortestPathMetadata() ? shortestPathHighlights() : targetHighlights(),
+                    false);
         }
         canvas.restore();
 
@@ -205,9 +232,25 @@ public final class GraphVisualizerView extends View {
         paint.setTypeface(android.graphics.Typeface.DEFAULT);
         paint.setTextSize(dp(10));
         paint.setColor(Color.rgb(93, 104, 117));
-        canvas.drawText(nodeCount + " nodes, " + edges.size() + " edges", bounds.left + dp(12), bounds.top + dp(38), paint);
+        String detail = !pattern ? shortestPathSummary() : "";
+        String pathDetail = !pattern ? shortestPathDetail() : "";
+        float metricsY = bounds.top + dp(38);
+        float plotTop = bounds.top + dp(46);
+        if (!detail.isEmpty()) {
+            paint.setColor(Color.rgb(24, 33, 43));
+            drawTextFit(canvas, detail, bounds.left + dp(12), bounds.top + dp(38), bounds.width() - dp(24));
+            paint.setColor(Color.rgb(93, 104, 117));
+            metricsY = bounds.top + dp(54);
+            plotTop = bounds.top + dp(62);
+            if (!pathDetail.isEmpty()) {
+                drawTextFit(canvas, pathDetail, bounds.left + dp(12), bounds.top + dp(54), bounds.width() - dp(24));
+                metricsY = bounds.top + dp(70);
+                plotTop = bounds.top + dp(78);
+            }
+        }
+        canvas.drawText(nodeCount + " nodes, " + edges.size() + " edges", bounds.left + dp(12), metricsY, paint);
 
-        RectF plot = new RectF(bounds.left + dp(10), bounds.top + dp(46), bounds.right - dp(10), bounds.bottom - dp(10));
+        RectF plot = new RectF(bounds.left + dp(10), plotTop, bounds.right - dp(10), bounds.bottom - dp(10));
         float[] xs = new float[nodeCount];
         float[] ys = new float[nodeCount];
         float radius = Math.max(dp(28), Math.min(plot.width(), plot.height()) * 0.38f);
@@ -220,8 +263,9 @@ public final class GraphVisualizerView extends View {
         }
 
         drawEdges(canvas, xs, ys, nodeCount, edges);
-        drawHighlightedEdges(canvas, bounds, xs, ys, nodeCount, highlightedEdges);
         drawNodes(canvas, xs, ys, nodeCount, highlighted, pattern);
+        drawHighlightedEdges(canvas, bounds, xs, ys, nodeCount, highlightedEdges,
+                !pattern && hasShortestPathMetadata() ? "path edge" : "highlighted edge");
     }
 
     private void drawPanel(Canvas canvas, RectF bounds) {
@@ -258,10 +302,19 @@ public final class GraphVisualizerView extends View {
         paint.setStrokeCap(Paint.Cap.BUTT);
     }
 
-    private void drawHighlightedEdges(Canvas canvas, RectF bounds, float[] xs, float[] ys, int nodeCount, List<int[]> highlightedEdges) {
+    private void drawHighlightedEdges(Canvas canvas, RectF bounds, float[] xs, float[] ys, int nodeCount, List<int[]> highlightedEdges, String label) {
         if (highlightedEdges.isEmpty()) return;
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setStrokeWidth(dp(6));
+        paint.setColor(Color.WHITE);
+        for (int[] edge : highlightedEdges) {
+            if (edge.length < 2) continue;
+            int u = edge[0];
+            int v = edge[1];
+            if (u < 0 || u >= nodeCount || v < 0 || v >= nodeCount) continue;
+            canvas.drawLine(xs[u], ys[u], xs[v], ys[v], paint);
+        }
         paint.setStrokeWidth(dp(4));
         paint.setColor(Color.rgb(29, 122, 80));
         for (int[] edge : highlightedEdges) {
@@ -274,7 +327,7 @@ public final class GraphVisualizerView extends View {
         paint.setStyle(Paint.Style.FILL);
         paint.setTextSize(dp(10));
         paint.setColor(Color.rgb(29, 122, 80));
-        canvas.drawText(highlightedEdges.size() + " highlighted edge" + (highlightedEdges.size() == 1 ? "" : "s"),
+        canvas.drawText(highlightedEdges.size() + " " + label + (highlightedEdges.size() == 1 ? "" : "s"),
                 bounds.left + dp(12), bounds.bottom - dp(12), paint);
         paint.setStrokeCap(Paint.Cap.BUTT);
     }
@@ -310,9 +363,70 @@ public final class GraphVisualizerView extends View {
         return highlighted;
     }
 
+    private boolean[] shortestPathHighlights() {
+        boolean[] highlighted = new boolean[Math.max(0, targetNodeCount)];
+        for (Integer node : shortestPathNodes) {
+            if (node != null && node >= 0 && node < highlighted.length) highlighted[node] = true;
+        }
+        return highlighted;
+    }
+
+    private boolean hasShortestPathMetadata() {
+        return "dijkstra".equals(shortestFamily) || "sp_via".equals(shortestFamily) || shortestStartNode >= 0;
+    }
+
+    private String shortestPathSummary() {
+        if (!hasShortestPathMetadata() || shortestStartNode < 0 || shortestTargetNode < 0) return "";
+        StringBuilder builder = new StringBuilder();
+        builder.append("Start v").append(shortestStartNode)
+                .append(" -> End v").append(shortestTargetNode);
+        if (shortestViaNode >= 0) builder.append(" | Via v").append(shortestViaNode);
+        builder.append(" | Weight ");
+        builder.append(shortestPathReachable ? Long.toString(shortestPathWeight) : "unreachable");
+        return builder.toString();
+    }
+
+    private String shortestPathDetail() {
+        if (!shortestPathReachable || shortestPathNodes.isEmpty()) return "";
+        StringBuilder builder = new StringBuilder("Path ");
+        if (!shortestPathNodes.isEmpty()) {
+            for (int i = 0; i < shortestPathNodes.size(); i++) {
+                if (i > 0) builder.append(" -> ");
+                builder.append("v").append(shortestPathNodes.get(i));
+            }
+        }
+        return builder.toString();
+    }
+
+    private void drawTextFit(Canvas canvas, String text, float x, float y, float maxWidth) {
+        if (paint.measureText(text) <= maxWidth) {
+            canvas.drawText(text, x, y, paint);
+            return;
+        }
+        String ellipsis = "...";
+        int end = text.length();
+        while (end > 0 && paint.measureText(text, 0, end) + paint.measureText(ellipsis) > maxWidth) {
+            end--;
+        }
+        canvas.drawText(text.substring(0, Math.max(0, end)) + ellipsis, x, y, paint);
+    }
+
     private void buildTargetSolutionEdges() {
         targetSolutionEdges.clear();
         if (solutionNodes.isEmpty()) return;
+        boolean[] selected = new boolean[Math.max(0, targetNodeCount)];
+        for (Integer node : solutionNodes) {
+            if (node != null && node >= 0 && node < selected.length) selected[node] = true;
+        }
+        for (int[] edge : targetEdges) {
+            if (edge.length < 2) continue;
+            int u = edge[0];
+            int v = edge[1];
+            if (u >= 0 && u < selected.length && v >= 0 && v < selected.length && selected[u] && selected[v]) {
+                targetSolutionEdges.add(new int[]{u, v});
+            }
+        }
+        if (!targetSolutionEdges.isEmpty()) return;
         for (int[] edge : patternEdges) {
             if (edge.length < 2) continue;
             int patternU = edge[0];

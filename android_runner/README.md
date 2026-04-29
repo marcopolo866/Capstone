@@ -62,11 +62,12 @@ Command-line build after the toolchain is installed:
 
 ```powershell
 cd android_runner
-gradle :app:assembleDebug
+.\gradlew.bat :app:assembleDebug
 ```
 
-If you generate a Gradle wrapper locally, keep the wrapper version aligned with
-Gradle 9.4.1:
+The checked-in Gradle wrapper pins the project to Gradle 9.4.1 while downloading
+the actual Gradle distribution into your user Gradle cache, not into this repo.
+If the wrapper ever needs to be regenerated:
 
 ```powershell
 cd android_runner

@@ -14,6 +14,14 @@ public final class GeneratedInputs {
     public final List<int[]> targetEdges = new ArrayList<>();
     public final List<int[]> patternEdges = new ArrayList<>();
     public final List<Integer> solutionNodes = new ArrayList<>();
+    public final List<Integer> shortestPathNodes = new ArrayList<>();
+    public final List<int[]> shortestPathEdges = new ArrayList<>();
+    public String shortestFamily = "";
+    public int shortestStartNode = -1;
+    public int shortestTargetNode = -1;
+    public int shortestViaNode = -1;
+    public long shortestPathWeight = -1L;
+    public boolean shortestPathReachable = false;
     public int targetNodeCount;
     public int patternNodeCount;
     public int n;
