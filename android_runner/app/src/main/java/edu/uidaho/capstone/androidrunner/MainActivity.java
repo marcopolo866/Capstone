@@ -601,8 +601,8 @@ public final class MainActivity extends Activity {
                         progressBar.setIndeterminate(planned <= 0);
                         if (planned > 0) progressBar.setProgressCompat(pct, true);
                         progressText.setText(planned <= 0
-                                ? ("Completed " + completed + " trials | " + label)
-                                : ("Completed " + completed + "/" + planned + " trials | " + label));
+                                ? ("Completed " + completed + " trials")
+                                : ("Completed " + completed + "/" + planned + " trials"));
                     });
                 }
 
