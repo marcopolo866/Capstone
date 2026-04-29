@@ -20,6 +20,7 @@ public final class GraphGenerator {
         ensureDir(outDir);
         Random rng = new Random(seed);
         GeneratedInputs result = new GeneratedInputs();
+        result.seed = seed;
         result.targetNodeCount = n;
         File csv = new File(outDir, "dijkstra_generated.csv");
         String via = "";
@@ -53,6 +54,7 @@ public final class GraphGenerator {
         }
 
         GeneratedInputs result = new GeneratedInputs();
+        result.seed = seed;
         result.targetNodeCount = n;
         result.patternNodeCount = selected.length;
         result.vfPattern = new File(outDir, "pattern.vf");
@@ -65,6 +67,7 @@ public final class GraphGenerator {
         writeLabelledLad(result.ladTarget, target, targetLabels);
         result.patternEdges.addAll(edgeList(pattern));
         result.targetEdges.addAll(edgeList(target));
+        for (int node : selected) result.solutionNodes.add(node);
         return result;
     }
 

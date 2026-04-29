@@ -13,6 +13,10 @@ public final class GeneratedInputs {
     public String ladFormat = "vertex-labelled-lad";
     public final List<int[]> targetEdges = new ArrayList<>();
     public final List<int[]> patternEdges = new ArrayList<>();
+    public final List<Integer> solutionNodes = new ArrayList<>();
     public int targetNodeCount;
     public int patternNodeCount;
+    public long seed;
+    public int pointIndex;
+    public int iterationIndex;
 }

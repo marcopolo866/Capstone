@@ -21,6 +21,7 @@ import android.widget.ArrayAdapter;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Space;
 import android.widget.TextView;
@@ -149,17 +150,25 @@ public final class MainActivity extends Activity {
     private BenchmarkChartView runtimeChart;
     private BenchmarkChartView memoryChart;
     private GraphVisualizerView graphVisualizer;
-    private TextView statsText;
+    private LinearLayout statsTableWrap;
     private TextView trialsMetric;
     private TextView runtimeMetric;
     private TextView memoryMetric;
     private TextView failuresMetric;
     private TextView resultsMeta;
     private SwitchMaterial graphLabelsSwitch;
+    private TextView visualizerStatusText;
+    private ProgressBar visualizerLoading;
+    private MaterialButton visualizerPrevButton;
+    private MaterialButton visualizerNextButton;
+    private final List<GeneratedInputs> visualizerInputs = new ArrayList<>();
+    private int visualizerIndex = -1;
+    private int visualizerRequestSerial;
 
     private MaterialButton runButton;
     private MaterialButton pauseButton;
     private MaterialButton abortButton;
+    private TextView pauseActionLabel;
 
     private BenchmarkConfig pendingManifestExportConfig;
     private BenchmarkSession lastSession;
@@ -193,6 +202,7 @@ public final class MainActivity extends Activity {
             NavigationRailView rail = new NavigationRailView(this);
             navigationView = rail;
             buildNavigationMenu(rail.getMenu());
+            configureNavigationView(rail);
             body.addView(rail, new LinearLayout.LayoutParams(dp(88), -1));
             content = new FrameLayout(this);
             body.addView(content, new LinearLayout.LayoutParams(0, -1, 1f));
@@ -203,6 +213,7 @@ public final class MainActivity extends Activity {
             navigationView = bottom;
             bottom.setLabelVisibilityMode(NavigationBarView.LABEL_VISIBILITY_LABELED);
             buildNavigationMenu(bottom.getMenu());
+            configureNavigationView(bottom);
             root.addView(bottom, new LinearLayout.LayoutParams(-1, -2));
         }
         setupPage = buildSetupPage();
@@ -253,6 +264,21 @@ public final class MainActivity extends Activity {
         menu.add(0, NAV_RESULTS, 2, "Results").setIcon(android.R.drawable.ic_menu_sort_by_size);
         menu.add(0, NAV_GRAPH, 3, "Graph").setIcon(android.R.drawable.ic_menu_share);
         menu.add(0, NAV_DATASETS, 4, "Data").setIcon(android.R.drawable.ic_menu_agenda);
+    }
+
+    private void configureNavigationView(NavigationBarView view) {
+        view.setLabelVisibilityMode(NavigationBarView.LABEL_VISIBILITY_LABELED);
+        ColorStateList navText = new ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{Color.WHITE, color(R.color.runner_text)}
+        );
+        ColorStateList navIcon = new ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{Color.WHITE, color(R.color.runner_muted)}
+        );
+        view.setItemTextColor(navText);
+        view.setItemIconTintList(navIcon);
+        view.setItemActiveIndicatorColor(ColorStateList.valueOf(color(R.color.runner_primary)));
     }
 
     private View buildSetupPage() {
@@ -437,12 +463,10 @@ public final class MainActivity extends Activity {
         LinearLayout runActions = new LinearLayout(this);
         runActions.setOrientation(LinearLayout.HORIZONTAL);
         runActions.setPadding(0, dp(12), 0, 0);
-        pauseButton = outlinedButton("Pause");
-        abortButton = outlinedButton("Abort");
-        MaterialButton clear = outlinedButton("Clear Log");
+        pauseButton = iconOnlyButton(android.R.drawable.ic_media_pause, "Pause");
+        abortButton = iconOnlyButton(android.R.drawable.ic_menu_close_clear_cancel, "Abort");
         pauseButton.setIconResource(android.R.drawable.ic_media_pause);
         abortButton.setIconResource(android.R.drawable.ic_menu_close_clear_cancel);
-        clear.setIconResource(android.R.drawable.ic_menu_delete);
         pauseButton.setEnabled(false);
         abortButton.setEnabled(false);
         pauseButton.setOnClickListener(v -> togglePause());
@@ -450,21 +474,35 @@ public final class MainActivity extends Activity {
             engine.requestAbort();
             appendLog("Abort requested.");
         });
-        clear.setOnClickListener(v -> logText.setText(""));
-        runActions.addView(pauseButton, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        runActions.addView(iconAction(pauseButton, "Pause"), new LinearLayout.LayoutParams(0, dp(76), 1f));
         runActions.addView(space(dp(8), 1));
-        runActions.addView(abortButton, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        runActions.addView(space(dp(8), 1));
-        runActions.addView(clear, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        runActions.addView(iconAction(abortButton, "Abort"), new LinearLayout.LayoutParams(0, dp(76), 1f));
         status.addView(runActions);
 
-        LinearLayout log = addSection(page, "Run Log", null);
+        MaterialCardView logCard = shellCard();
+        LinearLayout log = new LinearLayout(this);
+        log.setOrientation(LinearLayout.VERTICAL);
+        log.setPadding(dp(16), dp(14), dp(16), dp(16));
+        LinearLayout logHeader = new LinearLayout(this);
+        logHeader.setOrientation(LinearLayout.HORIZONTAL);
+        logHeader.setGravity(Gravity.CENTER_VERTICAL);
+        TextView logTitle = titleText("Run Log");
+        MaterialButton clear = outlinedButton("Clear Log");
+        clear.setIconResource(android.R.drawable.ic_menu_delete);
+        clear.setOnClickListener(v -> logText.setText(""));
+        logHeader.addView(logTitle, new LinearLayout.LayoutParams(0, -2, 1f));
+        logHeader.addView(clear, new LinearLayout.LayoutParams(dp(132), dp(44)));
+        log.addView(logHeader);
         logText = new TextView(this);
         logText.setTextSize(13f);
         logText.setTextColor(color(R.color.runner_text));
         logText.setTypeface(Typeface.MONOSPACE);
         logText.setLineSpacing(0f, 1.08f);
         log.addView(logText, new LinearLayout.LayoutParams(-1, -2));
+        logCard.addView(log);
+        LinearLayout.LayoutParams logParams = new LinearLayout.LayoutParams(-1, -2);
+        logParams.setMargins(0, 0, 0, dp(12));
+        page.addView(logCard, logParams);
 
         return scrollPage(page);
     }
@@ -494,13 +532,11 @@ public final class MainActivity extends Activity {
         memoryChart = new BenchmarkChartView(this);
         memory.addView(memoryChart, new LinearLayout.LayoutParams(-1, dp(320)));
 
-        LinearLayout stats = addSection(page, "Statistics", null);
-        statsText = new TextView(this);
-        statsText.setText("Run a benchmark to populate statistical comparisons.");
-        statsText.setTextSize(14f);
-        statsText.setTextColor(color(R.color.runner_text));
-        statsText.setTypeface(Typeface.MONOSPACE);
-        stats.addView(statsText);
+        LinearLayout stats = addSection(page, "Statistics", "Runtime deltas are variant - baseline. Negative mean delta means faster.");
+        statsTableWrap = new LinearLayout(this);
+        statsTableWrap.setOrientation(LinearLayout.VERTICAL);
+        stats.addView(statsTableWrap, new LinearLayout.LayoutParams(-1, -2));
+        renderStatsTable(null);
 
         return scrollPage(page);
     }
@@ -524,9 +560,27 @@ public final class MainActivity extends Activity {
         controls.addView(reset, new LinearLayout.LayoutParams(0, dp(48), 1f));
         host.addView(controls, new LinearLayout.LayoutParams(-1, -2));
 
+        LinearLayout solutionNav = new LinearLayout(this);
+        solutionNav.setOrientation(LinearLayout.HORIZONTAL);
+        solutionNav.setGravity(Gravity.CENTER_VERTICAL);
+        visualizerPrevButton = outlinedButton("<");
+        visualizerNextButton = outlinedButton(">");
+        visualizerPrevButton.setOnClickListener(v -> shiftVisualizer(-1));
+        visualizerNextButton.setOnClickListener(v -> shiftVisualizer(1));
+        visualizerStatusText = muted("Run a generated-input benchmark to populate solutions.");
+        visualizerLoading = new ProgressBar(this);
+        visualizerLoading.setIndeterminate(true);
+        visualizerLoading.setVisibility(View.GONE);
+        solutionNav.addView(visualizerPrevButton, new LinearLayout.LayoutParams(dp(54), dp(44)));
+        solutionNav.addView(visualizerStatusText, new LinearLayout.LayoutParams(0, -2, 1f));
+        solutionNav.addView(visualizerLoading, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        solutionNav.addView(visualizerNextButton, new LinearLayout.LayoutParams(dp(54), dp(44)));
+        host.addView(solutionNav, new LinearLayout.LayoutParams(-1, -2));
+
         graphVisualizer = new GraphVisualizerView(this);
         graphVisualizer.setShowLabels(true);
         host.addView(graphVisualizer, new LinearLayout.LayoutParams(-1, 0, 1f));
+        updateVisualizerNavState();
         return host;
     }
 
@@ -648,6 +702,9 @@ public final class MainActivity extends Activity {
             progressText.setText("Starting...");
             appendLog("Starting run | " + summaryLine(config));
             appendLog("Phone reports " + maxAppThreads + " processor thread(s) available to this app.");
+            visualizerInputs.clear();
+            visualizerIndex = -1;
+            updateVisualizerNavState();
             engine.start(config, new BenchmarkEngine.Listener() {
                 @Override public void onLog(String message) {
                     runOnUiThread(() -> appendLog(message));
@@ -664,8 +721,12 @@ public final class MainActivity extends Activity {
                     });
                 }
 
-                @Override public void onGraphInputs(GeneratedInputs inputs) {
-                    runOnUiThread(() -> graphVisualizer.setInputs(inputs));
+                @Override public void onGraphInputs(GeneratedInputs inputs, int pointIndex, int iterationIndex, long seed) {
+                    runOnUiThread(() -> {
+                        visualizerInputs.add(inputs);
+                        if (visualizerIndex < 0) visualizerIndex = 0;
+                        showVisualizerInput(visualizerInputs.size() - 1, false);
+                    });
                 }
 
                 @Override public void onComplete(BenchmarkSession session, File outputDir) {
@@ -691,7 +752,7 @@ public final class MainActivity extends Activity {
         }
         runtimeChart.setDatapoints(session.datapoints, "runtime");
         memoryChart.setDatapoints(session.datapoints, "memory");
-        statsText.setText(buildStatsText(session));
+        renderStatsTable(session);
         progressBar.setIndeterminate(false);
         progressBar.setProgressCompat(1000, true);
         progressText.setText("Run complete. Completed " + session.completedTrials + " trials.");
@@ -715,14 +776,18 @@ public final class MainActivity extends Activity {
     private void togglePause() {
         if (!paused) {
             paused = true;
-            pauseButton.setText("Resume");
+            pauseButton.setText("");
+            if (pauseActionLabel != null) pauseActionLabel.setText("Resume");
             pauseButton.setIconResource(android.R.drawable.ic_media_play);
+            pauseButton.setContentDescription("Resume");
             engine.pause();
             appendLog("Run paused.");
         } else {
             paused = false;
-            pauseButton.setText("Pause");
+            pauseButton.setText("");
+            if (pauseActionLabel != null) pauseActionLabel.setText("Pause");
             pauseButton.setIconResource(android.R.drawable.ic_media_pause);
+            pauseButton.setContentDescription("Pause");
             engine.resume();
             appendLog("Run resumed.");
         }
@@ -732,8 +797,10 @@ public final class MainActivity extends Activity {
         if (runButton != null) runButton.setEnabled(!running);
         if (pauseButton != null) {
             pauseButton.setEnabled(running);
-            pauseButton.setText("Pause");
+            pauseButton.setText("");
+            if (pauseActionLabel != null) pauseActionLabel.setText("Pause");
             pauseButton.setIconResource(android.R.drawable.ic_media_pause);
+            pauseButton.setContentDescription("Pause");
         }
         if (abortButton != null) abortButton.setEnabled(running);
         if (!running) paused = false;
@@ -882,7 +949,7 @@ public final class MainActivity extends Activity {
         for (SolverVariant variant : solverVariants) {
             if (!tab.equals(variant.tabId)) continue;
             Chip chip = variantChip(variant);
-            boolean defaultChecked = "subgraph".equals(tab) || ("shortest_path".equals(tab) && variant.isBaseline());
+            boolean defaultChecked = variant.isBaseline();
             chip.setChecked(hadPrevious ? previous.contains(variant.variantId) : defaultChecked);
             chip.setOnCheckedChangeListener((buttonView, isChecked) -> updateRunEstimate());
             variantChips.put(variant.variantId, chip);
@@ -1033,6 +1100,246 @@ public final class MainActivity extends Activity {
         failuresMetric.setText(Integer.toString(failed));
         resultsMeta.setText("Completed in " + String.format(Locale.US, "%.2f s", session.runDurationMs / 1000.0)
                 + " | Exports: " + outputDir.getAbsolutePath());
+    }
+
+    private void shiftVisualizer(int delta) {
+        if (visualizerInputs.isEmpty()) return;
+        int next = Math.max(0, Math.min(visualizerInputs.size() - 1, visualizerIndex + delta));
+        showVisualizerInput(next, true);
+    }
+
+    private void showVisualizerInput(int index, boolean async) {
+        if (graphVisualizer == null || index < 0 || index >= visualizerInputs.size()) {
+            updateVisualizerNavState();
+            return;
+        }
+        visualizerIndex = index;
+        int serial = ++visualizerRequestSerial;
+        GeneratedInputs inputs = visualizerInputs.get(index);
+        if (visualizerStatusText != null) {
+            visualizerStatusText.setText("Solution " + (index + 1) + "/" + visualizerInputs.size() + " | seed=" + inputs.seed);
+        }
+        if (visualizerLoading != null) {
+            visualizerLoading.setTag(Boolean.TRUE);
+            visualizerLoading.setVisibility(View.GONE);
+            visualizerLoading.postDelayed(() -> {
+                if (serial == visualizerRequestSerial && visualizerLoading != null && Boolean.TRUE.equals(visualizerLoading.getTag())) {
+                    visualizerLoading.setVisibility(View.VISIBLE);
+                    if (visualizerStatusText != null) visualizerStatusText.setText("Fetching Solution...");
+                }
+            }, 500L);
+        }
+        Runnable apply = () -> {
+            if (serial != visualizerRequestSerial) return;
+            graphVisualizer.setInputs(inputs);
+            if (visualizerLoading != null) {
+                visualizerLoading.setTag(Boolean.FALSE);
+                visualizerLoading.setVisibility(View.GONE);
+            }
+            updateVisualizerNavState();
+        };
+        if (async) {
+            new Thread(() -> runOnUiThread(apply), "android-visualizer-load").start();
+        } else {
+            apply.run();
+        }
+    }
+
+    private void updateVisualizerNavState() {
+        boolean hasInputs = !visualizerInputs.isEmpty() && visualizerIndex >= 0;
+        if (visualizerPrevButton != null) visualizerPrevButton.setEnabled(hasInputs && visualizerIndex > 0);
+        if (visualizerNextButton != null) visualizerNextButton.setEnabled(hasInputs && visualizerIndex < visualizerInputs.size() - 1);
+        if (visualizerStatusText != null && !hasInputs) {
+            visualizerStatusText.setText("Run a generated-input benchmark to populate solutions.");
+        }
+    }
+
+    private void renderStatsTable(BenchmarkSession session) {
+        if (statsTableWrap == null) return;
+        statsTableWrap.removeAllViews();
+        if (session == null || session.trials.isEmpty()) {
+            statsTableWrap.addView(bodyText("Run a benchmark to populate runtime statistical comparisons."));
+            return;
+        }
+        List<RuntimeStatsRow> rows = buildRuntimeStatsRows(session);
+        if (rows.isEmpty()) {
+            statsTableWrap.addView(bodyText("No baseline-comparable statistical rows are available."));
+            return;
+        }
+
+        LinearLayout table = new LinearLayout(this);
+        table.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout sticky = new LinearLayout(this);
+        sticky.setOrientation(LinearLayout.VERTICAL);
+        sticky.addView(tableCell("Variant", dp(190), true, Color.WHITE, Color.BLACK));
+
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        LinearLayout right = new LinearLayout(this);
+        right.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout header = new LinearLayout(this);
+        String[] headings = {"Baseline", "N", "p-value", "Direction", "Mean Delta (ms)", "95% CI (ms)", "Hedges g", "Cliff's Delta", "Mode"};
+        int[] widths = {190, 58, 100, 102, 132, 168, 104, 118, 84};
+        for (int i = 0; i < headings.length; i++) {
+            header.addView(tableCell(headings[i], dp(widths[i]), true, Color.WHITE, Color.BLACK));
+        }
+        right.addView(header);
+
+        for (RuntimeStatsRow row : rows) {
+            int bg = row.n <= 0 ? color(R.color.runner_tertiary_container)
+                    : (row.significant ? color(R.color.runner_secondary_container) : color(R.color.runner_surface));
+            sticky.addView(tableCell(row.variantLabel, dp(190), false, bg, Color.BLACK));
+            LinearLayout line = new LinearLayout(this);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            String[] values = {
+                    row.baselineLabel,
+                    Integer.toString(row.n),
+                    formatStats(row.pValue, 6),
+                    row.direction,
+                    formatStats(row.meanDelta, 3),
+                    row.ciText,
+                    formatStats(row.hedgesG, 4),
+                    formatStats(row.cliffsDelta, 4),
+                    row.mode
+            };
+            for (int i = 0; i < values.length; i++) {
+                line.addView(tableCell(values[i], dp(widths[i]), false, bg, Color.BLACK));
+            }
+            right.addView(line);
+        }
+        scroll.addView(right);
+        table.addView(sticky, new LinearLayout.LayoutParams(dp(190), -2));
+        table.addView(scroll, new LinearLayout.LayoutParams(0, -2, 1f));
+        statsTableWrap.addView(table, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private TextView tableCell(String text, int widthPx, boolean header, int bgColor, int textColor) {
+        TextView cell = new TextView(this);
+        cell.setText(text);
+        cell.setTextSize(header ? 12f : 11f);
+        cell.setTextColor(textColor);
+        cell.setTypeface(header ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        cell.setGravity(Gravity.CENTER_VERTICAL);
+        cell.setSingleLine(false);
+        cell.setPadding(dp(8), dp(6), dp(8), dp(6));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(bgColor);
+        bg.setStroke(1, Color.BLACK);
+        cell.setBackground(bg);
+        cell.setMinHeight(dp(44));
+        cell.setWidth(widthPx);
+        return cell;
+    }
+
+    private List<RuntimeStatsRow> buildRuntimeStatsRows(BenchmarkSession session) {
+        Map<String, SolverVariant> variants = new LinkedHashMap<>();
+        for (SolverVariant variant : solverVariants) variants.put(variant.variantId, variant);
+        Map<String, Map<String, Double>> runtimesByKey = new LinkedHashMap<>();
+        for (BenchmarkTrial trial : session.trials) {
+            if (!"ok".equals(trial.status) || !Double.isFinite(trial.runtimeMs)) continue;
+            String key = trial.pointIndex + ":" + trial.iterationIndex;
+            runtimesByKey.computeIfAbsent(key, ignored -> new LinkedHashMap<>()).put(trial.variantId, trial.runtimeMs);
+        }
+        List<RuntimeStatsRow> rows = new ArrayList<>();
+        for (SolverVariant variant : solverVariants) {
+            if (variant.isBaseline() || !session.config.selectedVariants.contains(variant.variantId)) continue;
+            String baselineId = baselineForFamily(variant.family);
+            if (baselineId == null || !session.config.selectedVariants.contains(baselineId)) continue;
+            List<Double> variantSamples = new ArrayList<>();
+            List<Double> baselineSamples = new ArrayList<>();
+            List<Double> deltas = new ArrayList<>();
+            for (Map<String, Double> byVariant : runtimesByKey.values()) {
+                Double v = byVariant.get(variant.variantId);
+                Double b = byVariant.get(baselineId);
+                if (v != null && b != null) {
+                    variantSamples.add(v);
+                    baselineSamples.add(b);
+                    deltas.add(v - b);
+                }
+            }
+            rows.add(runtimeStatsRow(variant, variants.get(baselineId), variantSamples, baselineSamples, deltas));
+        }
+        return rows;
+    }
+
+    private RuntimeStatsRow runtimeStatsRow(SolverVariant variant, SolverVariant baseline, List<Double> variantSamples, List<Double> baselineSamples, List<Double> deltas) {
+        RuntimeStatsRow row = new RuntimeStatsRow();
+        row.variantLabel = variant.label;
+        row.baselineLabel = baseline == null ? baselineForFamily(variant.family) : baseline.label;
+        row.n = deltas.size();
+        row.mode = "paired";
+        if (row.n <= 0) {
+            row.direction = "insufficient";
+            row.ciText = "[n/a, n/a]";
+            return row;
+        }
+        row.meanDelta = mean(deltas);
+        double sd = stdev(deltas);
+        double se = row.n < 2 ? 0.0 : sd / Math.sqrt(row.n);
+        double margin = row.n < 2 ? 0.0 : 1.96 * se;
+        row.ciText = "[" + formatStats(row.meanDelta - margin, 3) + ", " + formatStats(row.meanDelta + margin, 3) + "]";
+        row.direction = row.meanDelta < 0.0 ? "faster" : (row.meanDelta > 0.0 ? "slower" : "same");
+        row.pValue = row.n < 2 || se <= 0.0 ? null : normalTwoSidedP(Math.abs(row.meanDelta / se));
+        row.hedgesG = sd <= 0.0 ? null : row.meanDelta / sd;
+        row.cliffsDelta = cliffsDelta(variantSamples, baselineSamples);
+        row.significant = row.pValue != null && row.pValue < 0.05;
+        return row;
+    }
+
+    private String baselineForFamily(String family) {
+        if ("vf3".equals(family)) return "vf3_baseline";
+        if ("glasgow".equals(family)) return "glasgow_baseline";
+        if ("dijkstra".equals(family)) return "dijkstra_baseline";
+        if ("sp_via".equals(family)) return "sp_via_baseline";
+        return null;
+    }
+
+    private double mean(List<Double> values) {
+        double sum = 0.0;
+        for (double value : values) sum += value;
+        return values.isEmpty() ? 0.0 : sum / values.size();
+    }
+
+    private double stdev(List<Double> values) {
+        if (values.size() < 2) return 0.0;
+        double mean = mean(values);
+        double sum = 0.0;
+        for (double value : values) {
+            double d = value - mean;
+            sum += d * d;
+        }
+        return Math.sqrt(sum / (values.size() - 1));
+    }
+
+    private Double cliffsDelta(List<Double> left, List<Double> right) {
+        if (left.isEmpty() || right.isEmpty()) return null;
+        long greater = 0;
+        long less = 0;
+        for (double a : left) {
+            for (double b : right) {
+                if (a > b) greater++;
+                if (a < b) less++;
+            }
+        }
+        return (greater - less) / (double) (left.size() * right.size());
+    }
+
+    private Double normalTwoSidedP(double z) {
+        if (!Double.isFinite(z)) return 0.0;
+        double cdf = 0.5 * (1.0 + erf(z / Math.sqrt(2.0)));
+        return Math.max(0.0, Math.min(1.0, 2.0 * (1.0 - cdf)));
+    }
+
+    private double erf(double x) {
+        double sign = x < 0 ? -1.0 : 1.0;
+        x = Math.abs(x);
+        double t = 1.0 / (1.0 + 0.3275911 * x);
+        double y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+        return sign * y;
+    }
+
+    private String formatStats(Double value, int decimals) {
+        if (value == null || !Double.isFinite(value)) return "n/a";
+        return String.format(Locale.US, "%." + decimals + "f", value);
     }
 
     private String buildStatsText(BenchmarkSession session) {
@@ -1341,6 +1648,31 @@ public final class MainActivity extends Activity {
         return button;
     }
 
+    private MaterialButton iconOnlyButton(int iconRes, String description) {
+        MaterialButton button = new MaterialButton(this, null, com.google.android.material.R.attr.materialIconButtonStyle);
+        button.setIconResource(iconRes);
+        button.setText("");
+        button.setContentDescription(description);
+        button.setMinWidth(dp(48));
+        button.setMinHeight(dp(48));
+        return button;
+    }
+
+    private View iconAction(MaterialButton button, String label) {
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setGravity(Gravity.CENTER);
+        TextView text = new TextView(this);
+        text.setText(label);
+        text.setTextColor(color(R.color.runner_text));
+        text.setTextSize(12f);
+        text.setGravity(Gravity.CENTER);
+        if ("Pause".equals(label)) pauseActionLabel = text;
+        wrap.addView(button, new LinearLayout.LayoutParams(dp(52), dp(48)));
+        wrap.addView(text, new LinearLayout.LayoutParams(-1, -2));
+        return wrap;
+    }
+
     private Space space(int width, int height) {
         Space space = new Space(this);
         space.setMinimumWidth(width);
@@ -1527,5 +1859,19 @@ public final class MainActivity extends Activity {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private static final class RuntimeStatsRow {
+        String variantLabel = "";
+        String baselineLabel = "";
+        int n;
+        Double pValue;
+        String direction = "";
+        double meanDelta;
+        String ciText = "";
+        Double hedgesG;
+        Double cliffsDelta;
+        String mode = "";
+        boolean significant;
     }
 }

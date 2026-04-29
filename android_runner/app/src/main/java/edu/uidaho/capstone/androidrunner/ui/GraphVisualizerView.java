@@ -19,6 +19,7 @@ import java.util.Locale;
 public final class GraphVisualizerView extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final List<int[]> edges = new ArrayList<>();
+    private final List<Integer> solutionNodes = new ArrayList<>();
     private final RectF canvasBounds = new RectF();
     private ScaleGestureDetector scaleDetector;
     private int nodeCount = 0;
@@ -57,6 +58,7 @@ public final class GraphVisualizerView extends View {
 
     public void setInputs(GeneratedInputs inputs) {
         edges.clear();
+        solutionNodes.clear();
         if (inputs == null) {
             nodeCount = 0;
             caption = "No graph loaded";
@@ -64,7 +66,8 @@ public final class GraphVisualizerView extends View {
         } else {
             nodeCount = inputs.targetNodeCount;
             edges.addAll(inputs.targetEdges);
-            caption = "Target graph: " + inputs.targetNodeCount + " nodes, " + inputs.targetEdges.size() + " edges";
+            solutionNodes.addAll(inputs.solutionNodes);
+            caption = "Seed " + inputs.seed + ": " + inputs.targetNodeCount + " nodes, " + inputs.targetEdges.size() + " edges";
             setContentDescription(caption);
         }
         resetViewport();
@@ -141,8 +144,9 @@ public final class GraphVisualizerView extends View {
         canvas.save();
         canvas.translate(offsetX, offsetY);
         canvas.scale(scale, scale, cx, cy);
-        drawEdges(canvas, xs, ys);
-        drawNodes(canvas, xs, ys);
+        boolean[] highlighted = highlightedNodes();
+        drawEdges(canvas, xs, ys, highlighted);
+        drawNodes(canvas, xs, ys, highlighted);
         canvas.restore();
 
         drawScaleBadge(canvas);
@@ -158,7 +162,7 @@ public final class GraphVisualizerView extends View {
         paint.setTextSize(dp(11));
         paint.setColor(Color.rgb(93, 104, 117));
         String meta = nodeCount <= 0 ? "Generated target graphs appear after a run starts."
-                : String.format(Locale.US, "Scale %.0f%% | labels %s", scale * 100f, showLabels ? "on" : "off");
+                : String.format(Locale.US, "Scale %.0f%% | labels %s | solution nodes %d", scale * 100f, showLabels ? "on" : "off", solutionNodes.size());
         canvas.drawText(meta, dp(12), dp(42), paint);
     }
 
@@ -180,10 +184,9 @@ public final class GraphVisualizerView extends View {
         canvas.drawText("No generated graph available.", canvasBounds.left + dp(18), canvasBounds.top + dp(42), paint);
     }
 
-    private void drawEdges(Canvas canvas, float[] xs, float[] ys) {
+    private void drawEdges(Canvas canvas, float[] xs, float[] ys, boolean[] highlighted) {
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(nodeCount > 120 ? dp(1) : dp(1.5f));
-        paint.setColor(Color.rgb(178, 188, 199));
         int edgeLimit = Math.min(edges.size(), 4000);
         for (int i = 0; i < edgeLimit; i++) {
             int[] edge = edges.get(i);
@@ -191,6 +194,9 @@ public final class GraphVisualizerView extends View {
             int u = edge[0];
             int v = edge[1];
             if (u >= 0 && u < nodeCount && v >= 0 && v < nodeCount) {
+                boolean solutionEdge = highlighted[u] && highlighted[v];
+                paint.setStrokeWidth(solutionEdge ? dp(3) : (nodeCount > 120 ? dp(1) : dp(1.5f)));
+                paint.setColor(solutionEdge ? Color.rgb(57, 106, 69) : Color.rgb(178, 188, 199));
                 canvas.drawLine(xs[u], ys[u], xs[v], ys[v], paint);
             }
         }
@@ -202,16 +208,17 @@ public final class GraphVisualizerView extends View {
         }
     }
 
-    private void drawNodes(Canvas canvas, float[] xs, float[] ys) {
+    private void drawNodes(Canvas canvas, float[] xs, float[] ys, boolean[] highlighted) {
         float nodeRadius = nodeCount > 160 ? dp(4) : (nodeCount > 80 ? dp(6) : dp(9));
         for (int i = 0; i < nodeCount; i++) {
+            boolean solutionNode = highlighted[i];
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Color.rgb(11, 87, 163));
-            canvas.drawCircle(xs[i], ys[i], nodeRadius, paint);
+            paint.setColor(solutionNode ? Color.rgb(57, 106, 69) : Color.rgb(11, 87, 163));
+            canvas.drawCircle(xs[i], ys[i], solutionNode ? nodeRadius + dp(3) : nodeRadius, paint);
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(dp(1));
-            paint.setColor(Color.WHITE);
-            canvas.drawCircle(xs[i], ys[i], nodeRadius, paint);
+            paint.setStrokeWidth(solutionNode ? dp(2) : dp(1));
+            paint.setColor(solutionNode ? Color.rgb(0, 0, 0) : Color.WHITE);
+            canvas.drawCircle(xs[i], ys[i], solutionNode ? nodeRadius + dp(3) : nodeRadius, paint);
             if (showLabels && nodeCount <= 120) {
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(Color.rgb(24, 33, 43));
@@ -222,6 +229,14 @@ public final class GraphVisualizerView extends View {
             }
         }
         paint.setTypeface(android.graphics.Typeface.DEFAULT);
+    }
+
+    private boolean[] highlightedNodes() {
+        boolean[] highlighted = new boolean[Math.max(0, nodeCount)];
+        for (Integer node : solutionNodes) {
+            if (node != null && node >= 0 && node < highlighted.length) highlighted[node] = true;
+        }
+        return highlighted;
     }
 
     private void drawScaleBadge(Canvas canvas) {

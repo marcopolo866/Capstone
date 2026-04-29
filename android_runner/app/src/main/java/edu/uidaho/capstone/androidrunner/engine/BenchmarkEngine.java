@@ -23,7 +23,7 @@ public final class BenchmarkEngine {
     public interface Listener {
         void onLog(String message);
         void onProgress(int completed, int planned, String label);
-        void onGraphInputs(GeneratedInputs inputs);
+        void onGraphInputs(GeneratedInputs inputs, int pointIndex, int iterationIndex, long seed);
         void onComplete(BenchmarkSession session, File outputDir);
         void onError(Exception error);
     }
@@ -114,7 +114,10 @@ public final class BenchmarkEngine {
                     long seed = Math.max(1L, (config.baseSeed + pointIndex + iter) % 2_147_483_647L);
                     File pointDir = new File(generatedRoot, String.format(Locale.US, "point_%05d/iter_%03d", pointIndex + 1, iter + 1));
                     GeneratedInputs inputs = generateForPoint(config, point, pointDir, seed);
-                    listener.onGraphInputs(inputs);
+                    inputs.pointIndex = pointIndex;
+                    inputs.iterationIndex = iter;
+                    inputs.seed = seed;
+                    listener.onGraphInputs(inputs, pointIndex, iter, seed);
                     for (String variantId : config.selectedVariants) {
                         waitIfPaused();
                         if (abortRequested || System.nanoTime() >= deadlineNs) break;
