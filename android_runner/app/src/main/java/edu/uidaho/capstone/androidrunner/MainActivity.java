@@ -15,6 +15,7 @@ import android.view.Gravity;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
@@ -100,7 +101,6 @@ public final class MainActivity extends Activity {
     private FrameLayout content;
     private MaterialToolbar toolbar;
     private NavigationBarView navigationView;
-    private TextView statusText;
 
     private View setupPage;
     private View runPage;
@@ -111,6 +111,7 @@ public final class MainActivity extends Activity {
     private MaterialButtonToggleGroup algorithmToggle;
     private MaterialButtonToggleGroup inputModeToggle;
     private MaterialButtonToggleGroup runModeToggle;
+    private MaterialButtonToggleGroup kModeToggle;
     private MaterialAutoCompleteTextView graphFamilyInput;
     private MaterialAutoCompleteTextView failurePolicyInput;
     private MaterialAutoCompleteTextView outlierFilterInput;
@@ -174,20 +175,11 @@ public final class MainActivity extends Activity {
 
         toolbar = new MaterialToolbar(this);
         toolbar.setTitle("Benchmark Runner");
-        toolbar.setSubtitle("On-device solver experiments");
         toolbar.setTitleTextColor(color(R.color.runner_text));
-        toolbar.setSubtitleTextColor(color(R.color.runner_muted));
         toolbar.setBackgroundColor(color(R.color.runner_bg));
         buildToolbarMenu(toolbar.getMenu());
         toolbar.setOnMenuItemClickListener(this::onToolbarItemSelected);
-        root.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(72)));
-
-        statusText = new TextView(this);
-        statusText.setTextColor(color(R.color.runner_muted));
-        statusText.setTextSize(13f);
-        statusText.setSingleLine(false);
-        statusText.setPadding(dp(16), dp(6), dp(16), dp(10));
-        root.addView(statusText, new LinearLayout.LayoutParams(-1, -2));
+        root.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(56)));
 
         boolean useRail = shouldUseNavigationRail();
         if (useRail) {
@@ -209,17 +201,16 @@ public final class MainActivity extends Activity {
             buildNavigationMenu(bottom.getMenu());
             root.addView(bottom, new LinearLayout.LayoutParams(-1, -2));
         }
-        navigationView.setOnItemSelectedListener(item -> {
-            showPage(item.getItemId());
-            return true;
-        });
-
         setupPage = buildSetupPage();
         runPage = buildRunPage();
         resultsPage = buildResultsPage();
         visualizerPage = buildVisualizerPage();
         datasetsPage = buildDatasetsPage();
 
+        navigationView.setOnItemSelectedListener(item -> {
+            showPage(item.getItemId());
+            return true;
+        });
         showPage(NAV_SETUP);
         updateRunEstimate();
         appendLog("Android runner ready. Synthetic benchmarks run on-device through the NDK core.");
@@ -315,16 +306,25 @@ public final class MainActivity extends Activity {
         varyKCheck = switchControl("Vary K", false);
         varyDensityCheck = switchControl("Vary Density", false);
         variables.addView(switchRow(varyNCheck, varyKCheck, varyDensityCheck));
-        nStartInput = numberInput("64", false);
-        nEndInput = numberInput("64", false);
+        nStartInput = numberInput("10", false);
+        nEndInput = numberInput("10", false);
         nStepInput = numberInput("1", false);
-        kStartInput = numberInput("10", false);
-        kEndInput = numberInput("10", false);
+        kStartInput = numberInput("5", false);
+        kEndInput = numberInput("5", false);
         kStepInput = numberInput("1", false);
-        densityStartInput = numberInput("0.05", true);
-        densityEndInput = numberInput("0.05", true);
+        densityStartInput = numberInput("0.01", true);
+        densityEndInput = numberInput("0.01", true);
         densityStepInput = numberInput("0.01", true);
         variables.addView(rangeRow("N", nStartInput, nEndInput, nStepInput));
+        kModeToggle = toggleGroup(
+                new int[]{3031, 3032},
+                new String[]{"Absolute", "Percent"},
+                3031
+        );
+        kModeToggle.addOnButtonCheckedListener((group, checkedId, isChecked) -> {
+            if (isChecked) updateRunEstimate();
+        });
+        variables.addView(labeledBlock("K Mode", kModeToggle));
         variables.addView(rangeRow("K", kStartInput, kEndInput, kStepInput));
         variables.addView(rangeRow("Density", densityStartInput, densityEndInput, densityStepInput));
 
@@ -750,6 +750,7 @@ public final class MainActivity extends Activity {
         config.outlierFilter = dropdownValue(outlierFilterInput, "none");
         config.timeoutAsMissing = timeoutMissingCheck.isChecked();
         config.deleteGeneratedInputs = deleteInputsCheck.isChecked();
+        config.kMode = selectedKMode();
         config.varyN = varyNCheck.isChecked();
         config.varyK = varyKCheck.isChecked();
         config.varyDensity = varyDensityCheck.isChecked();
@@ -759,7 +760,7 @@ public final class MainActivity extends Activity {
         config.kStart = positiveInt(kStartInput, 2);
         config.kEnd = positiveInt(kEndInput, config.kStart);
         config.kStep = positiveInt(kStepInput, 1);
-        config.densityStart = density(densityStartInput, 0.05);
+        config.densityStart = density(densityStartInput, 0.01);
         config.densityEnd = density(densityEndInput, config.densityStart);
         config.densityStep = density(densityStepInput, 0.01);
         for (Map.Entry<String, Chip> entry : variantChips.entrySet()) {
@@ -786,6 +787,7 @@ public final class MainActivity extends Activity {
         setDropdown(outlierFilterInput, config.outlierFilter);
         timeoutMissingCheck.setChecked(config.timeoutAsMissing);
         deleteInputsCheck.setChecked(config.deleteGeneratedInputs);
+        kModeToggle.check("percent".equals(config.kMode) ? 3032 : 3031);
         varyNCheck.setChecked(config.varyN);
         varyKCheck.setChecked(config.varyK);
         varyDensityCheck.setChecked(config.varyDensity);
@@ -892,6 +894,7 @@ public final class MainActivity extends Activity {
     private void updateVariableAvailability() {
         boolean subgraph = "subgraph".equals(selectedAlgorithm());
         varyKCheck.setEnabled(subgraph);
+        kModeToggle.setEnabled(subgraph);
         kStartInput.setEnabled(subgraph);
         kEndInput.setEnabled(subgraph);
         kStepInput.setEnabled(subgraph);
@@ -899,12 +902,11 @@ public final class MainActivity extends Activity {
     }
 
     private void updateRunEstimate() {
-        if (statusText == null || plannedTrialsText == null) return;
+        if (plannedTrialsText == null) return;
         BenchmarkConfig config;
         try {
             config = buildConfigFromUi();
         } catch (Exception ignored) {
-            statusText.setText("Complete the setup fields to estimate the run.");
             return;
         }
         int points = estimatePointCount(config);
@@ -921,8 +923,8 @@ public final class MainActivity extends Activity {
                 + " | " + variants + " variant" + (variants == 1 ? "" : "s")
                 + " | " + config.iterations + " iteration" + (config.iterations == 1 ? "" : "s");
         if (datasets > 0) detail += " | " + datasets + " dataset" + (datasets == 1 ? "" : "s");
+        if ("subgraph".equals(config.tabId)) detail += " | K " + config.kMode;
         plannedTrialsText.setText("Estimated run: " + estimate + " | " + detail);
-        statusText.setText(titleCase(config.tabId) + " | " + titleCase(config.inputMode) + " | " + estimate + " | max app threads " + maxAppThreads);
     }
 
     private int estimatePointCount(BenchmarkConfig config) {
@@ -984,34 +986,37 @@ public final class MainActivity extends Activity {
 
     private void showPage(int navId) {
         currentNavId = navId;
+        if (content == null) return;
         content.removeAllViews();
         View page;
         String title;
-        String subtitle;
         if (navId == NAV_RUN) {
+            if (runPage == null) runPage = buildRunPage();
             page = runPage;
             title = "Run";
-            subtitle = "Progress and execution log";
         } else if (navId == NAV_RESULTS) {
+            if (resultsPage == null) resultsPage = buildResultsPage();
             page = resultsPage;
             title = "Results";
-            subtitle = "Runtime, memory, and statistics";
         } else if (navId == NAV_GRAPH) {
+            if (visualizerPage == null) visualizerPage = buildVisualizerPage();
             page = visualizerPage;
             title = "Graph";
-            subtitle = "Pan, zoom, and inspect generated target graphs";
         } else if (navId == NAV_DATASETS) {
+            if (datasetsPage == null) datasetsPage = buildDatasetsPage();
             page = datasetsPage;
             title = "Data";
-            subtitle = "Dataset library and preparation";
             updateDatasetStatuses();
         } else {
+            if (setupPage == null) setupPage = buildSetupPage();
             page = setupPage;
             title = "Setup";
-            subtitle = "Benchmark configuration";
         }
         toolbar.setTitle(title);
-        toolbar.setSubtitle(subtitle);
+        toolbar.setSubtitle(null);
+        if (page.getParent() instanceof ViewGroup) {
+            ((ViewGroup) page.getParent()).removeView(page);
+        }
         content.addView(page, new FrameLayout.LayoutParams(-1, -1));
         if (navigationView != null && navigationView.getSelectedItemId() != navId) {
             navigationView.setSelectedItemId(navId);
@@ -1128,6 +1133,8 @@ public final class MainActivity extends Activity {
             button.setId(ids[i]);
             button.setText(labels[i]);
             button.setCheckable(true);
+            button.setTextColor(toggleTextColors());
+            button.setBackgroundTintList(toggleBackgroundColors());
             button.setMinHeight(dp(48));
             button.setInsetTop(0);
             button.setInsetBottom(0);
@@ -1277,6 +1284,20 @@ public final class MainActivity extends Activity {
         );
     }
 
+    private ColorStateList toggleTextColors() {
+        return new ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{color(R.color.runner_on_primary), color(R.color.runner_primary)}
+        );
+    }
+
+    private ColorStateList toggleBackgroundColors() {
+        return new ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{color(R.color.runner_primary), color(R.color.runner_surface)}
+        );
+    }
+
     private void trackEstimateInputs() {
         TextWatcher watcher = new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {
@@ -1308,6 +1329,10 @@ public final class MainActivity extends Activity {
 
     private String selectedRunMode() {
         return runModeToggle != null && runModeToggle.getCheckedButtonId() == RUN_TIMED ? "timed" : "threshold";
+    }
+
+    private String selectedKMode() {
+        return kModeToggle != null && kModeToggle.getCheckedButtonId() == 3032 ? "percent" : "absolute";
     }
 
     private String dropdownValue(MaterialAutoCompleteTextView input, String fallback) {

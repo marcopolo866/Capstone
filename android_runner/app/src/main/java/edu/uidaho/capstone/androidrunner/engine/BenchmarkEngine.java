@@ -210,16 +210,20 @@ public final class BenchmarkEngine {
         List<Integer> ks = "subgraph".equals(config.tabId) && config.varyK ? intRange(config.kStart, config.kEnd, config.kStep) : single(config.kStart);
         List<Double> densities = config.varyDensity ? doubleRange(config.densityStart, config.densityEnd, config.densityStep) : single(config.densityStart);
         List<Point> points = new ArrayList<>();
+        boolean percentK = "percent".equals(config.kMode);
         for (double density : densities) {
             for (int k : ks) {
                 for (int n : ns) {
                     Point p = new Point();
                     p.n = Math.max("subgraph".equals(config.tabId) ? 3 : 2, n);
-                    p.k = Math.max(2, Math.min(k, p.n - 1));
+                    int kNodes = percentK ? (int) Math.round((Math.max(0.000001, Math.min(100.0, k)) / 100.0) * p.n) : k;
+                    p.k = Math.max(2, Math.min(kNodes, p.n - 1));
                     p.density = Math.max(0.000001, Math.min(1.0, density));
-                    p.x = config.varyN ? p.n : (config.varyK ? p.k : p.density);
-                    p.y = selectedVarCount(config) > 1 ? (config.varyDensity ? p.density : (config.varyK ? (double) p.k : null)) : null;
-                    p.label = "n=" + p.n + ("subgraph".equals(config.tabId) ? ", k=" + p.k : "") + ", density=" + String.format(Locale.US, "%.4f", p.density);
+                    double kAxis = percentK ? k : p.k;
+                    p.x = config.varyN ? p.n : (config.varyK ? kAxis : p.density);
+                    p.y = selectedVarCount(config) > 1 ? (config.varyDensity ? p.density : (config.varyK ? kAxis : null)) : null;
+                    String kLabel = percentK ? ", k=" + p.k + " (" + k + "%)" : ", k=" + p.k;
+                    p.label = "n=" + p.n + ("subgraph".equals(config.tabId) ? kLabel : "") + ", density=" + String.format(Locale.US, "%.4f", p.density);
                     points.add(p);
                 }
             }
