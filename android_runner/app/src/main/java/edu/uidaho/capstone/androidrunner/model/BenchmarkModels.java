@@ -76,7 +76,7 @@ public final class BenchmarkModels {
         public final List<String> selectedDatasets = new ArrayList<>();
         public int iterations = 1;
         public long baseSeed = 424242L;
-        public boolean randomSeed = false;
+        public boolean randomSeed = true;
         public int maxWorkers = 1;
         public boolean parallelRequested = false;
         public int solverTimeoutSeconds = 0;

@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
+import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -85,6 +86,8 @@ public final class MainActivity extends Activity {
     private static final int INPUT_DATASETS = 3012;
     private static final int RUN_THRESHOLD = 3021;
     private static final int RUN_TIMED = 3022;
+    private static final int K_ABSOLUTE = 3031;
+    private static final int K_PERCENT = 3032;
 
     private static final String[] GRAPH_FAMILIES = {"random_density", "erdos_renyi", "barabasi_albert", "grid"};
     private static final String[] FAILURE_POLICIES = {"continue", "stop"};
@@ -135,7 +138,7 @@ public final class MainActivity extends Activity {
     private SwitchMaterial varyDensityCheck;
     private SwitchMaterial deleteInputsCheck;
     private SwitchMaterial timeoutMissingCheck;
-    private ChipGroup variantsGroup;
+    private LinearLayout variantsWrap;
     private TextView plannedTrialsText;
 
     private TextView logText;
@@ -161,6 +164,7 @@ public final class MainActivity extends Activity {
     private BenchmarkConfig pendingManifestExportConfig;
     private BenchmarkSession lastSession;
     private boolean paused;
+    private boolean suppressNavigationCallback;
     private int currentNavId = NAV_SETUP;
 
     @Override
@@ -208,8 +212,14 @@ public final class MainActivity extends Activity {
         datasetsPage = buildDatasetsPage();
 
         navigationView.setOnItemSelectedListener(item -> {
-            showPage(item.getItemId());
-            return true;
+            if (suppressNavigationCallback) return true;
+            try {
+                showPage(item.getItemId());
+                return true;
+            } catch (RuntimeException exc) {
+                toast("Unable to open page: " + readableError(exc));
+                return false;
+            }
         });
         showPage(NAV_SETUP);
         updateRunEstimate();
@@ -289,7 +299,7 @@ public final class MainActivity extends Activity {
         benchmark.addView(labeledBlock("Stop mode", runModeToggle));
 
         iterationsInput = numberInput("1", false);
-        seedInput = numberInput("424242", false);
+        seedInput = numberInput("", false);
         workersInput = numberInput("1", false);
         timeLimitInput = numberInput("1", false);
         benchmark.addView(twoColumnRow(
@@ -317,9 +327,9 @@ public final class MainActivity extends Activity {
         densityStepInput = numberInput("0.01", true);
         variables.addView(rangeRow("N", nStartInput, nEndInput, nStepInput));
         kModeToggle = toggleGroup(
-                new int[]{3031, 3032},
+                new int[]{K_ABSOLUTE, K_PERCENT},
                 new String[]{"Absolute", "Percent"},
-                3031
+                K_ABSOLUTE
         );
         kModeToggle.addOnButtonCheckedListener((group, checkedId, isChecked) -> {
             if (isChecked) updateRunEstimate();
@@ -329,11 +339,9 @@ public final class MainActivity extends Activity {
         variables.addView(rangeRow("Density", densityStartInput, densityEndInput, densityStepInput));
 
         LinearLayout variants = addSection(page, "Solver Variants", "Select the solver families to include in the run.");
-        variantsGroup = new ChipGroup(this);
-        variantsGroup.setSingleLine(false);
-        variantsGroup.setChipSpacingHorizontal(dp(8));
-        variantsGroup.setChipSpacingVertical(dp(8));
-        variants.addView(variantsGroup, new LinearLayout.LayoutParams(-1, -2));
+        variantsWrap = new LinearLayout(this);
+        variantsWrap.setOrientation(LinearLayout.VERTICAL);
+        variants.addView(variantsWrap, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout variantActions = new LinearLayout(this);
         variantActions.setOrientation(LinearLayout.HORIZONTAL);
         MaterialButton selectAll = outlinedButton("Select all");
@@ -787,7 +795,7 @@ public final class MainActivity extends Activity {
         setDropdown(outlierFilterInput, config.outlierFilter);
         timeoutMissingCheck.setChecked(config.timeoutAsMissing);
         deleteInputsCheck.setChecked(config.deleteGeneratedInputs);
-        kModeToggle.check("percent".equals(config.kMode) ? 3032 : 3031);
+        kModeToggle.check("percent".equals(config.kMode) ? K_PERCENT : K_ABSOLUTE);
         varyNCheck.setChecked(config.varyN);
         varyKCheck.setChecked(config.varyK);
         varyDensityCheck.setChecked(config.varyDensity);
@@ -859,28 +867,85 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshVariantChips() {
-        if (variantsGroup == null) return;
+        if (variantsWrap == null) return;
         List<String> previous = selectedVariantIds();
         boolean hadPrevious = !variantChips.isEmpty();
         String tab = selectedAlgorithm();
-        variantsGroup.removeAllViews();
+        variantsWrap.removeAllViews();
         variantChips.clear();
+        LinearLayout columns = new LinearLayout(this);
+        columns.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout left = variantColumn(columnTitleFor(tab, true));
+        View divider = new View(this);
+        divider.setBackgroundColor(Color.BLACK);
+        LinearLayout right = variantColumn(columnTitleFor(tab, false));
         for (SolverVariant variant : solverVariants) {
             if (!tab.equals(variant.tabId)) continue;
-            Chip chip = new Chip(this);
-            chip.setText(variant.label);
-            chip.setCheckable(true);
-            chip.setEnsureMinTouchTargetSize(true);
-            chip.setContentDescription("Solver variant " + variant.label);
-            chip.setChipBackgroundColor(chipColors());
-            chip.setTextColor(textChipColors());
+            Chip chip = variantChip(variant);
             boolean defaultChecked = "subgraph".equals(tab) || ("shortest_path".equals(tab) && variant.isBaseline());
             chip.setChecked(hadPrevious ? previous.contains(variant.variantId) : defaultChecked);
             chip.setOnCheckedChangeListener((buttonView, isChecked) -> updateRunEstimate());
             variantChips.put(variant.variantId, chip);
-            variantsGroup.addView(chip);
+            if (isLeftVariantColumn(tab, variant)) {
+                left.addView(chip, new LinearLayout.LayoutParams(-1, dp(46)));
+            } else {
+                right.addView(chip, new LinearLayout.LayoutParams(-1, dp(46)));
+            }
         }
+        columns.addView(left, new LinearLayout.LayoutParams(0, -2, 1f));
+        LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(dp(1), -1);
+        dividerParams.setMargins(dp(10), 0, dp(10), 0);
+        columns.addView(divider, dividerParams);
+        columns.addView(right, new LinearLayout.LayoutParams(0, -2, 1f));
+        variantsWrap.addView(columns);
         updateRunEstimate();
+    }
+
+    private LinearLayout variantColumn(String title) {
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        TextView label = new TextView(this);
+        label.setText(title);
+        label.setTextColor(color(R.color.runner_text));
+        label.setTextSize(14f);
+        label.setTypeface(Typeface.DEFAULT_BOLD);
+        label.setPadding(0, 0, 0, dp(8));
+        column.addView(label);
+        return column;
+    }
+
+    private Chip variantChip(SolverVariant variant) {
+        Chip chip = new Chip(this);
+        chip.setText(shortVariantLabel(variant));
+        chip.setCheckable(true);
+        chip.setCheckedIconVisible(true);
+        chip.setEnsureMinTouchTargetSize(true);
+        chip.setContentDescription("Solver variant " + variant.label);
+        chip.setChipBackgroundColor(variantChipColors());
+        chip.setChipStrokeColor(variantChipStrokeColors());
+        chip.setChipStrokeWidth(dp(1));
+        chip.setTextColor(variantChipTextColors());
+        chip.setCheckedIconTint(variantChipTextColors());
+        return chip;
+    }
+
+    private boolean isLeftVariantColumn(String tab, SolverVariant variant) {
+        if ("subgraph".equals(tab)) return "vf3".equals(variant.family);
+        return "dijkstra".equals(variant.family);
+    }
+
+    private String columnTitleFor(String tab, boolean left) {
+        if ("subgraph".equals(tab)) return left ? "VF3" : "Glasgow";
+        return left ? "Dijkstra" : "Via";
+    }
+
+    private String shortVariantLabel(SolverVariant variant) {
+        String label = variant.label;
+        if ("vf3".equals(variant.family) && label.startsWith("VF3 ")) return label.substring(4);
+        if ("glasgow".equals(variant.family) && label.startsWith("Glasgow ")) return label.substring(8);
+        if ("dijkstra".equals(variant.family) && label.startsWith("Dijkstra ")) return label.substring(9);
+        if ("sp_via".equals(variant.family) && label.startsWith("With Intermediate ")) return label.substring(18);
+        return label;
     }
 
     private List<String> selectedVariantIds() {
@@ -1019,7 +1084,12 @@ public final class MainActivity extends Activity {
         }
         content.addView(page, new FrameLayout.LayoutParams(-1, -1));
         if (navigationView != null && navigationView.getSelectedItemId() != navId) {
-            navigationView.setSelectedItemId(navId);
+            suppressNavigationCallback = true;
+            try {
+                navigationView.setSelectedItemId(navId);
+            } finally {
+                suppressNavigationCallback = false;
+            }
         }
     }
 
@@ -1148,6 +1218,8 @@ public final class MainActivity extends Activity {
         TextInputEditText input = new TextInputEditText(this);
         input.setSingleLine(true);
         input.setText(value);
+        input.setTextColor(Color.BLACK);
+        input.setHintTextColor(color(R.color.runner_muted));
         input.setSelectAllOnFocus(true);
         input.setInputType(decimal
                 ? (InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL)
@@ -1160,6 +1232,8 @@ public final class MainActivity extends Activity {
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, values);
         view.setAdapter(adapter);
         view.setSingleLine(true);
+        view.setTextColor(Color.BLACK);
+        view.setHintTextColor(color(R.color.runner_muted));
         view.setInputType(InputType.TYPE_NULL);
         view.setText(selected, false);
         view.setOnItemClickListener((parent, view1, position, id) -> updateRunEstimate());
@@ -1170,6 +1244,10 @@ public final class MainActivity extends Activity {
         TextInputLayout layout = new TextInputLayout(this);
         layout.setHint(label);
         layout.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_OUTLINE);
+        layout.setBoxBackgroundColor(color(R.color.runner_surface));
+        layout.setBoxStrokeColor(Color.BLACK);
+        layout.setHintTextColor(ColorStateList.valueOf(Color.BLACK));
+        layout.setDefaultHintTextColor(ColorStateList.valueOf(color(R.color.runner_muted)));
         layout.setEndIconMode(editText instanceof MaterialAutoCompleteTextView ? TextInputLayout.END_ICON_DROPDOWN_MENU : TextInputLayout.END_ICON_NONE);
         if (helper != null) layout.setHelperText(helper);
         layout.setPadding(0, dp(6), 0, dp(6));
@@ -1270,17 +1348,24 @@ public final class MainActivity extends Activity {
         return space;
     }
 
-    private ColorStateList chipColors() {
+    private ColorStateList variantChipColors() {
         return new ColorStateList(
                 new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
-                new int[]{color(R.color.runner_primary_container), color(R.color.runner_surface_variant)}
+                new int[]{color(R.color.runner_secondary_container), color(R.color.runner_surface)}
         );
     }
 
-    private ColorStateList textChipColors() {
+    private ColorStateList variantChipStrokeColors() {
         return new ColorStateList(
                 new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
-                new int[]{color(R.color.runner_on_primary_container), color(R.color.runner_text)}
+                new int[]{color(R.color.runner_secondary), Color.BLACK}
+        );
+    }
+
+    private ColorStateList variantChipTextColors() {
+        return new ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{Color.BLACK, Color.BLACK}
         );
     }
 
@@ -1332,7 +1417,7 @@ public final class MainActivity extends Activity {
     }
 
     private String selectedKMode() {
-        return kModeToggle != null && kModeToggle.getCheckedButtonId() == 3032 ? "percent" : "absolute";
+        return kModeToggle != null && kModeToggle.getCheckedButtonId() == K_PERCENT ? "percent" : "absolute";
     }
 
     private String dropdownValue(MaterialAutoCompleteTextView input, String fallback) {
@@ -1429,6 +1514,11 @@ public final class MainActivity extends Activity {
 
     private void toast(String message) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+    }
+
+    private String readableError(Throwable error) {
+        String message = error.getMessage();
+        return message == null || message.trim().isEmpty() ? error.getClass().getSimpleName() : message;
     }
 
     private int color(int resId) {
