@@ -32,7 +32,6 @@ import com.google.android.material.bottomnavigation.BottomNavigationView;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.button.MaterialButtonToggleGroup;
 import com.google.android.material.card.MaterialCardView;
-import com.google.android.material.checkbox.MaterialCheckBox;
 import com.google.android.material.chip.Chip;
 import com.google.android.material.chip.ChipGroup;
 import com.google.android.material.navigation.NavigationBarView;
@@ -43,8 +42,6 @@ import com.google.android.material.textfield.MaterialAutoCompleteTextView;
 import com.google.android.material.textfield.TextInputEditText;
 import com.google.android.material.textfield.TextInputLayout;
 
-import edu.uidaho.capstone.androidrunner.data.DatasetCatalog;
-import edu.uidaho.capstone.androidrunner.data.DatasetManager;
 import edu.uidaho.capstone.androidrunner.data.ManifestCodec;
 import edu.uidaho.capstone.androidrunner.data.SessionExporter;
 import edu.uidaho.capstone.androidrunner.data.SolverCatalog;
@@ -54,7 +51,6 @@ import edu.uidaho.capstone.androidrunner.model.BenchmarkModels.BenchmarkConfig;
 import edu.uidaho.capstone.androidrunner.model.BenchmarkModels.BenchmarkDatapoint;
 import edu.uidaho.capstone.androidrunner.model.BenchmarkModels.BenchmarkSession;
 import edu.uidaho.capstone.androidrunner.model.BenchmarkModels.BenchmarkTrial;
-import edu.uidaho.capstone.androidrunner.model.BenchmarkModels.DatasetSpec;
 import edu.uidaho.capstone.androidrunner.model.BenchmarkModels.SolverVariant;
 import edu.uidaho.capstone.androidrunner.ui.BenchmarkChartView;
 import edu.uidaho.capstone.androidrunner.ui.GraphVisualizerView;
@@ -79,12 +75,9 @@ public final class MainActivity extends Activity {
     private static final int NAV_RUN = 2002;
     private static final int NAV_RESULTS = 2003;
     private static final int NAV_GRAPH = 2004;
-    private static final int NAV_DATASETS = 2005;
 
     private static final int ALGO_SUBGRAPH = 3001;
     private static final int ALGO_SHORTEST_PATH = 3002;
-    private static final int INPUT_INDEPENDENT = 3011;
-    private static final int INPUT_DATASETS = 3012;
     private static final int RUN_THRESHOLD = 3021;
     private static final int RUN_TIMED = 3022;
     private static final int K_ABSOLUTE = 3031;
@@ -95,10 +88,7 @@ public final class MainActivity extends Activity {
     private static final String[] OUTLIER_FILTERS = {"none", "mad", "iqr"};
 
     private final Map<String, Chip> variantChips = new LinkedHashMap<>();
-    private final Map<String, MaterialCheckBox> datasetChecks = new LinkedHashMap<>();
-    private final Map<String, TextView> datasetStatusLabels = new LinkedHashMap<>();
     private final List<SolverVariant> solverVariants = SolverCatalog.all();
-    private final List<DatasetSpec> datasetSpecs = DatasetCatalog.all();
     private final int maxAppThreads = Math.max(1, Runtime.getRuntime().availableProcessors());
 
     private BenchmarkEngine engine;
@@ -110,10 +100,8 @@ public final class MainActivity extends Activity {
     private View runPage;
     private View resultsPage;
     private View visualizerPage;
-    private View datasetsPage;
 
     private MaterialButtonToggleGroup algorithmToggle;
-    private MaterialButtonToggleGroup inputModeToggle;
     private MaterialButtonToggleGroup runModeToggle;
     private MaterialButtonToggleGroup kModeToggle;
     private MaterialAutoCompleteTextView graphFamilyInput;
@@ -151,6 +139,7 @@ public final class MainActivity extends Activity {
     private BenchmarkChartView memoryChart;
     private GraphVisualizerView graphVisualizer;
     private LinearLayout statsTableWrap;
+    private SwitchMaterial errorBarsSwitch;
     private TextView trialsMetric;
     private TextView runtimeMetric;
     private TextView memoryMetric;
@@ -159,8 +148,8 @@ public final class MainActivity extends Activity {
     private SwitchMaterial graphLabelsSwitch;
     private TextView visualizerStatusText;
     private ProgressBar visualizerLoading;
-    private MaterialButton visualizerPrevButton;
-    private MaterialButton visualizerNextButton;
+    private final Map<String, List<MaterialButton>> visualizerNavButtons = new LinkedHashMap<>();
+    private final Map<String, TextView> visualizerNavLabels = new LinkedHashMap<>();
     private final List<GeneratedInputs> visualizerInputs = new ArrayList<>();
     private int visualizerIndex = -1;
     private int visualizerRequestSerial;
@@ -220,7 +209,6 @@ public final class MainActivity extends Activity {
         runPage = buildRunPage();
         resultsPage = buildResultsPage();
         visualizerPage = buildVisualizerPage();
-        datasetsPage = buildDatasetsPage();
 
         navigationView.setOnItemSelectedListener(item -> {
             if (suppressNavigationCallback) return true;
@@ -262,12 +250,14 @@ public final class MainActivity extends Activity {
         menu.add(0, NAV_SETUP, 0, "Setup").setIcon(android.R.drawable.ic_menu_manage);
         menu.add(0, NAV_RUN, 1, "Run").setIcon(android.R.drawable.ic_media_play);
         menu.add(0, NAV_RESULTS, 2, "Results").setIcon(android.R.drawable.ic_menu_sort_by_size);
-        menu.add(0, NAV_GRAPH, 3, "Graph").setIcon(android.R.drawable.ic_menu_share);
-        menu.add(0, NAV_DATASETS, 4, "Data").setIcon(android.R.drawable.ic_menu_agenda);
+        menu.add(0, NAV_GRAPH, 3, "Graph").setIcon(android.R.drawable.ic_menu_gallery);
     }
 
     private void configureNavigationView(NavigationBarView view) {
         view.setLabelVisibilityMode(NavigationBarView.LABEL_VISIBILITY_LABELED);
+        if (view instanceof BottomNavigationView) {
+            ((BottomNavigationView) view).setItemHorizontalTranslationEnabled(false);
+        }
         ColorStateList navText = new ColorStateList(
                 new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
                 new int[]{Color.WHITE, color(R.color.runner_text)}
@@ -301,16 +291,6 @@ public final class MainActivity extends Activity {
         });
         benchmark.addView(labeledBlock("Algorithm", algorithmToggle));
 
-        inputModeToggle = toggleGroup(
-                new int[]{INPUT_INDEPENDENT, INPUT_DATASETS},
-                new String[]{"Independent", "Datasets"},
-                INPUT_INDEPENDENT
-        );
-        inputModeToggle.addOnButtonCheckedListener((group, checkedId, isChecked) -> {
-            if (isChecked) updateRunEstimate();
-        });
-        benchmark.addView(labeledBlock("Input source", inputModeToggle));
-
         graphFamilyInput = dropdown(GRAPH_FAMILIES, "random_density");
         benchmark.addView(textField("Graph Family", graphFamilyInput, null));
 
@@ -329,11 +309,7 @@ public final class MainActivity extends Activity {
         workersInput = numberInput("1", false);
         timeLimitInput = numberInput("1", false);
         benchmark.addView(twoColumnRow(
-                textField("Iterations per datapoint", iterationsInput, null),
-                textField("Seed", seedInput, "Blank uses a random seed.")
-        ));
-        benchmark.addView(twoColumnRow(
-                textField("Max Parallel Workers (max app threads: " + maxAppThreads + ")", workersInput, null),
+                textField("Seed", seedInput, "Blank uses a random seed."),
                 textField("Time Limit (minutes)", timeLimitInput, null)
         ));
 
@@ -390,6 +366,10 @@ public final class MainActivity extends Activity {
         outlierFilterInput = dropdown(OUTLIER_FILTERS, "none");
         solverTimeoutInput = numberInput("0", false);
         retryInput = numberInput("0", false);
+        policy.addView(twoColumnRow(
+                textField("Iterations per datapoint", iterationsInput, null),
+                textField("Max Parallel Workers (max app threads: " + maxAppThreads + ")", workersInput, null)
+        ));
         policy.addView(twoColumnRow(
                 textField("Failure Policy", failurePolicyInput, null),
                 textField("Outlier Filter", outlierFilterInput, null)
@@ -491,7 +471,7 @@ public final class MainActivity extends Activity {
         clear.setIconResource(android.R.drawable.ic_menu_delete);
         clear.setOnClickListener(v -> logText.setText(""));
         logHeader.addView(logTitle, new LinearLayout.LayoutParams(0, -2, 1f));
-        logHeader.addView(clear, new LinearLayout.LayoutParams(dp(132), dp(44)));
+        logHeader.addView(clear, new LinearLayout.LayoutParams(dp(176), dp(44)));
         log.addView(logHeader);
         logText = new TextView(this);
         logText.setTextSize(13f);
@@ -523,6 +503,12 @@ public final class MainActivity extends Activity {
         failuresMetric = metricCard(metrics, "Failures", "0");
         metricsScroll.addView(metrics);
         overview.addView(metricsScroll, new LinearLayout.LayoutParams(-1, -2));
+        errorBarsSwitch = switchControl("Error Bars", false);
+        errorBarsSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (runtimeChart != null) runtimeChart.setShowErrorBars(isChecked);
+            if (memoryChart != null) memoryChart.setShowErrorBars(isChecked);
+        });
+        overview.addView(errorBarsSwitch, new LinearLayout.LayoutParams(-1, dp(52)));
 
         LinearLayout runtime = addSection(page, "Runtime", "Median runtime by variant and datapoint.");
         runtimeChart = new BenchmarkChartView(this);
@@ -560,130 +546,29 @@ public final class MainActivity extends Activity {
         controls.addView(reset, new LinearLayout.LayoutParams(0, dp(48), 1f));
         host.addView(controls, new LinearLayout.LayoutParams(-1, -2));
 
-        LinearLayout solutionNav = new LinearLayout(this);
-        solutionNav.setOrientation(LinearLayout.HORIZONTAL);
-        solutionNav.setGravity(Gravity.CENTER_VERTICAL);
-        visualizerPrevButton = outlinedButton("<");
-        visualizerNextButton = outlinedButton(">");
-        visualizerPrevButton.setOnClickListener(v -> shiftVisualizer(-1));
-        visualizerNextButton.setOnClickListener(v -> shiftVisualizer(1));
+        visualizerNavButtons.clear();
+        visualizerNavLabels.clear();
         visualizerStatusText = muted("Run a generated-input benchmark to populate solutions.");
         visualizerLoading = new ProgressBar(this);
         visualizerLoading.setIndeterminate(true);
         visualizerLoading.setVisibility(View.GONE);
-        solutionNav.addView(visualizerPrevButton, new LinearLayout.LayoutParams(dp(54), dp(44)));
-        solutionNav.addView(visualizerStatusText, new LinearLayout.LayoutParams(0, -2, 1f));
-        solutionNav.addView(visualizerLoading, new LinearLayout.LayoutParams(dp(42), dp(42)));
-        solutionNav.addView(visualizerNextButton, new LinearLayout.LayoutParams(dp(54), dp(44)));
-        host.addView(solutionNav, new LinearLayout.LayoutParams(-1, -2));
+        host.addView(visualizerNavRow("N", "n", new int[]{-10, -5, -1, 1, 5, 10}));
+        host.addView(visualizerNavRow("k", "k", new int[]{-10, -5, -1, 1, 5, 10}));
+        host.addView(visualizerNavRow("Density", "density", new int[]{-10, -5, -1, 1, 5, 10}));
+        host.addView(visualizerNavRow("Iteration", "iteration", new int[]{-10, -5, -1, 1, 5, 10}));
+        host.addView(visualizerNavRow("Solution", "solution", new int[]{-10, -5, -1, 1, 5, 10}));
+        LinearLayout statusRow = new LinearLayout(this);
+        statusRow.setOrientation(LinearLayout.HORIZONTAL);
+        statusRow.setGravity(Gravity.CENTER_VERTICAL);
+        statusRow.addView(visualizerStatusText, new LinearLayout.LayoutParams(0, -2, 1f));
+        statusRow.addView(visualizerLoading, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        host.addView(statusRow, new LinearLayout.LayoutParams(-1, -2));
 
         graphVisualizer = new GraphVisualizerView(this);
         graphVisualizer.setShowLabels(true);
         host.addView(graphVisualizer, new LinearLayout.LayoutParams(-1, 0, 1f));
         updateVisualizerNavState();
         return host;
-    }
-
-    private View buildDatasetsPage() {
-        LinearLayout host = new LinearLayout(this);
-        host.setOrientation(LinearLayout.VERTICAL);
-
-        LinearLayout page = pageContainer();
-        LinearLayout header = addSection(page, "Dataset Library", "Select raw benchmark archives to prepare in app storage.");
-        TextView root = muted("Storage: " + DatasetManager.datasetRoot(this).getAbsolutePath());
-        header.addView(root);
-
-        for (DatasetSpec spec : datasetSpecs) {
-            page.addView(datasetCard(spec));
-        }
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(page);
-        host.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setPadding(dp(16), dp(10), dp(16), dp(12));
-        actions.setBackgroundColor(color(R.color.runner_bg));
-        MaterialButton prepare = filledButton("Prepare Selected");
-        prepare.setIconResource(android.R.drawable.ic_menu_save);
-        prepare.setOnClickListener(v -> prepareSelectedDatasets());
-        MaterialButton refresh = outlinedButton("Refresh");
-        refresh.setIconResource(android.R.drawable.ic_menu_rotate);
-        refresh.setOnClickListener(v -> updateDatasetStatuses());
-        actions.addView(prepare, new LinearLayout.LayoutParams(0, dp(52), 1f));
-        actions.addView(space(dp(8), 1));
-        actions.addView(refresh, new LinearLayout.LayoutParams(0, dp(52), 1f));
-        host.addView(actions);
-
-        updateDatasetStatuses();
-        return host;
-    }
-
-    private View datasetCard(DatasetSpec spec) {
-        MaterialCardView card = shellCard();
-        card.setClickable(true);
-        card.setCheckable(true);
-        LinearLayout body = new LinearLayout(this);
-        body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(dp(16), dp(14), dp(16), dp(14));
-
-        LinearLayout top = new LinearLayout(this);
-        top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        MaterialCheckBox check = new MaterialCheckBox(this);
-        check.setContentDescription("Select " + spec.name);
-        TextView title = titleText(spec.name);
-        top.addView(check, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        top.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
-        top.addView(badge(spec.tabId));
-        body.addView(top);
-
-        TextView meta = muted(spec.source + " | " + spec.rawFormat + " | " + formatBytes(spec.estimatedSizeBytes));
-        TextView desc = bodyText(spec.description);
-        TextView status = muted("Not prepared");
-        status.setTypeface(Typeface.DEFAULT_BOLD);
-        body.addView(meta);
-        body.addView(desc);
-        body.addView(status);
-        card.addView(body);
-
-        card.setOnClickListener(v -> check.setChecked(!check.isChecked()));
-        check.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            card.setChecked(isChecked);
-            updateRunEstimate();
-            appendLog((isChecked ? "Selected dataset: " : "Deselected dataset: ") + spec.datasetId);
-        });
-        datasetChecks.put(spec.datasetId, check);
-        datasetStatusLabels.put(spec.datasetId, status);
-        return card;
-    }
-
-    private void prepareSelectedDatasets() {
-        List<DatasetSpec> selected = new ArrayList<>();
-        for (DatasetSpec spec : datasetSpecs) {
-            MaterialCheckBox cb = datasetChecks.get(spec.datasetId);
-            if (cb != null && cb.isChecked()) selected.add(spec);
-        }
-        if (selected.isEmpty()) {
-            toast("Select at least one dataset.");
-            return;
-        }
-        showPage(NAV_RUN);
-        appendLog("Preparing " + selected.size() + " dataset raw download(s).");
-        new Thread(() -> {
-            for (DatasetSpec spec : selected) {
-                try {
-                    DatasetManager.downloadRaw(this, spec, message -> runOnUiThread(() -> appendLog(message)));
-                } catch (Exception exc) {
-                    runOnUiThread(() -> appendLog("Dataset preparation failed for " + spec.datasetId + ": " + exc));
-                }
-            }
-            runOnUiThread(() -> {
-                updateDatasetStatuses();
-                appendLog("Dataset raw preparation finished. Archive conversion parity is pending for Android dataset-mode runs.");
-            });
-        }, "android-dataset-prepare").start();
     }
 
     private void startRun() {
@@ -841,15 +726,11 @@ public final class MainActivity extends Activity {
         for (Map.Entry<String, Chip> entry : variantChips.entrySet()) {
             if (entry.getValue().isChecked()) config.selectedVariants.add(entry.getKey());
         }
-        for (Map.Entry<String, MaterialCheckBox> entry : datasetChecks.entrySet()) {
-            if (entry.getValue().isChecked()) config.selectedDatasets.add(entry.getKey());
-        }
         return config;
     }
 
     private void applyConfigToUi(BenchmarkConfig config) {
         algorithmToggle.check("shortest_path".equals(config.tabId) ? ALGO_SHORTEST_PATH : ALGO_SUBGRAPH);
-        inputModeToggle.check("datasets".equals(config.inputMode) ? INPUT_DATASETS : INPUT_INDEPENDENT);
         setDropdown(graphFamilyInput, config.graphFamily);
         runModeToggle.check("timed".equals(config.runMode) ? RUN_TIMED : RUN_THRESHOLD);
         iterationsInput.setText(Integer.toString(config.iterations));
@@ -878,9 +759,6 @@ public final class MainActivity extends Activity {
         refreshVariantChips();
         for (Map.Entry<String, Chip> entry : variantChips.entrySet()) {
             entry.getValue().setChecked(config.selectedVariants.contains(entry.getKey()));
-        }
-        for (Map.Entry<String, MaterialCheckBox> entry : datasetChecks.entrySet()) {
-            entry.getValue().setChecked(config.selectedDatasets.contains(entry.getKey()));
         }
         updateVariableAvailability();
         updateRunEstimate();
@@ -1043,7 +921,6 @@ public final class MainActivity extends Activity {
         }
         int points = estimatePointCount(config);
         int variants = config.selectedVariants.size();
-        int datasets = config.selectedDatasets.size();
         String estimate;
         if ("timed".equals(config.runMode)) {
             estimate = "Timed run | " + config.timeLimitMinutes + " min";
@@ -1054,7 +931,6 @@ public final class MainActivity extends Activity {
         String detail = points + " datapoint" + (points == 1 ? "" : "s")
                 + " | " + variants + " variant" + (variants == 1 ? "" : "s")
                 + " | " + config.iterations + " iteration" + (config.iterations == 1 ? "" : "s");
-        if (datasets > 0) detail += " | " + datasets + " dataset" + (datasets == 1 ? "" : "s");
         if ("subgraph".equals(config.tabId)) detail += " | K " + config.kMode;
         plannedTrialsText.setText("Estimated run: " + estimate + " | " + detail);
     }
@@ -1064,21 +940,6 @@ public final class MainActivity extends Activity {
         int k = "subgraph".equals(config.tabId) && config.varyK ? countIntRange(config.kStart, config.kEnd, config.kStep) : 1;
         int d = config.varyDensity ? countDoubleRange(config.densityStart, config.densityEnd, config.densityStep) : 1;
         return Math.max(1, n * k * d);
-    }
-
-    private void updateDatasetStatuses() {
-        for (DatasetSpec spec : datasetSpecs) {
-            TextView label = datasetStatusLabels.get(spec.datasetId);
-            if (label == null) continue;
-            if (DatasetManager.rawReady(this, spec)) {
-                File raw = DatasetManager.rawFile(this, spec);
-                label.setText("Prepared | " + formatBytes(raw.length()));
-                label.setTextColor(color(R.color.runner_secondary));
-            } else {
-                label.setText("Not prepared");
-                label.setTextColor(color(R.color.runner_muted));
-            }
-        }
     }
 
     private void updateResultDashboard(BenchmarkSession session, File outputDir) {
@@ -1108,6 +969,119 @@ public final class MainActivity extends Activity {
         showVisualizerInput(next, true);
     }
 
+    private void shiftVisualizer(String kind, int delta) {
+        if (visualizerInputs.isEmpty()) return;
+        if ("solution".equals(kind)) {
+            shiftVisualizer(delta);
+            return;
+        }
+        GeneratedInputs current = visualizerIndex >= 0 && visualizerIndex < visualizerInputs.size()
+                ? visualizerInputs.get(visualizerIndex)
+                : visualizerInputs.get(0);
+        int next = visualizerIndex;
+        if ("iteration".equals(kind)) {
+            next = findVisualizerByIteration(current, delta);
+        } else {
+            next = findVisualizerByVariable(kind, current, delta);
+        }
+        if (next < 0) next = Math.max(0, Math.min(visualizerInputs.size() - 1, visualizerIndex + delta));
+        showVisualizerInput(next, true);
+    }
+
+    private View visualizerNavRow(String label, String kind, int[] deltas) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, 0, 0, dp(6));
+        TextView title = new TextView(this);
+        title.setText(label);
+        title.setTextColor(color(R.color.runner_text));
+        title.setTextSize(13f);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        visualizerNavLabels.put(kind, title);
+        row.addView(title, new LinearLayout.LayoutParams(dp(72), -2));
+        List<MaterialButton> buttons = new ArrayList<>();
+        visualizerNavButtons.put(kind, buttons);
+        for (int delta : deltas) {
+            MaterialButton button = outlinedButton(navDeltaLabel(delta));
+            button.setOnClickListener(v -> shiftVisualizer(kind, delta));
+            buttons.add(button);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(40), 1f);
+            params.setMargins(dp(2), 0, dp(2), 0);
+            row.addView(button, params);
+        }
+        return row;
+    }
+
+    private int findVisualizerByIteration(GeneratedInputs current, int delta) {
+        List<Integer> iterations = new ArrayList<>();
+        for (GeneratedInputs inputs : visualizerInputs) {
+            if (inputs.pointIndex == current.pointIndex && !iterations.contains(inputs.iterationIndex)) {
+                iterations.add(inputs.iterationIndex);
+            }
+        }
+        Collections.sort(iterations);
+        int pos = Math.max(0, iterations.indexOf(current.iterationIndex));
+        int targetIteration = iterations.get(Math.max(0, Math.min(iterations.size() - 1, pos + delta)));
+        for (int i = 0; i < visualizerInputs.size(); i++) {
+            GeneratedInputs inputs = visualizerInputs.get(i);
+            if (inputs.pointIndex == current.pointIndex && inputs.iterationIndex == targetIteration) return i;
+        }
+        return -1;
+    }
+
+    private int findVisualizerByVariable(String kind, GeneratedInputs current, int delta) {
+        List<Double> values = new ArrayList<>();
+        for (GeneratedInputs inputs : visualizerInputs) {
+            double value = visualizerVariableValue(kind, inputs);
+            if (!containsClose(values, value)) values.add(value);
+        }
+        Collections.sort(values);
+        double currentValue = visualizerVariableValue(kind, current);
+        int pos = 0;
+        for (int i = 0; i < values.size(); i++) {
+            if (Math.abs(values.get(i) - currentValue) < 1e-9) {
+                pos = i;
+                break;
+            }
+        }
+        double target = values.get(Math.max(0, Math.min(values.size() - 1, pos + delta)));
+        int bestIndex = -1;
+        double bestScore = Double.POSITIVE_INFINITY;
+        for (int i = 0; i < visualizerInputs.size(); i++) {
+            GeneratedInputs candidate = visualizerInputs.get(i);
+            if (Math.abs(visualizerVariableValue(kind, candidate) - target) > 1e-9) continue;
+            double score = Math.abs(candidate.iterationIndex - current.iterationIndex) * 1000.0
+                    + Math.abs(candidate.pointIndex - current.pointIndex);
+            if (score < bestScore) {
+                bestScore = score;
+                bestIndex = i;
+            }
+        }
+        return bestIndex;
+    }
+
+    private boolean containsClose(List<Double> values, double value) {
+        for (Double existing : values) {
+            if (Math.abs(existing - value) < 1e-9) return true;
+        }
+        return false;
+    }
+
+    private double visualizerVariableValue(String kind, GeneratedInputs inputs) {
+        if ("k".equals(kind)) return inputs.k;
+        if ("density".equals(kind)) return inputs.density;
+        return inputs.n;
+    }
+
+    private String navDeltaLabel(int delta) {
+        int count = Math.abs(delta) >= 10 ? 3 : (Math.abs(delta) >= 5 ? 2 : 1);
+        String arrow = delta < 0 ? "<" : ">";
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < count; i++) out.append(arrow);
+        return out.toString();
+    }
+
     private void showVisualizerInput(int index, boolean async) {
         if (graphVisualizer == null || index < 0 || index >= visualizerInputs.size()) {
             updateVisualizerNavState();
@@ -1117,7 +1091,17 @@ public final class MainActivity extends Activity {
         int serial = ++visualizerRequestSerial;
         GeneratedInputs inputs = visualizerInputs.get(index);
         if (visualizerStatusText != null) {
-            visualizerStatusText.setText("Solution " + (index + 1) + "/" + visualizerInputs.size() + " | seed=" + inputs.seed);
+            visualizerStatusText.setText(String.format(
+                    Locale.US,
+                    "Input %d/%d | n=%d, k=%d, density=%.4f | iteration=%d | seed=%d",
+                    index + 1,
+                    visualizerInputs.size(),
+                    inputs.n,
+                    inputs.k,
+                    inputs.density,
+                    inputs.iterationIndex + 1,
+                    inputs.seed
+            ));
         }
         if (visualizerLoading != null) {
             visualizerLoading.setTag(Boolean.TRUE);
@@ -1147,25 +1131,51 @@ public final class MainActivity extends Activity {
 
     private void updateVisualizerNavState() {
         boolean hasInputs = !visualizerInputs.isEmpty() && visualizerIndex >= 0;
-        if (visualizerPrevButton != null) visualizerPrevButton.setEnabled(hasInputs && visualizerIndex > 0);
-        if (visualizerNextButton != null) visualizerNextButton.setEnabled(hasInputs && visualizerIndex < visualizerInputs.size() - 1);
+        GeneratedInputs current = hasInputs ? visualizerInputs.get(visualizerIndex) : null;
+        for (Map.Entry<String, List<MaterialButton>> entry : visualizerNavButtons.entrySet()) {
+            boolean enabled = hasInputs && visualizerOptionCount(entry.getKey(), current) > 1;
+            for (MaterialButton button : entry.getValue()) button.setEnabled(enabled);
+            TextView label = visualizerNavLabels.get(entry.getKey());
+            if (label != null) {
+                label.setEnabled(enabled);
+                label.setAlpha(enabled ? 1f : 0.45f);
+            }
+        }
         if (visualizerStatusText != null && !hasInputs) {
             visualizerStatusText.setText("Run a generated-input benchmark to populate solutions.");
         }
     }
 
+    private int visualizerOptionCount(String kind, GeneratedInputs current) {
+        if (visualizerInputs.isEmpty()) return 0;
+        if ("solution".equals(kind)) return 1;
+        if ("iteration".equals(kind)) {
+            List<Integer> iterations = new ArrayList<>();
+            int pointIndex = current == null ? -1 : current.pointIndex;
+            for (GeneratedInputs inputs : visualizerInputs) {
+                if (inputs.pointIndex == pointIndex && !iterations.contains(inputs.iterationIndex)) {
+                    iterations.add(inputs.iterationIndex);
+                }
+            }
+            return iterations.size();
+        }
+        List<Double> values = new ArrayList<>();
+        for (GeneratedInputs inputs : visualizerInputs) {
+            double value = visualizerVariableValue(kind, inputs);
+            if (!containsClose(values, value)) values.add(value);
+        }
+        return values.size();
+    }
+
     private void renderStatsTable(BenchmarkSession session) {
         if (statsTableWrap == null) return;
         statsTableWrap.removeAllViews();
-        if (session == null || session.trials.isEmpty()) {
-            statsTableWrap.addView(bodyText("Run a benchmark to populate runtime statistical comparisons."));
-            return;
-        }
-        List<RuntimeStatsRow> rows = buildRuntimeStatsRows(session);
-        if (rows.isEmpty()) {
-            statsTableWrap.addView(bodyText("No baseline-comparable statistical rows are available."));
-            return;
-        }
+        List<RuntimeStatsRow> rows = (session == null || session.trials.isEmpty())
+                ? new ArrayList<>()
+                : buildRuntimeStatsRows(session);
+        String emptyMessage = (session == null || session.trials.isEmpty())
+                ? "Run a benchmark to populate runtime statistical comparisons."
+                : "No baseline-comparable statistical rows are available.";
 
         LinearLayout table = new LinearLayout(this);
         table.setOrientation(LinearLayout.HORIZONTAL);
@@ -1203,6 +1213,17 @@ public final class MainActivity extends Activity {
             };
             for (int i = 0; i < values.length; i++) {
                 line.addView(tableCell(values[i], dp(widths[i]), false, bg, Color.BLACK));
+            }
+            right.addView(line);
+        }
+        if (rows.isEmpty()) {
+            int bg = color(R.color.runner_surface);
+            sticky.addView(tableCell("No comparisons", dp(190), false, bg, Color.BLACK));
+            LinearLayout line = new LinearLayout(this);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            line.addView(tableCell(emptyMessage, dp(widths[0]), false, bg, Color.BLACK));
+            for (int i = 1; i < widths.length; i++) {
+                line.addView(tableCell("", dp(widths[i]), false, bg, Color.BLACK));
             }
             right.addView(line);
         }
@@ -1374,11 +1395,6 @@ public final class MainActivity extends Activity {
             if (visualizerPage == null) visualizerPage = buildVisualizerPage();
             page = visualizerPage;
             title = "Graph";
-        } else if (navId == NAV_DATASETS) {
-            if (datasetsPage == null) datasetsPage = buildDatasetsPage();
-            page = datasetsPage;
-            title = "Data";
-            updateDatasetStatuses();
         } else {
             if (setupPage == null) setupPage = buildSetupPage();
             page = setupPage;
@@ -1741,7 +1757,7 @@ public final class MainActivity extends Activity {
     }
 
     private String selectedInputMode() {
-        return inputModeToggle != null && inputModeToggle.getCheckedButtonId() == INPUT_DATASETS ? "datasets" : "independent";
+        return "independent";
     }
 
     private String selectedRunMode() {

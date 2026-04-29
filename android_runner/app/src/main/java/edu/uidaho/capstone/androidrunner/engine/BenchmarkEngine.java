@@ -114,6 +114,9 @@ public final class BenchmarkEngine {
                     long seed = Math.max(1L, (config.baseSeed + pointIndex + iter) % 2_147_483_647L);
                     File pointDir = new File(generatedRoot, String.format(Locale.US, "point_%05d/iter_%03d", pointIndex + 1, iter + 1));
                     GeneratedInputs inputs = generateForPoint(config, point, pointDir, seed);
+                    inputs.n = point.n;
+                    inputs.k = point.k;
+                    inputs.density = point.density;
                     inputs.pointIndex = pointIndex;
                     inputs.iterationIndex = iter;
                     inputs.seed = seed;

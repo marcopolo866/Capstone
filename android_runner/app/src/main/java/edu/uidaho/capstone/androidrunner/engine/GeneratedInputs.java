@@ -16,6 +16,9 @@ public final class GeneratedInputs {
     public final List<Integer> solutionNodes = new ArrayList<>();
     public int targetNodeCount;
     public int patternNodeCount;
+    public int n;
+    public int k;
+    public double density;
     public long seed;
     public int pointIndex;
     public int iterationIndex;

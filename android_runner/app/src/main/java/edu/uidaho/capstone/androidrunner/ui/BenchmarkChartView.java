@@ -21,9 +21,12 @@ public final class BenchmarkChartView extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final List<BenchmarkDatapoint> datapoints = new ArrayList<>();
     private final List<ChartPoint> renderedPoints = new ArrayList<>();
+    private final List<ChartSegment> renderedSegments = new ArrayList<>();
     private final RectF plot = new RectF();
     private String metric = "runtime";
     private ChartPoint selectedPoint;
+    private String activeVariantLabel;
+    private boolean showErrorBars;
 
     private final int[] seriesColors = {
             Color.rgb(0, 114, 178),
@@ -56,7 +59,14 @@ public final class BenchmarkChartView extends View {
         if (rows != null) datapoints.addAll(rows);
         this.metric = metric == null ? "runtime" : metric;
         selectedPoint = null;
+        activeVariantLabel = null;
         updateContentDescription();
+        invalidate();
+    }
+
+    public void setShowErrorBars(boolean showErrorBars) {
+        if (this.showErrorBars == showErrorBars) return;
+        this.showErrorBars = showErrorBars;
         invalidate();
     }
 
@@ -84,6 +94,7 @@ public final class BenchmarkChartView extends View {
 
         Bounds bounds = computeBounds();
         renderedPoints.clear();
+        renderedSegments.clear();
         drawGrid(canvas, bounds);
         drawSeries(canvas, bounds);
         drawLegend(canvas);
@@ -92,12 +103,29 @@ public final class BenchmarkChartView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        if (event.getAction() == MotionEvent.ACTION_DOWN || event.getAction() == MotionEvent.ACTION_MOVE) {
-            selectedPoint = nearestPoint(event.getX(), event.getY());
-            if (selectedPoint != null) {
-                setContentDescription(selectedPoint.row.variantLabel + ", " + selectedPoint.row.pointLabel + ", "
-                        + metricLabel() + " " + formatValue(selectedPoint.value));
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+            getParent().requestDisallowInterceptTouchEvent(true);
+            ChartPoint nearest = nearestPoint(event.getX(), event.getY());
+            String nearestVariant = nearestVariant(event.getX(), event.getY(), nearest);
+            if (activeVariantLabel == null) activeVariantLabel = nearestVariant;
+            selectedPoint = nearest != null && activeVariantLabel != null
+                    && activeVariantLabel.equals(nearest.row.variantLabel) ? nearest : null;
+            if (activeVariantLabel != null) {
+                String valueText = selectedPoint == null
+                        ? activeVariantLabel
+                        : selectedPoint.row.variantLabel + ", " + selectedPoint.row.pointLabel + ", "
+                        + metricLabel() + " " + formatValue(selectedPoint.value);
+                setContentDescription(valueText);
             }
+            invalidate();
+            return true;
+        }
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            getParent().requestDisallowInterceptTouchEvent(false);
+            selectedPoint = null;
+            activeVariantLabel = null;
+            updateContentDescription();
             invalidate();
             return true;
         }
@@ -113,7 +141,7 @@ public final class BenchmarkChartView extends View {
         paint.setTypeface(android.graphics.Typeface.DEFAULT);
         paint.setTextSize(dp(11));
         paint.setColor(Color.rgb(93, 104, 117));
-        canvas.drawText("Tap a point for exact values", dp(16), dp(40), paint);
+        canvas.drawText("Press and hold a line to isolate it", dp(16), dp(40), paint);
     }
 
     private void drawPlotFrame(Canvas canvas) {
@@ -163,6 +191,10 @@ public final class BenchmarkChartView extends View {
         int colorIdx = 0;
         for (Map.Entry<String, List<BenchmarkDatapoint>> entry : byVariant.entrySet()) {
             int color = seriesColors[colorIdx % seriesColors.length];
+            if (activeVariantLabel != null && !activeVariantLabel.equals(entry.getKey())) {
+                colorIdx++;
+                continue;
+            }
             List<BenchmarkDatapoint> rows = entry.getValue();
             rows.sort((a, b) -> Double.compare(a.xValue, b.xValue));
             float lastX = Float.NaN;
@@ -177,15 +209,30 @@ public final class BenchmarkChartView extends View {
                 if (!Float.isNaN(lastX)) {
                     paint.setStyle(Paint.Style.STROKE);
                     canvas.drawLine(lastX, lastY, x, y, paint);
+                    renderedSegments.add(new ChartSegment(row.variantLabel, lastX, lastY, x, y));
                 }
-                paint.setStyle(Paint.Style.FILL);
-                canvas.drawCircle(x, y, dp(4), paint);
+                if (showErrorBars) drawErrorBar(canvas, row, x, bounds, color);
                 renderedPoints.add(new ChartPoint(row, value, x, y, color));
                 lastX = x;
                 lastY = y;
             }
             colorIdx++;
         }
+    }
+
+    private void drawErrorBar(Canvas canvas, BenchmarkDatapoint row, float x, Bounds bounds, int color) {
+        Double value = valueFor(row);
+        double stdev = stdevFor(row);
+        if (value == null || !Double.isFinite(stdev) || stdev <= 0.0) return;
+        float yHigh = yFor(value + stdev, bounds);
+        float yLow = yFor(Math.max(0.0, value - stdev), bounds);
+        float cap = dp(4);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(dp(1));
+        paint.setColor(color);
+        canvas.drawLine(x, yHigh, x, yLow, paint);
+        canvas.drawLine(x - cap, yHigh, x + cap, yHigh, paint);
+        canvas.drawLine(x - cap, yLow, x + cap, yLow, paint);
     }
 
     private void drawLegend(Canvas canvas) {
@@ -248,7 +295,10 @@ public final class BenchmarkChartView extends View {
             bounds.minX = Math.min(bounds.minX, row.xValue);
             bounds.maxX = Math.max(bounds.maxX, row.xValue);
             Double y = valueFor(row);
-            if (y != null) bounds.maxY = Math.max(bounds.maxY, y);
+            if (y != null) {
+                double high = y + (showErrorBars ? Math.max(0.0, stdevFor(row)) : 0.0);
+                bounds.maxY = Math.max(bounds.maxY, high);
+            }
         }
         if (!Double.isFinite(bounds.minX) || !Double.isFinite(bounds.maxX) || bounds.maxX <= bounds.minX) {
             bounds.minX = 0.0;
@@ -273,6 +323,25 @@ public final class BenchmarkChartView extends View {
         return nearest;
     }
 
+    private String nearestVariant(float x, float y, ChartPoint nearestPoint) {
+        String nearest = nearestPoint == null ? null : nearestPoint.row.variantLabel;
+        float best = nearestPoint == null ? dp(42) * dp(42) : distanceSquared(x, y, nearestPoint.x, nearestPoint.y);
+        for (ChartSegment segment : renderedSegments) {
+            float dist = segment.distanceSquaredTo(x, y);
+            if (dist < best) {
+                best = dist;
+                nearest = segment.variantLabel;
+            }
+        }
+        return best <= dp(42) * dp(42) ? nearest : null;
+    }
+
+    private float distanceSquared(float ax, float ay, float bx, float by) {
+        float dx = ax - bx;
+        float dy = ay - by;
+        return dx * dx + dy * dy;
+    }
+
     private float xFor(double value, Bounds bounds) {
         return (float) (plot.left + ((value - bounds.minX) / (bounds.maxX - bounds.minX)) * plot.width());
     }
@@ -283,6 +352,10 @@ public final class BenchmarkChartView extends View {
 
     private Double valueFor(BenchmarkDatapoint row) {
         return "runtime".equals(metric) ? row.runtimeMedianMs : row.memoryMedianKb;
+    }
+
+    private double stdevFor(BenchmarkDatapoint row) {
+        return "runtime".equals(metric) ? row.runtimeStdevMs : row.memoryStdevKb;
     }
 
     private String metricTitle() {
@@ -341,6 +414,40 @@ public final class BenchmarkChartView extends View {
             this.x = x;
             this.y = y;
             this.color = color;
+        }
+    }
+
+    private static final class ChartSegment {
+        final String variantLabel;
+        final float x1;
+        final float y1;
+        final float x2;
+        final float y2;
+
+        ChartSegment(String variantLabel, float x1, float y1, float x2, float y2) {
+            this.variantLabel = variantLabel;
+            this.x1 = x1;
+            this.y1 = y1;
+            this.x2 = x2;
+            this.y2 = y2;
+        }
+
+        float distanceSquaredTo(float x, float y) {
+            float dx = x2 - x1;
+            float dy = y2 - y1;
+            float lengthSquared = dx * dx + dy * dy;
+            if (lengthSquared <= 0f) {
+                float ex = x - x1;
+                float ey = y - y1;
+                return ex * ex + ey * ey;
+            }
+            float t = ((x - x1) * dx + (y - y1) * dy) / lengthSquared;
+            t = Math.max(0f, Math.min(1f, t));
+            float px = x1 + t * dx;
+            float py = y1 + t * dy;
+            float ex = x - px;
+            float ey = y - py;
+            return ex * ex + ey * ey;
         }
     }
 }
