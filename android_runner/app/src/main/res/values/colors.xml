@@ -1,6 +1,18 @@
 <resources>
-    <color name="runner_bg">#F4F6F8</color>
-    <color name="runner_panel">#FFFFFF</color>
-    <color name="runner_text">#1F2933</color>
-    <color name="runner_accent">#0B5CAD</color>
+    <color name="runner_bg">#F7F8FA</color>
+    <color name="runner_surface">#FFFFFF</color>
+    <color name="runner_surface_variant">#E7ECF2</color>
+    <color name="runner_text">#18212B</color>
+    <color name="runner_muted">#5D6875</color>
+    <color name="runner_outline">#BCC7D3</color>
+    <color name="runner_primary">#0B57A3</color>
+    <color name="runner_on_primary">#FFFFFF</color>
+    <color name="runner_primary_container">#D5E8FF</color>
+    <color name="runner_on_primary_container">#073763</color>
+    <color name="runner_secondary">#396A45</color>
+    <color name="runner_secondary_container">#DCEFD7</color>
+    <color name="runner_tertiary">#8A4B15</color>
+    <color name="runner_tertiary_container">#FFE2C2</color>
+    <color name="runner_error">#BA1A1A</color>
+    <color name="runner_error_container">#FFDAD6</color>
 </resources>

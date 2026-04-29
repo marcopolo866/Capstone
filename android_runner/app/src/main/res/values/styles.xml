@@ -1,9 +1,27 @@
 <resources>
-    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+    <style name="AppTheme" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:fontFamily">sans</item>
+        <item name="fontFamily">sans</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:colorAccent">@color/runner_accent</item>
+        <item name="android:statusBarColor">@color/runner_bg</item>
         <item name="android:navigationBarColor">@color/runner_bg</item>
         <item name="android:windowBackground">@color/runner_bg</item>
+        <item name="colorPrimary">@color/runner_primary</item>
+        <item name="colorOnPrimary">@color/runner_on_primary</item>
+        <item name="colorPrimaryContainer">@color/runner_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/runner_on_primary_container</item>
+        <item name="colorSecondary">@color/runner_secondary</item>
+        <item name="colorSecondaryContainer">@color/runner_secondary_container</item>
+        <item name="colorTertiary">@color/runner_tertiary</item>
+        <item name="colorTertiaryContainer">@color/runner_tertiary_container</item>
+        <item name="colorSurface">@color/runner_surface</item>
+        <item name="colorSurfaceVariant">@color/runner_surface_variant</item>
+        <item name="colorOnSurface">@color/runner_text</item>
+        <item name="colorOnSurfaceVariant">@color/runner_muted</item>
+        <item name="colorOutline">@color/runner_outline</item>
+        <item name="colorError">@color/runner_error</item>
+        <item name="colorErrorContainer">@color/runner_error_container</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="windowActionBar">false</item>
     </style>
 </resources>
