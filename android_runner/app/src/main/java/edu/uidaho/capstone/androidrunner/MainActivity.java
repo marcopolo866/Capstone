@@ -608,9 +608,13 @@ public final class MainActivity extends Activity {
 
                 @Override public void onGraphInputs(GeneratedInputs inputs, int pointIndex, int iterationIndex, long seed) {
                     runOnUiThread(() -> {
+                        boolean firstInput = visualizerInputs.isEmpty();
                         visualizerInputs.add(inputs);
-                        if (visualizerIndex < 0) visualizerIndex = 0;
-                        showVisualizerInput(visualizerInputs.size() - 1, false);
+                        if (firstInput || visualizerIndex < 0) {
+                            showVisualizerInput(0, false);
+                        } else {
+                            updateVisualizerNavState();
+                        }
                     });
                 }
 
@@ -999,7 +1003,7 @@ public final class MainActivity extends Activity {
         title.setTextSize(13f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         visualizerNavLabels.put(kind, title);
-        row.addView(title, new LinearLayout.LayoutParams(dp(72), -2));
+        row.addView(title, new LinearLayout.LayoutParams(dp(112), -2));
         List<MaterialButton> buttons = new ArrayList<>();
         visualizerNavButtons.put(kind, buttons);
         for (int delta : deltas) {
@@ -1075,11 +1079,7 @@ public final class MainActivity extends Activity {
     }
 
     private String navDeltaLabel(int delta) {
-        int count = Math.abs(delta) >= 10 ? 3 : (Math.abs(delta) >= 5 ? 2 : 1);
-        String arrow = delta < 0 ? "<" : ">";
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < count; i++) out.append(arrow);
-        return out.toString();
+        return String.format(Locale.US, "%+d", delta);
     }
 
     private void showVisualizerInput(int index, boolean async) {
@@ -1133,10 +1133,13 @@ public final class MainActivity extends Activity {
         boolean hasInputs = !visualizerInputs.isEmpty() && visualizerIndex >= 0;
         GeneratedInputs current = hasInputs ? visualizerInputs.get(visualizerIndex) : null;
         for (Map.Entry<String, List<MaterialButton>> entry : visualizerNavButtons.entrySet()) {
-            boolean enabled = hasInputs && visualizerOptionCount(entry.getKey(), current) > 1;
+            String kind = entry.getKey();
+            int optionCount = visualizerOptionCount(kind, current);
+            boolean enabled = hasInputs && optionCount > 1;
             for (MaterialButton button : entry.getValue()) button.setEnabled(enabled);
-            TextView label = visualizerNavLabels.get(entry.getKey());
+            TextView label = visualizerNavLabels.get(kind);
             if (label != null) {
+                label.setText(visualizerNavLabel(kind, current, optionCount));
                 label.setEnabled(enabled);
                 label.setAlpha(enabled ? 1f : 0.45f);
             }
@@ -1148,7 +1151,7 @@ public final class MainActivity extends Activity {
 
     private int visualizerOptionCount(String kind, GeneratedInputs current) {
         if (visualizerInputs.isEmpty()) return 0;
-        if ("solution".equals(kind)) return 1;
+        if ("solution".equals(kind)) return visualizerInputs.size();
         if ("iteration".equals(kind)) {
             List<Integer> iterations = new ArrayList<>();
             int pointIndex = current == null ? -1 : current.pointIndex;
@@ -1165,6 +1168,43 @@ public final class MainActivity extends Activity {
             if (!containsClose(values, value)) values.add(value);
         }
         return values.size();
+    }
+
+    private String visualizerNavLabel(String kind, GeneratedInputs current, int optionCount) {
+        String title;
+        if ("n".equals(kind)) title = "N";
+        else if ("k".equals(kind)) title = "k";
+        else if ("density".equals(kind)) title = "Density";
+        else if ("iteration".equals(kind)) title = "Iteration";
+        else title = "Solution";
+        if (current == null || optionCount <= 0) return title;
+        int position = visualizerOptionPosition(kind, current);
+        return title + " " + position + "/" + optionCount;
+    }
+
+    private int visualizerOptionPosition(String kind, GeneratedInputs current) {
+        if ("solution".equals(kind)) return Math.max(1, visualizerIndex + 1);
+        if ("iteration".equals(kind)) {
+            List<Integer> iterations = new ArrayList<>();
+            for (GeneratedInputs inputs : visualizerInputs) {
+                if (inputs.pointIndex == current.pointIndex && !iterations.contains(inputs.iterationIndex)) {
+                    iterations.add(inputs.iterationIndex);
+                }
+            }
+            Collections.sort(iterations);
+            return Math.max(1, iterations.indexOf(current.iterationIndex) + 1);
+        }
+        List<Double> values = new ArrayList<>();
+        for (GeneratedInputs inputs : visualizerInputs) {
+            double value = visualizerVariableValue(kind, inputs);
+            if (!containsClose(values, value)) values.add(value);
+        }
+        Collections.sort(values);
+        double currentValue = visualizerVariableValue(kind, current);
+        for (int i = 0; i < values.size(); i++) {
+            if (Math.abs(values.get(i) - currentValue) < 1e-9) return i + 1;
+        }
+        return 1;
     }
 
     private void renderStatsTable(BenchmarkSession session) {

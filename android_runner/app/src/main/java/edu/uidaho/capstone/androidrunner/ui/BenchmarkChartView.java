@@ -22,6 +22,7 @@ public final class BenchmarkChartView extends View {
     private final List<BenchmarkDatapoint> datapoints = new ArrayList<>();
     private final List<ChartPoint> renderedPoints = new ArrayList<>();
     private final List<ChartSegment> renderedSegments = new ArrayList<>();
+    private final List<LegendHit> legendHits = new ArrayList<>();
     private final RectF plot = new RectF();
     private String metric = "runtime";
     private ChartPoint selectedPoint;
@@ -95,6 +96,7 @@ public final class BenchmarkChartView extends View {
         Bounds bounds = computeBounds();
         renderedPoints.clear();
         renderedSegments.clear();
+        legendHits.clear();
         drawGrid(canvas, bounds);
         drawSeries(canvas, bounds);
         drawLegend(canvas);
@@ -107,7 +109,8 @@ public final class BenchmarkChartView extends View {
         if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
             getParent().requestDisallowInterceptTouchEvent(true);
             ChartPoint nearest = nearestPoint(event.getX(), event.getY());
-            String nearestVariant = nearestVariant(event.getX(), event.getY(), nearest);
+            String nearestVariant = nearestLegendVariant(event.getX(), event.getY());
+            if (nearestVariant == null) nearestVariant = nearestVariant(event.getX(), event.getY(), nearest);
             if (activeVariantLabel == null) activeVariantLabel = nearestVariant;
             selectedPoint = nearest != null && activeVariantLabel != null
                     && activeVariantLabel.equals(nearest.row.variantLabel) ? nearest : null;
@@ -141,7 +144,7 @@ public final class BenchmarkChartView extends View {
         paint.setTypeface(android.graphics.Typeface.DEFAULT);
         paint.setTextSize(dp(11));
         paint.setColor(Color.rgb(93, 104, 117));
-        canvas.drawText("Press and hold a line to isolate it", dp(16), dp(40), paint);
+        canvas.drawText("Press and hold a line or legend name to isolate it", dp(16), dp(40), paint);
     }
 
     private void drawPlotFrame(Canvas canvas) {
@@ -260,6 +263,7 @@ public final class BenchmarkChartView extends View {
             canvas.drawCircle(x + dp(7), y - dp(4), dp(4), paint);
             paint.setColor(Color.rgb(24, 33, 43));
             canvas.drawText(label, x + dp(16), y, paint);
+            legendHits.add(new LegendHit(entry.getKey(), new RectF(x, y - dp(16), x + width, y + dp(6))));
             x += width + dp(10);
         }
     }
@@ -334,6 +338,13 @@ public final class BenchmarkChartView extends View {
             }
         }
         return best <= dp(42) * dp(42) ? nearest : null;
+    }
+
+    private String nearestLegendVariant(float x, float y) {
+        for (LegendHit hit : legendHits) {
+            if (hit.bounds.contains(x, y)) return hit.variantLabel;
+        }
+        return null;
     }
 
     private float distanceSquared(float ax, float ay, float bx, float by) {
@@ -448,6 +459,16 @@ public final class BenchmarkChartView extends View {
             float ex = x - px;
             float ey = y - py;
             return ex * ex + ey * ey;
+        }
+    }
+
+    private static final class LegendHit {
+        final String variantLabel;
+        final RectF bounds;
+
+        LegendHit(String variantLabel, RectF bounds) {
+            this.variantLabel = variantLabel;
+            this.bounds = bounds;
         }
     }
 }

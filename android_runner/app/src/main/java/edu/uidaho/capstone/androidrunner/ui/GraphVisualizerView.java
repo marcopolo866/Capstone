@@ -157,16 +157,9 @@ public final class GraphVisualizerView extends View {
     private void layoutPanels() {
         graphArea.set(dp(8), dp(54), getWidth() - dp(8), getHeight() - dp(8));
         if (patternNodeCount > 0 && targetNodeCount > 0) {
-            boolean wide = graphArea.width() > graphArea.height() * 1.25f;
-            if (wide) {
-                float mid = graphArea.left + graphArea.width() * 0.38f;
-                patternBounds.set(graphArea.left, graphArea.top, mid - dp(4), graphArea.bottom);
-                targetBounds.set(mid + dp(4), graphArea.top, graphArea.right, graphArea.bottom);
-            } else {
-                float mid = graphArea.top + graphArea.height() * 0.36f;
-                patternBounds.set(graphArea.left, graphArea.top, graphArea.right, mid - dp(4));
-                targetBounds.set(graphArea.left, mid + dp(4), graphArea.right, graphArea.bottom);
-            }
+            float mid = graphArea.top + graphArea.height() * 0.42f;
+            patternBounds.set(graphArea.left, graphArea.top, graphArea.right, mid - dp(4));
+            targetBounds.set(graphArea.left, mid + dp(4), graphArea.right, graphArea.bottom);
         } else if (patternNodeCount > 0) {
             patternBounds.set(graphArea);
             targetBounds.setEmpty();
