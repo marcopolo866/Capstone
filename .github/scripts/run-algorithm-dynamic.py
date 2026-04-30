@@ -913,8 +913,10 @@ def make_mode_commands(row: SolverRow, inputs: dict[str, Path], via_label: str) 
                 "all": [str(binary), "--count-solutions", "--format", "vertexlabelledlad", str(inputs["lad_pattern"]), str(inputs["lad_target"])],
             }
         base = [str(binary), str(inputs["lad_pattern"]), str(inputs["lad_target"])]
+        # The generated Glasgow-family LLM binaries use a simple two-file LAD
+        # CLI and generally exit with code 1 when given extra flags.
         return {
-            "first": [*base, "--print-mappings"],
+            "first": list(base),
             "all": list(base),
         }
     raise RuntimeError(f"Unsupported family: {row.family}")
