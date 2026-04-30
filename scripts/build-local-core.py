@@ -406,6 +406,19 @@ def ensure_glasgow_compiler_runtime_on_path(build_dir: Path, env: dict[str, str]
             prepend_path(env, str(msys_usr))
 
 
+def glasgow_baseline_build_command() -> list[str]:
+    return [
+        "cmake",
+        "--build",
+        "baselines/glasgow-subgraph-solver/build",
+        "--config",
+        "Release",
+        "--target",
+        "glasgow_subgraph_solver",
+        "--parallel",
+    ]
+
+
 def _remove_binary_outputs(binary_rel: str) -> None:
     raw = REPO_ROOT / str(binary_rel or "").strip()
     if not str(binary_rel or "").strip():
@@ -987,14 +1000,7 @@ def main() -> int:
     run_step(
         "Building Glasgow baseline",
         lambda: run_cmd(
-            [
-                "cmake",
-                "--build",
-                "baselines/glasgow-subgraph-solver/build",
-                "--config",
-                "Release",
-                "--parallel",
-            ],
+            glasgow_baseline_build_command(),
             env=env,
         ),
     )

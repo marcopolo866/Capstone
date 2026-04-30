@@ -77,6 +77,13 @@ class PlatformEntrypointTests(unittest.TestCase):
             args = module.parse_args()
         self.assertTrue(args.suppress_diagnostics)
 
+    def test_build_local_core_glasgow_build_targets_solver_only(self):
+        module = load_module("build_local_core_glasgow_target_module", "scripts/build-local-core.py")
+        command = module.glasgow_baseline_build_command()
+        self.assertIn("--target", command)
+        self.assertIn("glasgow_subgraph_solver", command)
+        self.assertLess(command.index("--target"), command.index("glasgow_subgraph_solver"))
+
     def test_build_local_core_msys_probe_adds_runtime_paths_on_windows(self):
         module = load_module("build_local_core_probe_module", "scripts/build-local-core.py")
         captured = {}
