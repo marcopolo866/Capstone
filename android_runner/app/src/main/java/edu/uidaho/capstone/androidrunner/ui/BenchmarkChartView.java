@@ -62,13 +62,22 @@ public final class BenchmarkChartView extends View {
         selectedPoint = null;
         activeVariantLabel = null;
         updateContentDescription();
-        invalidate();
+        redrawChart();
     }
 
     public void setShowErrorBars(boolean showErrorBars) {
-        if (this.showErrorBars == showErrorBars) return;
         this.showErrorBars = showErrorBars;
-        invalidate();
+        selectedPoint = null;
+        activeVariantLabel = null;
+        updateContentDescription();
+        redrawChart();
+    }
+
+    private void redrawChart() {
+        renderedPoints.clear();
+        renderedSegments.clear();
+        legendHits.clear();
+        postInvalidateOnAnimation();
     }
 
     @Override

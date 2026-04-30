@@ -163,6 +163,7 @@ public final class MainActivity extends Activity {
     private BenchmarkSession lastSession;
     private boolean paused;
     private boolean suppressNavigationCallback;
+    private boolean errorBarsEnabled;
     private int currentNavId = NAV_SETUP;
 
     @Override
@@ -505,17 +506,19 @@ public final class MainActivity extends Activity {
         overview.addView(metricsScroll, new LinearLayout.LayoutParams(-1, -2));
         errorBarsSwitch = switchControl("Error Bars", false);
         errorBarsSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            if (runtimeChart != null) runtimeChart.setShowErrorBars(isChecked);
-            if (memoryChart != null) memoryChart.setShowErrorBars(isChecked);
+            errorBarsEnabled = isChecked;
+            applyResultChartOptions();
         });
         overview.addView(errorBarsSwitch, new LinearLayout.LayoutParams(-1, dp(52)));
 
         LinearLayout runtime = addSection(page, "Runtime", "Median runtime by variant and datapoint.");
         runtimeChart = new BenchmarkChartView(this);
+        runtimeChart.setShowErrorBars(errorBarsEnabled);
         runtime.addView(runtimeChart, new LinearLayout.LayoutParams(-1, dp(320)));
 
         LinearLayout memory = addSection(page, "Memory", "Median peak memory by variant and datapoint.");
         memoryChart = new BenchmarkChartView(this);
+        memoryChart.setShowErrorBars(errorBarsEnabled);
         memory.addView(memoryChart, new LinearLayout.LayoutParams(-1, dp(320)));
 
         LinearLayout stats = addSection(page, "Statistics", "Runtime deltas are variant - baseline. Negative mean delta means faster.");
@@ -644,6 +647,7 @@ public final class MainActivity extends Activity {
         }
         runtimeChart.setDatapoints(session.datapoints, "runtime");
         memoryChart.setDatapoints(session.datapoints, "memory");
+        applyResultChartOptions();
         renderStatsTable(session);
         progressBar.setIndeterminate(false);
         progressBar.setProgressCompat(1000, true);
@@ -653,6 +657,11 @@ public final class MainActivity extends Activity {
         setRunningState(false);
         updateResultDashboard(session, outputDir);
         showPage(NAV_RESULTS);
+    }
+
+    private void applyResultChartOptions() {
+        if (runtimeChart != null) runtimeChart.setShowErrorBars(errorBarsEnabled);
+        if (memoryChart != null) memoryChart.setShowErrorBars(errorBarsEnabled);
     }
 
     private void handleRunError(Exception error) {
