@@ -6,6 +6,7 @@
   "graph_family": "erdos_renyi",
   "selected_variants": [
     "sp_via_chatgpt",
+    "sp_via_claude",
     "sp_via_gemini"
   ],
   "selected_datasets": [],

@@ -6,6 +6,7 @@
   "graph_family": "random_density",
   "selected_variants": [
     "dijkstra_chatgpt",
+    "dijkstra_claude",
     "dijkstra_gemini"
   ],
   "selected_datasets": [
