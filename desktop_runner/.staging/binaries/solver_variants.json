@@ -1,0 +1,285 @@
+﻿{
+    "solvers":  [
+                    {
+                        "variant_id":  "dijkstra_baseline",
+                        "family":  "dijkstra",
+                        "algorithm":  "dijkstra",
+                        "role":  "baseline",
+                        "label":  "Dijkstra Baseline",
+                        "llm_key":  null,
+                        "llm_label":  null,
+                        "binary_name":  "dijkstra_baseline"
+                    },
+                    {
+                        "variant_id":  "sp_via_baseline",
+                        "family":  "sp_via",
+                        "algorithm":  "sp_via",
+                        "role":  "baseline",
+                        "label":  "With Intermediate Baseline",
+                        "llm_key":  null,
+                        "llm_label":  null,
+                        "binary_name":  "sp_via_baseline"
+                    },
+                    {
+                        "variant_id":  "vf3_baseline",
+                        "family":  "vf3",
+                        "algorithm":  "vf3",
+                        "role":  "baseline",
+                        "label":  "VF3 Baseline",
+                        "llm_key":  null,
+                        "llm_label":  null,
+                        "binary_name":  "vf3_baseline"
+                    },
+                    {
+                        "variant_id":  "glasgow_baseline",
+                        "family":  "glasgow",
+                        "algorithm":  "glasgow",
+                        "role":  "baseline",
+                        "label":  "Glasgow Baseline",
+                        "llm_key":  null,
+                        "llm_label":  null,
+                        "binary_name":  "glasgow_baseline"
+                    },
+                    {
+                        "variant_id":  "dijkstra_chatgpt",
+                        "family":  "dijkstra",
+                        "algorithm":  "dijkstra",
+                        "role":  "variant",
+                        "label":  "Dijkstra Chatgpt",
+                        "llm_key":  "chatgpt",
+                        "llm_label":  "Chatgpt",
+                        "binary_name":  "dijkstra_chatgpt"
+                    },
+                    {
+                        "variant_id":  "dijkstra_claude",
+                        "family":  "dijkstra",
+                        "algorithm":  "dijkstra",
+                        "role":  "variant",
+                        "label":  "Dijkstra Claude",
+                        "llm_key":  "claude",
+                        "llm_label":  "Claude",
+                        "binary_name":  "dijkstra_claude"
+                    },
+                    {
+                        "variant_id":  "dijkstra_gemini",
+                        "family":  "dijkstra",
+                        "algorithm":  "dijkstra",
+                        "role":  "variant",
+                        "label":  "Dijkstra Gemini",
+                        "llm_key":  "gemini",
+                        "llm_label":  "Gemini",
+                        "binary_name":  "dijkstra_gemini"
+                    },
+                    {
+                        "variant_id":  "sp_via_chatgpt",
+                        "family":  "sp_via",
+                        "algorithm":  "sp_via",
+                        "role":  "variant",
+                        "label":  "With Intermediate Chatgpt",
+                        "llm_key":  "chatgpt",
+                        "llm_label":  "Chatgpt",
+                        "binary_name":  "sp_via_chatgpt"
+                    },
+                    {
+                        "variant_id":  "sp_via_claude",
+                        "family":  "sp_via",
+                        "algorithm":  "sp_via",
+                        "role":  "variant",
+                        "label":  "With Intermediate Claude",
+                        "llm_key":  "claude",
+                        "llm_label":  "Claude",
+                        "binary_name":  "sp_via_claude"
+                    },
+                    {
+                        "variant_id":  "sp_via_gemini",
+                        "family":  "sp_via",
+                        "algorithm":  "sp_via",
+                        "role":  "variant",
+                        "label":  "With Intermediate Gemini",
+                        "llm_key":  "gemini",
+                        "llm_label":  "Gemini",
+                        "binary_name":  "sp_via_gemini"
+                    },
+                    {
+                        "variant_id":  "vf3_chatgpt_control",
+                        "family":  "vf3",
+                        "algorithm":  "vf3",
+                        "role":  "variant",
+                        "label":  "VF3 Chatgpt Control",
+                        "llm_key":  "chatgpt_control",
+                        "llm_label":  "Chatgpt Control",
+                        "binary_name":  "vf3_chatgpt_control"
+                    },
+                    {
+                        "variant_id":  "glasgow_chatgpt_control",
+                        "family":  "glasgow",
+                        "algorithm":  "glasgow",
+                        "role":  "variant",
+                        "label":  "Glasgow Chatgpt Control",
+                        "llm_key":  "chatgpt_control",
+                        "llm_label":  "Chatgpt Control",
+                        "binary_name":  "glasgow_chatgpt_control"
+                    },
+                    {
+                        "variant_id":  "vf3_chatgpt_dense",
+                        "family":  "vf3",
+                        "algorithm":  "vf3",
+                        "role":  "variant",
+                        "label":  "VF3 Chatgpt Dense",
+                        "llm_key":  "chatgpt_dense",
+                        "llm_label":  "Chatgpt Dense",
+                        "binary_name":  "vf3_chatgpt_dense"
+                    },
+                    {
+                        "variant_id":  "glasgow_chatgpt_dense",
+                        "family":  "glasgow",
+                        "algorithm":  "glasgow",
+                        "role":  "variant",
+                        "label":  "Glasgow Chatgpt Dense",
+                        "llm_key":  "chatgpt_dense",
+                        "llm_label":  "Chatgpt Dense",
+                        "binary_name":  "glasgow_chatgpt_dense"
+                    },
+                    {
+                        "variant_id":  "vf3_chatgpt_sparse",
+                        "family":  "vf3",
+                        "algorithm":  "vf3",
+                        "role":  "variant",
+                        "label":  "VF3 Chatgpt Sparse",
+                        "llm_key":  "chatgpt_sparse",
+                        "llm_label":  "Chatgpt Sparse",
+                        "binary_name":  "vf3_chatgpt_sparse"
+                    },
+                    {
+                        "variant_id":  "glasgow_chatgpt_sparse",
+                        "family":  "glasgow",
+                        "algorithm":  "glasgow",
+                        "role":  "variant",
+                        "label":  "Glasgow Chatgpt Sparse",
+                        "llm_key":  "chatgpt_sparse",
+                        "llm_label":  "Chatgpt Sparse",
+                        "binary_name":  "glasgow_chatgpt_sparse"
+                    },
+                    {
+                        "variant_id":  "vf3_claude_control",
+                        "family":  "vf3",
+                        "algorithm":  "vf3",
+                        "role":  "variant",
+                        "label":  "VF3 Claude Control",
+                        "llm_key":  "claude_control",
+                        "llm_label":  "Claude Control",
+                        "binary_name":  "vf3_claude_control"
+                    },
+                    {
+                        "variant_id":  "glasgow_claude_control",
+                        "family":  "glasgow",
+                        "algorithm":  "glasgow",
+                        "role":  "variant",
+                        "label":  "Glasgow Claude Control",
+                        "llm_key":  "claude_control",
+                        "llm_label":  "Claude Control",
+                        "binary_name":  "glasgow_claude_control"
+                    },
+                    {
+                        "variant_id":  "vf3_claude_dense",
+                        "family":  "vf3",
+                        "algorithm":  "vf3",
+                        "role":  "variant",
+                        "label":  "VF3 Claude Dense",
+                        "llm_key":  "claude_dense",
+                        "llm_label":  "Claude Dense",
+                        "binary_name":  "vf3_claude_dense"
+                    },
+                    {
+                        "variant_id":  "glasgow_claude_dense",
+                        "family":  "glasgow",
+                        "algorithm":  "glasgow",
+                        "role":  "variant",
+                        "label":  "Glasgow Claude Dense",
+                        "llm_key":  "claude_dense",
+                        "llm_label":  "Claude Dense",
+                        "binary_name":  "glasgow_claude_dense"
+                    },
+                    {
+                        "variant_id":  "vf3_claude_sparse",
+                        "family":  "vf3",
+                        "algorithm":  "vf3",
+                        "role":  "variant",
+                        "label":  "VF3 Claude Sparse",
+                        "llm_key":  "claude_sparse",
+                        "llm_label":  "Claude Sparse",
+                        "binary_name":  "vf3_claude_sparse"
+                    },
+                    {
+                        "variant_id":  "glasgow_claude_sparse",
+                        "family":  "glasgow",
+                        "algorithm":  "glasgow",
+                        "role":  "variant",
+                        "label":  "Glasgow Claude Sparse",
+                        "llm_key":  "claude_sparse",
+                        "llm_label":  "Claude Sparse",
+                        "binary_name":  "glasgow_claude_sparse"
+                    },
+                    {
+                        "variant_id":  "vf3_gemini_control",
+                        "family":  "vf3",
+                        "algorithm":  "vf3",
+                        "role":  "variant",
+                        "label":  "VF3 Gemini Control",
+                        "llm_key":  "gemini_control",
+                        "llm_label":  "Gemini Control",
+                        "binary_name":  "vf3_gemini_control"
+                    },
+                    {
+                        "variant_id":  "glasgow_gemini_control",
+                        "family":  "glasgow",
+                        "algorithm":  "glasgow",
+                        "role":  "variant",
+                        "label":  "Glasgow Gemini Control",
+                        "llm_key":  "gemini_control",
+                        "llm_label":  "Gemini Control",
+                        "binary_name":  "glasgow_gemini_control"
+                    },
+                    {
+                        "variant_id":  "vf3_gemini_dense",
+                        "family":  "vf3",
+                        "algorithm":  "vf3",
+                        "role":  "variant",
+                        "label":  "VF3 Gemini Dense",
+                        "llm_key":  "gemini_dense",
+                        "llm_label":  "Gemini Dense",
+                        "binary_name":  "vf3_gemini_dense"
+                    },
+                    {
+                        "variant_id":  "glasgow_gemini_dense",
+                        "family":  "glasgow",
+                        "algorithm":  "glasgow",
+                        "role":  "variant",
+                        "label":  "Glasgow Gemini Dense",
+                        "llm_key":  "gemini_dense",
+                        "llm_label":  "Gemini Dense",
+                        "binary_name":  "glasgow_gemini_dense"
+                    },
+                    {
+                        "variant_id":  "vf3_gemini_sparse",
+                        "family":  "vf3",
+                        "algorithm":  "vf3",
+                        "role":  "variant",
+                        "label":  "VF3 Gemini Sparse",
+                        "llm_key":  "gemini_sparse",
+                        "llm_label":  "Gemini Sparse",
+                        "binary_name":  "vf3_gemini_sparse"
+                    },
+                    {
+                        "variant_id":  "glasgow_gemini_sparse",
+                        "family":  "glasgow",
+                        "algorithm":  "glasgow",
+                        "role":  "variant",
+                        "label":  "Glasgow Gemini Sparse",
+                        "llm_key":  "gemini_sparse",
+                        "llm_label":  "Gemini Sparse",
+                        "binary_name":  "glasgow_gemini_sparse"
+                    }
+                ],
+    "schema_version":  1
+}
